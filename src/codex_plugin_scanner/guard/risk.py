@@ -63,9 +63,21 @@ _GUARD_BYPASS_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"guard[_-]?bypass", "explicit Guard bypass marker"),
 )
 _EXFIL_PATTERNS: tuple[tuple[str, str], ...] = (
-    (r"\b(upload|exfiltrate|send|post|sync)\b", "exfiltration verb"),
+    (r"\bexfiltrat(?:e|es|ed|ing|ion)\b", "explicit exfiltration intent"),
     (r"(gist\.github\.com|pastebin\.com|transfer\.sh|webhook)", "external sink destination"),
     (r"scp\s+", "scp transfer intent"),
+)
+_EXFIL_TRANSFER_VERB_PATTERN = re.compile(r"\b(?:upload|send|post|sync)\b")
+_EXFIL_SECRET_SOURCE_PATTERN = re.compile(
+    "".join(
+        (
+            r"(?:\.env\b|\.npmrc\b|\.pypirc\b|\.ssh/|\.aws/credentials\b|\.kube/config\b|",
+            r"\b(?:api[_-]?key|auth[_-]?token|access[_-]?token|credential|password|private[_-]?key|secret)\b)",
+        )
+    )
+)
+_EXFIL_NETWORK_SINK_PATTERN = re.compile(
+    r"(?:https?://|\b(?:curl|wget|scp)\b|gist\.github\.com|pastebin\.com|transfer\.sh|webhook)"
 )
 _SECRET_PATH_LABELS: tuple[tuple[str, str], ...] = (
     (".env", "local .env file"),
@@ -396,7 +408,14 @@ def detect_exfil_intent(text: str) -> list[GuardSignal]:
     """Detect exfiltration-oriented phrasing and destinations."""
 
     signals: list[GuardSignal] = []
-    for pattern, reason in _EXFIL_PATTERNS:
+    patterns = list(_EXFIL_PATTERNS)
+    if (
+        _EXFIL_TRANSFER_VERB_PATTERN.search(text)
+        and _EXFIL_SECRET_SOURCE_PATTERN.search(text)
+        and _EXFIL_NETWORK_SINK_PATTERN.search(text)
+    ):
+        patterns.append((_EXFIL_TRANSFER_VERB_PATTERN.pattern, "sensitive transfer intent"))
+    for pattern, reason in patterns:
         if re.search(pattern, text):
             signals.append(
                 GuardSignal(

@@ -647,6 +647,15 @@ def update_guard_settings(
     )
     if switching_to_custom_without_overrides:
         next_payload["risk_actions"] = _effective_risk_actions(current_config)
+    requested_security_level = payload.get("security_level")
+    selecting_named_posture = (
+        isinstance(requested_security_level, str)
+        and requested_security_level in VALID_SECURITY_LEVELS - {"custom"}
+        and payload.get("risk_actions") == {}
+        and payload.get("harness_risk_actions") == {}
+    )
+    if selecting_named_posture:
+        next_payload["harnesses"] = _without_blanket_harness_reapproval(next_payload.get("harnesses"))
     for key, value in payload.items():
         if key not in EDITABLE_GUARD_SETTING_KEYS:
             continue
@@ -687,6 +696,27 @@ def update_guard_settings(
             auto=event_source == "auto-revert",
         )
     return updated
+
+
+def _without_blanket_harness_reapproval(value: object) -> dict[str, object]:
+    """Remove blanket ask fallbacks when a named posture is selected."""
+
+    harnesses = _string_object_table(value)
+    if harnesses is None:
+        return {}
+    preserved: dict[str, object] = {}
+    for harness, raw_settings in harnesses.items():
+        settings = _string_object_table(raw_settings)
+        if settings is None:
+            preserved[harness] = raw_settings
+            continue
+        remaining = dict(settings)
+        for key in ("action", "default_action"):
+            if remaining.get(key) in {"review", "require-reapproval"}:
+                remaining.pop(key)
+        if remaining:
+            preserved[harness] = remaining
+    return preserved
 
 
 def update_guard_update_channel(
