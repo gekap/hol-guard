@@ -13,6 +13,7 @@ from codex_plugin_scanner.guard.config import (
     VALID_RISK_ACTION_KEYS,
     load_guard_config,
     resolve_risk_action,
+    update_guard_settings,
 )
 
 
@@ -140,6 +141,30 @@ class TestPresetCliCommands:
         assert loaded.harness_risk_actions == {}
         assert loaded.harness_actions == {"cursor": "block", "grok": "block"}
         assert loaded.default_action == "warn"
+
+    def test_turning_protection_on_clears_blanket_harness_review(self, tmp_path: Path) -> None:
+        home_dir = tmp_path / "home"
+        config_toml = (
+            'mode = "observe"\n'
+            'protection_posture = "watch"\n'
+            "protection_posture_explicit = true\n"
+            'security_level = "balanced"\n'
+            "[harnesses.codex]\n"
+            'default_action = "require-reapproval"\n'
+            "[harnesses.cursor]\n"
+            'default_action = "block"\n'
+        )
+        _write_text(home_dir / "config.toml", config_toml)
+
+        updated = update_guard_settings(
+            home_dir,
+            {"protection_posture": "protected"},
+            skip_approval_gate=True,
+        )
+
+        assert updated.protection_posture == "protected"
+        assert updated.mode == "enforce"
+        assert updated.harness_actions == {"cursor": "block"}
 
 
 class TestCustomModeActivation:
