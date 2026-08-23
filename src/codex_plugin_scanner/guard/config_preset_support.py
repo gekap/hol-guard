@@ -35,6 +35,8 @@ def without_blanket_harness_reapproval(value: object) -> dict[str, object]:
     for harness, raw_settings in value.items():
         if not isinstance(harness, str):
             continue
+        if isinstance(raw_settings, str) and raw_settings in {"review", "require-reapproval"}:
+            continue
         if not isinstance(raw_settings, Mapping):
             preserved[harness] = raw_settings
             continue
