@@ -17,7 +17,7 @@ _CONTAINMENT_CHECK_IDS = (
 
 
 def confirmed_containment_repair_signals(
-    load_health: Callable[[], Mapping[str, object]],
+    load_health: Callable[[], Mapping[str, object] | None],
     *,
     attempts: int = 3,
 ) -> tuple[list[str], list[str]]:
@@ -25,7 +25,10 @@ def confirmed_containment_repair_signals(
     latest = None
     for _attempt in range(attempts):
         try:
-            latest = containment_health_signals(load_health(), now=datetime.now(timezone.utc))
+            health = load_health()
+            if health is None:
+                continue
+            latest = containment_health_signals(health, now=datetime.now(timezone.utc))
         except (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error):
             continue
         if all(latest[check_id].status is ProtectionCheckStatus.PASS for check_id in _CONTAINMENT_CHECK_IDS):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -290,6 +291,8 @@ def _read_only_lookup_filter_rg_args_are_safe(args: list[str]) -> bool:
     for arg in args:
         if _read_only_lookup_arg_is_redirection(arg):
             return False
+        if "`" in arg or re.search(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?!_-]|\{|\()", arg):
+            return False
         if expect_pattern:
             expect_pattern = False
             if not arg:
@@ -328,7 +331,8 @@ def _read_only_lookup_filter_rg_args_are_safe(args: list[str]) -> bool:
         if saw_pattern:
             return False
         saw_pattern = bool(arg)
-    return saw_pattern and saw_no_config and not expect_pattern
+    config_is_disabled = saw_no_config or not os.environ.get("RIPGREP_CONFIG_PATH", "").strip()
+    return saw_pattern and config_is_disabled and not expect_pattern
 
 
 def _read_only_lookup_arg_is_redirection(arg: str) -> bool:

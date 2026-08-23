@@ -9,7 +9,12 @@ WATCH_ONLY_APPROVAL_MIGRATION_VERSION = 23
 
 
 class ApprovalSchemaMigrator(Protocol):
-    def _ensure_approval_column(self, connection: sqlite3.Connection, column: str, ddl: str) -> None: ...
+    def _ensure_approval_column(
+        self,
+        connection: sqlite3.Connection,
+        column_name: str,
+        column_type: str,
+    ) -> None: ...
 
     def _schema_version_applied(self, connection: sqlite3.Connection, *, version: int) -> bool: ...
 

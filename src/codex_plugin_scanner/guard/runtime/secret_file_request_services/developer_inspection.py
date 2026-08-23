@@ -216,6 +216,7 @@ def _compound_developer_effect_graph(
             continue
         if (
             command_name in _READ_ONLY_LOOKUP_COMMANDS
+            and (segment.control_before != ("|",) or safe_pipe_filter)
             and not (
                 command_name == "rg"
                 and not _ripgrep_config_is_disabled(args)
