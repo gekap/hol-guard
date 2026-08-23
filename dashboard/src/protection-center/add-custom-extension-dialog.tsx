@@ -32,6 +32,7 @@ import {
   addDialogSubmitLabel,
   allowActionLabel,
   blockActionLabel,
+  commandFieldLabel,
   dialogIntro,
   filterCountCopy,
   ProjectSwitcher,
@@ -39,6 +40,10 @@ import {
   suggestionSummary,
 } from "./add-custom-extension-support";
 import { CustomExtensionCommandList, withCommandState } from "./custom-extension-commands";
+import {
+  extensionPolicyRadioTabStop,
+  nextExtensionPolicyRadioIndex,
+} from "../extension-policy-panel";
 import { useResolvedApprovalGate } from "../use-resolved-approval-gate";
 import { InlineError } from "./components/protection-primitives";
 
@@ -244,7 +249,7 @@ export function AddCustomExtensionWorkspace(props: {
         </p>
       </header>
       <label htmlFor="custom-extension-command" className="mt-4 block text-sm font-semibold text-brand-dark">
-        {showingPackageCatalog ? "Find a script" : showingMcpCatalog ? "Launch command" : "Command"}
+        {commandFieldLabel(recognized?.surface ?? null)}
       </label>
       <input
         id="custom-extension-command"
@@ -390,17 +395,41 @@ function BulkPolicyPicker(props: {
     { value: "allow", label: "Allow all" },
     { value: "block", label: "Block all" },
   ];
+  const selected = props.value === "mixed" ? "inherit" : props.value;
+  const tabStopIndex = extensionPolicyRadioTabStop(choices, selected, props.disabled);
+  const chooseAdjacent = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const next = nextExtensionPolicyRadioIndex(choices, index, event.key, props.disabled);
+    if (next < 0) return;
+    event.preventDefault();
+    props.onChange(choices[next]!.value);
+    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
+  };
   return (
-    <div role="radiogroup" aria-label="All tools protection setting" className="guard-segmented mt-4 w-fit">
-      {choices.map((choice) => (
-        <BulkPolicyChoice
-          key={choice.value}
-          choice={choice}
-          checked={props.value === choice.value}
-          disabled={props.disabled}
-          onChoose={props.onChange}
-        />
-      ))}
+    <div className="mt-4">
+      <div
+        role="radiogroup"
+        aria-label="All tools protection setting"
+        aria-describedby={props.value === "mixed" ? "bulk-policy-mixed" : undefined}
+        className="guard-segmented w-fit"
+      >
+        {choices.map((choice, index) => (
+          <BulkPolicyChoice
+            key={choice.value}
+            choice={choice}
+            checked={props.value === choice.value}
+            tabIndex={!props.disabled && index === tabStopIndex ? 0 : -1}
+            disabled={props.disabled}
+            index={index}
+            onChoose={props.onChange}
+            onAdjacent={chooseAdjacent}
+          />
+        ))}
+      </div>
+      {props.value === "mixed" ? (
+        <p id="bulk-policy-mixed" className="mt-2 text-xs leading-5 text-brand-dark/70">
+          Custom mix. Pick Recommended, Allow all, or Block all to reset every tool.
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -408,18 +437,26 @@ function BulkPolicyPicker(props: {
 function BulkPolicyChoice(props: {
   choice: { value: LocalCliCommandState; label: string };
   checked: boolean;
+  tabIndex: number;
   disabled: boolean;
+  index: number;
   onChoose: (state: LocalCliCommandState) => void;
+  onAdjacent: (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => void;
 }) {
   const handleClick = useCallback(() => {
     props.onChoose(props.choice.value);
+  }, [props]);
+  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    props.onAdjacent(event, props.index);
   }, [props]);
   return (
     <button
       type="button"
       role="radio"
       aria-checked={props.checked}
+      tabIndex={props.tabIndex}
       disabled={props.disabled}
+      onKeyDown={handleKeyDown}
       onClick={handleClick}
       className="min-h-11 px-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-45"
     >

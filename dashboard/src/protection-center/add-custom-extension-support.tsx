@@ -29,6 +29,12 @@ export function surfaceBadge(surface: LocalCliItem["surface"]): string | null {
   return null;
 }
 
+export function commandFieldLabel(surface: LocalCliItem["surface"] | null): string {
+  if (surface === "package-scripts") return "Find a script";
+  if (surface === "mcp") return "Launch command";
+  return "Command";
+}
+
 export function allowActionLabel(surface: LocalCliItem["surface"]): string {
   if (surface === "mcp") return "Allow this server";
   if (surface === "package-scripts") return "Allow these scripts";

@@ -2777,6 +2777,11 @@ function addDialogSubmitLabel(input) {
   }
   return allowActionLabel(input.recognized.surface);
 }
+function commandFieldLabel(surface) {
+  if (surface === "package-scripts") return "Find a script";
+  if (surface === "mcp") return "Launch command";
+  return "Command";
+}
 function allowActionLabel(surface) {
   if (surface === "mcp") return "Allow this server";
   if (surface === "package-scripts") return "Allow these scripts";
@@ -3095,7 +3100,7 @@ function AddCustomExtensionWorkspace(props) {
           /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { id: "add-custom-extension-title", className: "text-2xl font-semibold tracking-tight text-brand-dark", children: "Add a custom extension" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-2 text-sm leading-6 text-slate-500", children: dialogIntro(rememberedProjects.length > 0, recognized?.surface ?? null) })
         ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "custom-extension-command", className: "mt-4 block text-sm font-semibold text-brand-dark", children: showingPackageCatalog ? "Find a script" : showingMcpCatalog ? "Launch command" : "Command" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "custom-extension-command", className: "mt-4 block text-sm font-semibold text-brand-dark", children: commandFieldLabel(recognized?.surface ?? null) }),
         /* @__PURE__ */ jsxRuntimeExports.jsx(
           "input",
           {
@@ -3199,20 +3204,47 @@ function BulkPolicyPicker(props) {
     { value: "allow", label: "Allow all" },
     { value: "block", label: "Block all" }
   ];
-  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { role: "radiogroup", "aria-label": "All tools protection setting", className: "guard-segmented mt-4 w-fit", children: choices.map((choice) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-    BulkPolicyChoice,
-    {
-      choice,
-      checked: props.value === choice.value,
-      disabled: props.disabled,
-      onChoose: props.onChange
-    },
-    choice.value
-  )) });
+  const selected = props.value === "mixed" ? "inherit" : props.value;
+  const tabStopIndex = extensionPolicyRadioTabStop(choices, selected, props.disabled);
+  const chooseAdjacent = (event, index) => {
+    const next = nextExtensionPolicyRadioIndex(choices, index, event.key, props.disabled);
+    if (next < 0) return;
+    event.preventDefault();
+    props.onChange(choices[next].value);
+    event.currentTarget.parentElement?.querySelectorAll('[role="radio"]')[next]?.focus();
+  };
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-4", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx(
+      "div",
+      {
+        role: "radiogroup",
+        "aria-label": "All tools protection setting",
+        "aria-describedby": props.value === "mixed" ? "bulk-policy-mixed" : void 0,
+        className: "guard-segmented w-fit",
+        children: choices.map((choice, index) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+          BulkPolicyChoice,
+          {
+            choice,
+            checked: props.value === choice.value,
+            tabIndex: !props.disabled && index === tabStopIndex ? 0 : -1,
+            disabled: props.disabled,
+            index,
+            onChoose: props.onChange,
+            onAdjacent: chooseAdjacent
+          },
+          choice.value
+        ))
+      }
+    ),
+    props.value === "mixed" ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { id: "bulk-policy-mixed", className: "mt-2 text-xs leading-5 text-brand-dark/70", children: "Custom mix. Pick Recommended, Allow all, or Block all to reset every tool." }) : null
+  ] });
 }
 function BulkPolicyChoice(props) {
   const handleClick = reactExports.useCallback(() => {
     props.onChoose(props.choice.value);
+  }, [props]);
+  const handleKeyDown = reactExports.useCallback((event) => {
+    props.onAdjacent(event, props.index);
   }, [props]);
   return /* @__PURE__ */ jsxRuntimeExports.jsx(
     "button",
@@ -3220,7 +3252,9 @@ function BulkPolicyChoice(props) {
       type: "button",
       role: "radio",
       "aria-checked": props.checked,
+      tabIndex: props.tabIndex,
       disabled: props.disabled,
+      onKeyDown: handleKeyDown,
       onClick: handleClick,
       className: "min-h-11 px-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-45",
       children: props.choice.label
