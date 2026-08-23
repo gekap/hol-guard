@@ -158,13 +158,33 @@ class TestPresetCliCommands:
 
         updated = update_guard_settings(
             home_dir,
-            {"protection_posture": "protected"},
+            {"protection_posture": "Protected"},
             skip_approval_gate=True,
         )
 
         assert updated.protection_posture == "protected"
         assert updated.mode == "enforce"
         assert updated.harness_actions == {"cursor": "block"}
+
+    def test_repeating_protected_posture_preserves_harness_review(self, tmp_path: Path) -> None:
+        home_dir = tmp_path / "home"
+        config_toml = (
+            'mode = "enforce"\n'
+            'protection_posture = "protected"\n'
+            "protection_posture_explicit = true\n"
+            'security_level = "balanced"\n'
+            "[harnesses.codex]\n"
+            'default_action = "require-reapproval"\n'
+        )
+        _write_text(home_dir / "config.toml", config_toml)
+
+        updated = update_guard_settings(
+            home_dir,
+            {"protection_posture": "protected"},
+            skip_approval_gate=True,
+        )
+
+        assert updated.harness_actions == {"codex": "require-reapproval"}
 
 
 class TestCustomModeActivation:

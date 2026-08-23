@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Set
 
+from .protection_posture import normalize_protection_posture
+
 
 def apply_named_posture_harness_policy(
     next_payload: dict[str, object],
@@ -20,8 +22,11 @@ def apply_named_posture_harness_policy(
         and incoming.get("risk_actions") == {}
         and incoming.get("harness_risk_actions") == {}
     )
-    selects_named_posture = incoming.get("protection_posture") in {"protected", "extra_careful"}
-    if not selects_named_level and not selects_named_posture:
+    requested_posture = normalize_protection_posture(incoming.get("protection_posture"))
+    current_posture = normalize_protection_posture(next_payload.get("protection_posture"))
+    current_is_watch = current_posture == "watch" or (current_posture is None and next_payload.get("mode") == "observe")
+    leaves_watch = current_is_watch and requested_posture in {"protected", "extra_careful"}
+    if not selects_named_level and not leaves_watch:
         return next_payload
     updated = dict(next_payload)
     updated["harnesses"] = without_blanket_harness_reapproval(updated.get("harnesses"))
