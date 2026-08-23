@@ -8,6 +8,7 @@ from typing import cast
 
 from ..runtime.actions import apply_patch_target_paths
 from ..runtime.secret_sensitivity import classify_secret_path
+from .commands_support_codex_git_config import git_common_dir, git_dir_from_file
 
 _AGENT_INSTRUCTION_FILE_NAMES = frozenset(
     {
@@ -31,25 +32,18 @@ def _linked_worktree_root(candidate: Path, *, workspace: Path) -> Path | None:
         if not git_file.is_file():
             continue
         try:
-            marker = git_file.read_text(encoding="utf-8").strip()
-            prefix, separator, value = marker.partition(":")
-            if separator != ":" or prefix.casefold() != "gitdir" or not value.strip():
+            git_dir = git_dir_from_file(git_file)
+            if git_dir is None or not git_dir.is_dir():
                 return None
-            git_dir_candidate = Path(value.strip()).expanduser()
-            if not git_dir_candidate.is_absolute():
-                git_dir_candidate = worktree_root / git_dir_candidate
-            git_dir = git_dir_candidate.resolve(strict=True)
             backlink = (git_dir / "gitdir").read_text(encoding="utf-8").strip()
             backlink_path = Path(backlink).expanduser()
             if not backlink_path.is_absolute():
                 backlink_path = git_dir / backlink_path
             if backlink_path.resolve(strict=True) != git_file.resolve(strict=True):
                 return None
-            common_dir_value = (git_dir / "commondir").read_text(encoding="utf-8").strip()
-            common_dir_candidate = Path(common_dir_value).expanduser()
-            if not common_dir_candidate.is_absolute():
-                common_dir_candidate = git_dir / common_dir_candidate
-            common_dir = common_dir_candidate.resolve(strict=True)
+            common_dir = git_common_dir(git_dir).resolve(strict=True)
+            if not common_dir.is_dir():
+                return None
             repository_root = common_dir.parent
             if repository_root.is_relative_to(workspace) and candidate.is_relative_to(worktree_root):
                 return worktree_root

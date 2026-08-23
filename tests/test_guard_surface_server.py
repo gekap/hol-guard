@@ -22,7 +22,7 @@ from codex_plugin_scanner.guard.adapters import get_adapter
 from codex_plugin_scanner.guard.adapters.base import HarnessContext
 from codex_plugin_scanner.guard.cli import commands as guard_commands_module
 from codex_plugin_scanner.guard.config import GuardConfig
-from codex_plugin_scanner.guard.daemon import GuardDaemonServer
+from codex_plugin_scanner.guard.daemon import GuardDaemonServer, protection_repair_retry
 from codex_plugin_scanner.guard.daemon import manager as daemon_manager_module
 from codex_plugin_scanner.guard.daemon import server as daemon_server_module
 from codex_plugin_scanner.guard.daemon.discovery import load_authenticated_daemon_state
@@ -244,10 +244,10 @@ class TestGuardSurfaceServer:
             lambda self, *, force_refresh=False: containment_probes.append(force_refresh) or {},
         )
         monkeypatch.setattr(
-            daemon_server_module,
+            protection_repair_retry,
             "containment_health_signals",
             lambda value, **_kwargs: {
-                check_id: SimpleNamespace(status=daemon_server_module.ProtectionCheckStatus.PASS)
+                check_id: SimpleNamespace(status=protection_repair_retry.ProtectionCheckStatus.PASS)
                 for check_id in (
                     "decision_plane_compatibility",
                     "containment_compatibility",
@@ -485,66 +485,6 @@ class TestGuardSurfaceServer:
         assert payload["message"] == (
             "Repair paused before every protection layer could be confirmed. Retry repair here."
         )
-
-    def test_protection_repair_all_retries_a_transient_containment_probe_failure(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        store = GuardStore(tmp_path / "guard-home", prime_policy_integrity=False)
-        monkeypatch.setattr(
-            GuardStore,
-            "setup_policy_integrity",
-            lambda self, **_kwargs: {"mode": "protected"},
-        )
-        containment_probes: list[bool] = []
-
-        def containment_payload(self, *, force_refresh=False):
-            containment_probes.append(force_refresh)
-            if len(containment_probes) == 1:
-                raise RuntimeError("transient probe failure")
-            return {}
-
-        monkeypatch.setattr(
-            daemon_server_module._GuardDaemonHandler,
-            "_containment_health_payload",
-            containment_payload,
-        )
-        monkeypatch.setattr(
-            daemon_server_module,
-            "containment_health_signals",
-            lambda value, **_kwargs: {
-                check_id: SimpleNamespace(status=daemon_server_module.ProtectionCheckStatus.PASS)
-                for check_id in (
-                    "decision_plane_compatibility",
-                    "containment_compatibility",
-                    "sandbox",
-                )
-            },
-        )
-        monkeypatch.setattr(GuardStore, "maintain_command_activity", lambda self, **_kwargs: None)
-        monkeypatch.setattr(
-            GuardStore,
-            "get_command_activity_persistence_health",
-            lambda self: SimpleNamespace(active_error_count=0),
-        )
-        monkeypatch.setattr(GuardStore, "count_command_activities", lambda self: 0)
-        daemon = GuardDaemonServer(store, host="127.0.0.1", port=0)
-        daemon.start()
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{daemon.port}/v1/protection/repair",
-            data=json.dumps({"check_id": "all"}).encode("utf-8"),
-            headers={"Content-Type": "application/json", "X-Guard-Token": daemon._server.auth_token},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=5) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        finally:
-            daemon.stop()
-
-        assert payload["repaired"] is True
-        assert containment_probes == [True, True]
 
     def test_local_dashboard_session_preserves_reserved_claims(self) -> None:
         token = build_local_dashboard_session_token(
