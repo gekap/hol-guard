@@ -21,6 +21,7 @@ def _read_only_lookup_filter_segment_is_safe(
     args: list[str],
     *,
     home_dir: Path | None = None,
+    require_explicit_rg_no_config: bool = False,
 ) -> bool:
     if command == "cat":
         return not args or all(arg == "-" or (arg.startswith("-") and ">" not in arg) for arg in args)
@@ -31,8 +32,17 @@ def _read_only_lookup_filter_segment_is_safe(
     if command in {"grep", "egrep", "fgrep"}:
         return _read_only_lookup_filter_grep_args_are_safe(args, home_dir=home_dir)
     if command == "rg":
-        return _read_only_lookup_filter_rg_args_are_safe(args)
+        return (
+            not require_explicit_rg_no_config or "--no-config" in args
+        ) and _read_only_lookup_filter_rg_args_are_safe(args)
     return False
+
+
+def _github_output_filter_segment_is_safe(command: str, args: list[str], *, home_dir: Path | None = None) -> bool:
+    """Require explicit config isolation for filters over remote output."""
+    return _read_only_lookup_filter_segment_is_safe(
+        command, args, home_dir=home_dir, require_explicit_rg_no_config=True
+    )
 
 
 def _read_only_lookup_may_be_primary(
@@ -409,6 +419,7 @@ __all__ = [
     "_GREP_PATTERN_OPTIONS",
     "_GREP_SKIP_NEXT_OPTIONS",
     "_attached_redirection_operator",
+    "_github_output_filter_segment_is_safe",
     "_read_only_lookup_arg_is_redirection",
     "_read_only_lookup_filter_grep_args_are_safe",
     "_read_only_lookup_filter_rg_args_are_safe",
