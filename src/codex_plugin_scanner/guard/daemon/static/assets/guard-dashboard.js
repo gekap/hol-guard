@@ -28124,6 +28124,35 @@ function ApprovalPasswordModal(props) {
     }
   );
 }
+async function fetchResolvedApprovalGate(fetcher = fetchSettings) {
+  const payload = await fetcher();
+  return payload.settings.approval_gate ?? null;
+}
+function useResolvedApprovalGate(initialGate) {
+  const [resolvedApprovalGate, setResolvedApprovalGate] = reactExports.useState(initialGate);
+  reactExports.useEffect(() => {
+    setResolvedApprovalGate(initialGate);
+  }, [initialGate]);
+  const refreshApprovalGate = reactExports.useCallback(async (options) => {
+    try {
+      const gate = await fetchResolvedApprovalGate();
+      setResolvedApprovalGate(gate);
+      return gate;
+    } catch (error) {
+      if (options?.failClosed) {
+        throw error;
+      }
+      return resolvedApprovalGate;
+    }
+  }, [resolvedApprovalGate]);
+  const resolveApprovalGate = reactExports.useCallback(async (options) => {
+    if (resolvedApprovalGate !== null) {
+      return resolvedApprovalGate;
+    }
+    return refreshApprovalGate(options);
+  }, [refreshApprovalGate, resolvedApprovalGate]);
+  return { resolvedApprovalGate, resolveApprovalGate, refreshApprovalGate };
+}
 function ConsolidatedEvidenceAlert({ items }) {
   const [index, setIndex] = reactExports.useState(0);
   reactExports.useEffect(() => {
@@ -28917,14 +28946,26 @@ function ReviewDecisionCard(props) {
       setLastAction(action);
       const requestedScope = action === "allow" ? allowScope : blockScope;
       const gate = props.approvalGate;
-      const gateRequiresPassword = gate?.enabled === true && gate?.configured === true && requiresApprovalPasswordPrompt(gate.cooldown_active, gate.strict_all_decisions, requestedScope) && !approvalProofRecentlySatisfied(gate);
-      if (gateRequiresPassword) {
-        setPendingAction(action);
-        setPendingContractKey(decisionContractKey);
-        setErrorMessage(null);
+      const gateEnabled = gate?.enabled === true && gate?.configured === true && requiresApprovalPasswordPrompt(gate.cooldown_active, gate.strict_all_decisions, requestedScope);
+      if (!gateEnabled) {
+        void handleResolve(action);
         return;
       }
-      void handleResolve(action);
+      setErrorMessage(null);
+      if (!approvalProofRecentlySatisfied(gate)) {
+        setPendingAction(action);
+        setPendingContractKey(decisionContractKey);
+        return;
+      }
+      void (async () => {
+        const fresh = await fetchResolvedApprovalGate().catch(() => gate);
+        if (approvalProofRecentlySatisfied(fresh ?? gate)) {
+          void handleResolve(action);
+          return;
+        }
+        setPendingAction(action);
+        setPendingContractKey(decisionContractKey);
+      })();
     },
     [
       allowScope,
@@ -31418,7 +31459,7 @@ export {
   HiMiniEye as Z,
   HiMiniXCircle as _,
   EvidenceActivityHeatmapMini as a,
-  EvidenceActionDetail as a$,
+  EvidenceActionList as a$,
   HiMiniClipboard as a0,
   PROTECTION_POSTURE_COPY as a1,
   POSTURE_OUTCOME_COLUMNS as a2,
@@ -31429,33 +31470,33 @@ export {
   HiMiniBellAlert as a7,
   HiMiniAdjustmentsHorizontal as a8,
   HiMiniCircleStack as a9,
-  HiMiniInformationCircle as aA,
-  isApprovalProofSubmitDisabled as aB,
-  ApprovalProofFieldInputs as aC,
-  buildApprovalProofCredentials as aD,
-  GenIcon as aE,
-  HiMiniGlobeAlt as aF,
-  HiMiniCube as aG,
-  HiMiniServerStack as aH,
-  HiMiniFolder as aI,
-  FaWindows as aJ,
-  FaAws as aK,
-  approvalProofRecentlySatisfied as aL,
-  HiMiniArrowLeft as aM,
-  HiMiniPlus as aN,
-  guardAwareHref as aO,
-  fetchApprovalPage as aP,
-  fetchPolicy as aQ,
-  HiMiniHome as aR,
-  guardActionPresentation as aS,
-  DEFAULT_FILTER_STATE as aT,
-  filterEvidence as aU,
-  sortEvidence as aV,
-  computeMetrics as aW,
-  CommandActivityWorkspace as aX,
-  EvidenceFilterBar as aY,
-  EvidenceInsightStrip as aZ,
-  EvidenceActionList as a_,
+  HiMiniArrowPath as aA,
+  HiMiniInformationCircle as aB,
+  isApprovalProofSubmitDisabled as aC,
+  ApprovalProofFieldInputs as aD,
+  buildApprovalProofCredentials as aE,
+  GenIcon as aF,
+  HiMiniGlobeAlt as aG,
+  HiMiniCube as aH,
+  HiMiniServerStack as aI,
+  HiMiniFolder as aJ,
+  FaWindows as aK,
+  FaAws as aL,
+  approvalProofRecentlySatisfied as aM,
+  HiMiniArrowLeft as aN,
+  HiMiniPlus as aO,
+  guardAwareHref as aP,
+  fetchApprovalPage as aQ,
+  fetchPolicy as aR,
+  HiMiniHome as aS,
+  guardActionPresentation as aT,
+  DEFAULT_FILTER_STATE as aU,
+  filterEvidence as aV,
+  sortEvidence as aW,
+  computeMetrics as aX,
+  CommandActivityWorkspace as aY,
+  EvidenceFilterBar as aZ,
+  EvidenceInsightStrip as a_,
   TabBar as aa,
   resolveProtectionLevelCopy as ab,
   fetchSettings as ac,
@@ -31481,83 +31522,84 @@ export {
   approvalGateCooldownLabel as aw,
   fetchLocalCliApi as ax,
   fetchExtensionControlApi as ay,
-  HiMiniArrowPath as az,
+  useResolvedApprovalGate as az,
   HiMiniCommandLine as b,
-  fetchSupplyChainBundle as b$,
-  policyIdentityKey as b0,
-  HiMiniChartBar as b1,
-  runHarnessAction as b2,
-  GuardHarnessActionError as b3,
-  HiMiniRocketLaunch as b4,
-  HiMiniTrash as b5,
-  clearLabelForScope as b6,
-  formatHarnessCommand as b7,
-  isSupplyChainAuditIncomplete as b8,
-  isSupplyChainAuditEvidence as b9,
-  __vitePreload as bA,
-  scopeLabel as bB,
-  HiMiniDocumentText as bC,
-  HiMiniCloudArrowUp as bD,
-  HiMiniCheck as bE,
-  HiMiniCodeBracket as bF,
-  HiMiniClipboardDocument as bG,
-  HiMiniUsers as bH,
-  HiMiniIdentification as bI,
-  policyActionLabel as bJ,
-  createCloudExceptionRequest as bK,
-  HiMiniArrowRight as bL,
-  HiMiniPuzzlePiece as bM,
-  fetchCloudExceptions as bN,
-  fetchCloudExceptionRequests as bO,
-  downloadBlob as bP,
-  PolicyStatField as bQ,
-  PaginationControls as bR,
-  HiMiniNoSymbol as bS,
-  HiMiniArrowDownTray as bT,
-  HiMiniQueueList as bU,
-  Surface as bV,
-  HiMiniCheckBadge as bW,
-  fetchMcpPolicyRequest as bX,
-  resolveMcpPolicyRequest as bY,
-  HiMiniDocumentPlus as bZ,
-  HiMiniDocumentMagnifyingGlass as b_,
-  readString$1 as ba,
-  isRecord$2 as bb,
-  HiMiniClock as bc,
-  IconActionButton as bd,
-  HiMiniBeaker as be,
-  ActivationSummary as bf,
-  ActionResultPanel as bg,
-  HiMiniBugAnt as bh,
-  GuardModalLayer as bi,
-  ConnectFlowCard as bj,
-  ApprovalProofInline as bk,
-  HiMiniArrowTopRightOnSquare as bl,
-  HiMiniCloudArrowDown as bm,
-  fetchPackageFirewallStatus as bn,
-  runPackageAudit as bo,
-  resolveSupplyChainAuditFailure as bp,
-  runPackageSync as bq,
-  startPackageFirewallConnect as br,
-  PACKAGE_FIREWALL_CONNECT_POPUP_BLOCKED_MESSAGE as bs,
-  repairSupplyChainProtection as bt,
-  runPackageFirewallAction as bu,
-  parseInterceptProofSnapshot as bv,
-  activatePackageFirewallRuntime as bw,
-  EntitlementNotice as bx,
-  fetchReceipts as by,
-  lazyWorkspace as bz,
+  HiMiniDocumentMagnifyingGlass as b$,
+  EvidenceActionDetail as b0,
+  policyIdentityKey as b1,
+  HiMiniChartBar as b2,
+  runHarnessAction as b3,
+  GuardHarnessActionError as b4,
+  HiMiniRocketLaunch as b5,
+  HiMiniTrash as b6,
+  clearLabelForScope as b7,
+  formatHarnessCommand as b8,
+  isSupplyChainAuditIncomplete as b9,
+  lazyWorkspace as bA,
+  __vitePreload as bB,
+  scopeLabel as bC,
+  HiMiniDocumentText as bD,
+  HiMiniCloudArrowUp as bE,
+  HiMiniCheck as bF,
+  HiMiniCodeBracket as bG,
+  HiMiniClipboardDocument as bH,
+  HiMiniUsers as bI,
+  HiMiniIdentification as bJ,
+  policyActionLabel as bK,
+  createCloudExceptionRequest as bL,
+  HiMiniArrowRight as bM,
+  HiMiniPuzzlePiece as bN,
+  fetchCloudExceptions as bO,
+  fetchCloudExceptionRequests as bP,
+  downloadBlob as bQ,
+  PolicyStatField as bR,
+  PaginationControls as bS,
+  HiMiniNoSymbol as bT,
+  HiMiniArrowDownTray as bU,
+  HiMiniQueueList as bV,
+  Surface as bW,
+  HiMiniCheckBadge as bX,
+  fetchMcpPolicyRequest as bY,
+  resolveMcpPolicyRequest as bZ,
+  HiMiniDocumentPlus as b_,
+  isSupplyChainAuditEvidence as ba,
+  readString$1 as bb,
+  isRecord$2 as bc,
+  HiMiniClock as bd,
+  IconActionButton as be,
+  HiMiniBeaker as bf,
+  ActivationSummary as bg,
+  ActionResultPanel as bh,
+  HiMiniBugAnt as bi,
+  GuardModalLayer as bj,
+  ConnectFlowCard as bk,
+  ApprovalProofInline as bl,
+  HiMiniArrowTopRightOnSquare as bm,
+  HiMiniCloudArrowDown as bn,
+  fetchPackageFirewallStatus as bo,
+  runPackageAudit as bp,
+  resolveSupplyChainAuditFailure as bq,
+  runPackageSync as br,
+  startPackageFirewallConnect as bs,
+  PACKAGE_FIREWALL_CONNECT_POPUP_BLOCKED_MESSAGE as bt,
+  repairSupplyChainProtection as bu,
+  runPackageFirewallAction as bv,
+  parseInterceptProofSnapshot as bw,
+  activatePackageFirewallRuntime as bx,
+  EntitlementNotice as by,
+  fetchReceipts as bz,
   HiMiniChevronRight as c,
-  isSupplyChainScannerEvidence as c0,
-  isBlockedGuardAction as c1,
-  HiMiniShieldExclamation as c2,
-  HiMiniComputerDesktop as c3,
-  HiMiniChevronLeft as c4,
-  HiMiniFunnel as c5,
-  HiMiniArrowDown as c6,
-  HiMiniArrowUp as c7,
-  runAuditRemediation as c8,
-  HiMiniSignal as c9,
+  fetchSupplyChainBundle as c0,
+  isSupplyChainScannerEvidence as c1,
+  isBlockedGuardAction as c2,
+  HiMiniShieldExclamation as c3,
+  HiMiniComputerDesktop as c4,
+  HiMiniChevronLeft as c5,
+  HiMiniFunnel as c6,
+  HiMiniArrowDown as c7,
+  HiMiniArrowUp as c8,
+  runAuditRemediation as c9,
+  HiMiniSignal as ca,
   createCommandActivityClient as d,
   updateSettings as e,
   fetchCommandActivityApi as f,

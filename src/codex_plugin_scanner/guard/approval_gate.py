@@ -193,8 +193,7 @@ def public_config(guard_home: Path, *, now: str | None = None) -> ApprovalGatePu
             fail_closed=bool(state.get("fail_closed") is True),
             strict_all_decisions=bool(state.get("strict_all_decisions") is True),
             totp_enabled=bool(state.get("totp_enabled") is True),
-            totp_pending=_has_pending_totp(state, now_epoch),
-            totp_recent_satisfied=_totp_enabled(state) and _recent_totp_satisfied_locked(guard_home, state, now_epoch=now_epoch),
+            totp_pending=_has_pending_totp(state, now_epoch), totp_recent_satisfied=_totp_enabled(state) and _recent_totp_satisfied_locked(guard_home, state, now_epoch=now_epoch),
         )
 
 
@@ -1003,7 +1002,7 @@ def _verify_or_raise_locked(
     accepted_counter: int | None = None
     factor_set = ("password",)
     if _totp_enabled(state):
-        if gate_input.totp_code is None or _recent_totp_satisfied_locked(guard_home, state, now_epoch=now_epoch):
+        if gate_input.totp_code is None:
             if not _recent_totp_satisfied_locked(guard_home, state, now_epoch=now_epoch):
                 raise ApprovalGateError("approval_gate_totp_required", "TOTP code is required.")
             accepted_counter = _optional_int(state.get("totp_last_counter"))
@@ -1184,6 +1183,7 @@ def _verify_totp_or_raise(
         now_epoch=now_epoch,
         skew_steps=APPROVAL_GATE_TOTP_SKEW_STEPS,
         last_accepted_counter=_optional_int(state.get("totp_last_counter")),
+        allow_last_counter=_recent_totp_satisfied_locked(guard_home, state, now_epoch=now_epoch),
     )
     if accepted_counter is None:
         _record_failed_attempt(guard_home, state, factor="totp", now=_iso_from_epoch(now_epoch))

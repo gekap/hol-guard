@@ -1,5 +1,5 @@
-import { ax as fetchLocalCliApi, r as reactExports, ay as fetchExtensionControlApi, j as jsxRuntimeExports, a6 as HiMiniLockClosed, M as HiMiniExclamationTriangle, az as HiMiniArrowPath, t as HiMiniShieldCheck, aA as HiMiniInformationCircle, aB as isApprovalProofSubmitDisabled, z as HiMiniXMark, aC as ApprovalProofFieldInputs, aD as buildApprovalProofCredentials, aE as GenIcon, N as HiMiniBolt, aF as HiMiniGlobeAlt, aG as HiMiniCube, I as HiMiniCloud, aH as HiMiniServerStack, b as HiMiniCommandLine, aI as HiMiniFolder, aJ as FaWindows, aK as FaAws, o as HiMiniCheckCircle, c as HiMiniChevronRight, C as HiMiniChevronDown, aL as approvalProofRecentlySatisfied, aM as HiMiniArrowLeft, aN as HiMiniPlus, $ as HiMiniClipboardDocumentCheck, a0 as HiMiniClipboard, as as HiMiniMagnifyingGlass, ar as WorkspacePageHeader, aO as guardAwareHref } from "../guard-dashboard.js";
-import { u as useResolvedApprovalGate, A as ApprovalProofModal } from "./approval-proof-modal.js";
+import { ax as fetchLocalCliApi, r as reactExports, ay as fetchExtensionControlApi, j as jsxRuntimeExports, az as useResolvedApprovalGate, a6 as HiMiniLockClosed, M as HiMiniExclamationTriangle, aA as HiMiniArrowPath, t as HiMiniShieldCheck, aB as HiMiniInformationCircle, aC as isApprovalProofSubmitDisabled, z as HiMiniXMark, aD as ApprovalProofFieldInputs, aE as buildApprovalProofCredentials, aF as GenIcon, N as HiMiniBolt, aG as HiMiniGlobeAlt, aH as HiMiniCube, I as HiMiniCloud, aI as HiMiniServerStack, b as HiMiniCommandLine, aJ as HiMiniFolder, aK as FaWindows, aL as FaAws, o as HiMiniCheckCircle, c as HiMiniChevronRight, C as HiMiniChevronDown, aM as approvalProofRecentlySatisfied, aN as HiMiniArrowLeft, aO as HiMiniPlus, $ as HiMiniClipboardDocumentCheck, a0 as HiMiniClipboard, as as HiMiniMagnifyingGlass, ar as WorkspacePageHeader, aP as guardAwareHref } from "../guard-dashboard.js";
+import { A as ApprovalProofModal } from "./approval-proof-modal.js";
 const EXTENSION_ID_PATTERN = /^command\.[a-z0-9]+(?:[.-][a-z0-9]+)*$/;
 const RULE_ID_PATTERN = /^command\.[a-z0-9]+(?:[.-][a-z0-9]+)*$/;
 const DEFAULT_EXTENSION_DETAIL_URL_STATE = {
@@ -2785,9 +2785,12 @@ function addDialogSubmitLabel(input) {
   }
   return allowActionLabel(input.recognized.surface);
 }
-function enrollConfirmCopy(surface, recentlySatisfied) {
+function enrollConfirmCopy(surface, recentlySatisfied, totpEnabled) {
   if (recentlySatisfied) {
     return "Recently confirmed with your authenticator. Save these settings.";
+  }
+  if (!totpEnabled) {
+    return "Enter your approval password to save these settings.";
   }
   if (surface === "mcp") {
     return "Enter the current authenticator code to save this server.";
@@ -2796,6 +2799,11 @@ function enrollConfirmCopy(surface, recentlySatisfied) {
     return "Enter the current authenticator code to save these scripts.";
   }
   return "Enter the current authenticator code to save this tool.";
+}
+function enrollSubmitDisabled(input) {
+  if (input.recognized === null) return input.command.trim() === "" || input.busy;
+  if (!input.confirming) return input.busy;
+  return !input.proofReady || input.proofBlocked;
 }
 function commandFieldLabel(surface) {
   if (surface === "package-scripts") return "Find a script";
@@ -3167,7 +3175,14 @@ function AddCustomExtensionWorkspace(props) {
     if (step !== "confirm") {
       setStep("confirm");
       setError(null);
-      void refreshApprovalGate();
+      setBusy(true);
+      try {
+        await refreshApprovalGate({ failClosed: true });
+      } catch {
+        setError("Guard could not load local approval settings yet.");
+      } finally {
+        setBusy(false);
+      }
       return;
     }
     if (pending === null) return;
@@ -3205,11 +3220,18 @@ function AddCustomExtensionWorkspace(props) {
   }, []);
   const proofReady = pending !== null && recognized !== null;
   const confirming = step === "confirm" && recognized !== null;
-  const submitDisabled = recognized === null ? command.trim() === "" || busy : confirming ? !proofReady || isApprovalProofSubmitDisabled(
-    resolvedApprovalGate,
-    { approvalPassword: password, approvalTotpCode: totp },
+  const submitDisabled = enrollSubmitDisabled({
+    recognized,
+    command,
+    confirming,
+    proofReady,
+    proofBlocked: isApprovalProofSubmitDisabled(
+      resolvedApprovalGate,
+      { approvalPassword: password, approvalTotpCode: totp },
+      busy
+    ),
     busy
-  ) : busy;
+  });
   const showingPackageCatalog = recognized?.surface === "package-scripts";
   const showingMcpCatalog = recognized?.surface === "mcp";
   const showingCatalog = showingPackageCatalog || showingMcpCatalog;
@@ -3241,7 +3263,7 @@ function AddCustomExtensionWorkspace(props) {
           /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { id: "custom-extension-confirm-title", className: "text-2xl font-semibold tracking-tight text-brand-dark", children: pending === "blocked" ? blockActionLabel(recognized.surface) : allowActionLabel(recognized.surface) }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-2 text-sm leading-6 text-slate-500", children: recognized.source_label ? `${recognized.name} · ${recognized.source_label}` : recognized.name }),
           summary ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-2 text-sm leading-6 text-slate-500", children: summary }) : null,
-          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-5 text-sm leading-6 text-brand-dark/80", children: enrollConfirmCopy(recognized.surface, recentlySatisfied) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-5 text-sm leading-6 text-brand-dark/80", children: enrollConfirmCopy(recognized.surface, recentlySatisfied, resolvedApprovalGate?.totp_enabled === true) }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mt-5 max-w-sm", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
             ApprovalProofFieldInputs,
             {
@@ -3442,9 +3464,9 @@ function LocalCliDetail(props) {
   reactExports.useEffect(() => {
     setCommands(props.item.commands);
   }, [props.item.cli_id, props.item.grant_revision]);
-  const openPending = reactExports.useCallback((state) => {
+  const openPending = reactExports.useCallback(async (state) => {
+    await refreshApprovalGate();
     setPending(state);
-    void refreshApprovalGate();
   }, [refreshApprovalGate]);
   const requestAdd = reactExports.useCallback(() => openPending("allowed"), [openPending]);
   const requestAllow = reactExports.useCallback(() => openPending("allowed"), [openPending]);

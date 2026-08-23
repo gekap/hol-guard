@@ -37,6 +37,7 @@ import {
   commandFieldLabel,
   dialogIntro,
   enrollConfirmCopy,
+  enrollSubmitDisabled,
   ProjectSwitcher,
   SuggestionPanel,
   suggestionSummary,
@@ -201,7 +202,14 @@ export function AddCustomExtensionWorkspace(props: {
     if (step !== "confirm") {
       setStep("confirm");
       setError(null);
-      void refreshApprovalGate();
+      setBusy(true);
+      try {
+        await refreshApprovalGate({ failClosed: true });
+      } catch {
+        setError("Guard could not load local approval settings yet.");
+      } finally {
+        setBusy(false);
+      }
       return;
     }
     if (pending === null) return;
@@ -240,15 +248,18 @@ export function AddCustomExtensionWorkspace(props: {
 
   const proofReady = pending !== null && recognized !== null;
   const confirming = step === "confirm" && recognized !== null;
-  const submitDisabled = recognized === null
-    ? command.trim() === "" || busy
-    : confirming
-      ? !proofReady || isApprovalProofSubmitDisabled(
-        resolvedApprovalGate,
-        { approvalPassword: password, approvalTotpCode: totp },
-        busy,
-      )
-      : busy;
+  const submitDisabled = enrollSubmitDisabled({
+    recognized,
+    command,
+    confirming,
+    proofReady,
+    proofBlocked: isApprovalProofSubmitDisabled(
+      resolvedApprovalGate,
+      { approvalPassword: password, approvalTotpCode: totp },
+      busy,
+    ),
+    busy,
+  });
   const showingPackageCatalog = recognized?.surface === "package-scripts";
   const showingMcpCatalog = recognized?.surface === "mcp";
   const showingCatalog = showingPackageCatalog || showingMcpCatalog;
@@ -284,7 +295,7 @@ export function AddCustomExtensionWorkspace(props: {
           </p>
           {summary ? <p className="mt-2 text-sm leading-6 text-slate-500">{summary}</p> : null}
           <p className="mt-5 text-sm leading-6 text-brand-dark/80">
-            {enrollConfirmCopy(recognized.surface, recentlySatisfied)}
+            {enrollConfirmCopy(recognized.surface, recentlySatisfied, resolvedApprovalGate?.totp_enabled === true)}
           </p>
           <div className="mt-5 max-w-sm">
             <ApprovalProofFieldInputs

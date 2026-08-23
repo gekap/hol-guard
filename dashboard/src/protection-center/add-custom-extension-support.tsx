@@ -29,9 +29,16 @@ export function addDialogSubmitLabel(input: {
   return allowActionLabel(input.recognized.surface);
 }
 
-export function enrollConfirmCopy(surface: LocalCliItem["surface"], recentlySatisfied: boolean): string {
+export function enrollConfirmCopy(
+  surface: LocalCliItem["surface"],
+  recentlySatisfied: boolean,
+  totpEnabled: boolean,
+): string {
   if (recentlySatisfied) {
     return "Recently confirmed with your authenticator. Save these settings.";
+  }
+  if (!totpEnabled) {
+    return "Enter your approval password to save these settings.";
   }
   if (surface === "mcp") {
     return "Enter the current authenticator code to save this server.";
@@ -40,6 +47,19 @@ export function enrollConfirmCopy(surface: LocalCliItem["surface"], recentlySati
     return "Enter the current authenticator code to save these scripts.";
   }
   return "Enter the current authenticator code to save this tool.";
+}
+
+export function enrollSubmitDisabled(input: {
+  recognized: LocalCliItem | null;
+  command: string;
+  confirming: boolean;
+  proofReady: boolean;
+  proofBlocked: boolean;
+  busy: boolean;
+}): boolean {
+  if (input.recognized === null) return input.command.trim() === "" || input.busy;
+  if (!input.confirming) return input.busy;
+  return !input.proofReady || input.proofBlocked;
 }
 
 export function surfaceBadge(surface: LocalCliItem["surface"]): string | null {

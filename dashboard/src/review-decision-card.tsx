@@ -27,6 +27,7 @@ import {
   willPersistExactAction,
 } from "./approval-scopes";
 import { approvalProofRecentlySatisfied, buildApprovalProofCredentials } from "./approval-proof-inline";
+import { fetchResolvedApprovalGate } from "./use-resolved-approval-gate";
 import { ConsolidatedEvidenceAlert } from "./consolidated-evidence-alert";
 import { plainEnglishRequestTitle } from "./evidence/plain-english";
 import type { DecisionScope, GuardApprovalGatePublicConfig, GuardApprovalRequest } from "./guard-types";
@@ -194,18 +195,29 @@ export function ReviewDecisionCard(props: {
       setLastAction(action);
       const requestedScope = action === "allow" ? allowScope : blockScope;
       const gate = props.approvalGate;
-      const gateRequiresPassword =
+      const gateEnabled =
         gate?.enabled === true &&
         gate?.configured === true &&
-        requiresApprovalPasswordPrompt(gate.cooldown_active, gate.strict_all_decisions, requestedScope) &&
-        !approvalProofRecentlySatisfied(gate);
-      if (gateRequiresPassword) {
-        setPendingAction(action);
-        setPendingContractKey(decisionContractKey);
-        setErrorMessage(null);
+        requiresApprovalPasswordPrompt(gate.cooldown_active, gate.strict_all_decisions, requestedScope);
+      if (!gateEnabled) {
+        void handleResolve(action);
         return;
       }
-      void handleResolve(action);
+      setErrorMessage(null);
+      if (!approvalProofRecentlySatisfied(gate)) {
+        setPendingAction(action);
+        setPendingContractKey(decisionContractKey);
+        return;
+      }
+      void (async () => {
+        const fresh = await fetchResolvedApprovalGate().catch(() => gate);
+        if (approvalProofRecentlySatisfied(fresh ?? gate)) {
+          void handleResolve(action);
+          return;
+        }
+        setPendingAction(action);
+        setPendingContractKey(decisionContractKey);
+      })();
     },
     [
       allowScope,

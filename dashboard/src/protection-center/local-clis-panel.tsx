@@ -171,9 +171,9 @@ export function LocalCliDetail(props: {
   useEffect(() => {
     setCommands(props.item.commands);
   }, [props.item.cli_id, props.item.grant_revision]);
-  const openPending = useCallback((state: LocalCliState) => {
+  const openPending = useCallback(async (state: LocalCliState) => {
+    await refreshApprovalGate();
     setPending(state);
-    void refreshApprovalGate();
   }, [refreshApprovalGate]);
   const requestAdd = useCallback(() => openPending("allowed"), [openPending]);
   const requestAllow = useCallback(() => openPending("allowed"), [openPending]);

@@ -53,7 +53,8 @@ assert.equal(
   addDialogSubmitLabel({ recognized: packageItem, busy: false, pending: "allowed", step: "confirm" }),
   "Allow these scripts",
 );
-assert.match(enrollConfirmCopy("mcp", true), /Recently confirmed/);
-assert.match(enrollConfirmCopy("mcp", false), /authenticator code/);
+assert.match(enrollConfirmCopy("mcp", true, true), /Recently confirmed/);
+assert.match(enrollConfirmCopy("mcp", false, true), /authenticator code/);
+assert.match(enrollConfirmCopy("mcp", false, false), /approval password/);
 
 console.log("add-custom-extension-support.test.ts: all assertions passed");
