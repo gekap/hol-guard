@@ -883,6 +883,7 @@ export type GuardApprovalGatePublicConfig = {
   strict_all_decisions: boolean;
   totp_enabled?: boolean;
   totp_pending?: boolean;
+  totp_recent_satisfied?: boolean;
 };
 
 export type GuardSettings = {

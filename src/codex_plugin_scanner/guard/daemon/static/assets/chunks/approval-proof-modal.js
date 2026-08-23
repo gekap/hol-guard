@@ -8,10 +8,7 @@ function useResolvedApprovalGate(initialGate) {
   reactExports.useEffect(() => {
     setResolvedApprovalGate(initialGate);
   }, [initialGate]);
-  const resolveApprovalGate = reactExports.useCallback(async (options) => {
-    if (resolvedApprovalGate !== null) {
-      return resolvedApprovalGate;
-    }
+  const refreshApprovalGate = reactExports.useCallback(async (options) => {
     try {
       const gate = await fetchResolvedApprovalGate();
       setResolvedApprovalGate(gate);
@@ -20,10 +17,16 @@ function useResolvedApprovalGate(initialGate) {
       if (options?.failClosed) {
         throw error;
       }
-      return null;
+      return resolvedApprovalGate;
     }
   }, [resolvedApprovalGate]);
-  return { resolvedApprovalGate, resolveApprovalGate };
+  const resolveApprovalGate = reactExports.useCallback(async (options) => {
+    if (resolvedApprovalGate !== null) {
+      return resolvedApprovalGate;
+    }
+    return refreshApprovalGate(options);
+  }, [refreshApprovalGate, resolvedApprovalGate]);
+  return { resolvedApprovalGate, resolveApprovalGate, refreshApprovalGate };
 }
 function ApprovalProofModal(props) {
   const { title, detail, confirmLabel, approvalGate, busy = false, error = null, onCancel, onConfirm } = props;

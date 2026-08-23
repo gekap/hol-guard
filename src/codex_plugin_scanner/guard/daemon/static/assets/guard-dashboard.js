@@ -19205,6 +19205,9 @@ function TabBar(props) {
     tab.value
   )) });
 }
+function approvalProofRecentlySatisfied(gate) {
+  return gate?.totp_enabled === true && gate.totp_recent_satisfied === true;
+}
 function approvalProofRequiresPassword(gate) {
   return gate?.totp_enabled !== true;
 }
@@ -19212,18 +19215,32 @@ function isApprovalProofSubmitDisabled(gate, credentials, busy) {
   if (busy) {
     return true;
   }
+  if (approvalProofRecentlySatisfied(gate)) {
+    return false;
+  }
   if (approvalProofRequiresPassword(gate)) {
     return credentials.approvalPassword.trim() === "";
   }
   return credentials.approvalTotpCode.trim() === "";
 }
 function buildApprovalProofCredentials(gate, credentials) {
+  if (approvalProofRecentlySatisfied(gate)) {
+    return {};
+  }
   if (approvalProofRequiresPassword(gate)) {
     return { approval_password: credentials.approvalPassword };
   }
   return { approval_totp_code: credentials.approvalTotpCode };
 }
 function ApprovalProofFieldInputs(props) {
+  const handleTotpChange = reactExports.useCallback((event) => {
+    const digits = event.target.value.replace(/\D/g, "").slice(0, 6);
+    event.target.value = digits;
+    props.onApprovalTotpCodeChange(event);
+  }, [props]);
+  if (approvalProofRecentlySatisfied(props.approvalGate)) {
+    return /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm leading-6 text-brand-dark/75", children: "Recently confirmed with your authenticator. A new code is not needed yet." });
+  }
   const needsPassword = approvalProofRequiresPassword(props.approvalGate);
   return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "space-y-3", children: needsPassword ? /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "block", children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-sm font-semibold text-brand-dark", children: "Approval password" }),
@@ -19246,10 +19263,13 @@ function ApprovalProofFieldInputs(props) {
         type: "text",
         inputMode: "numeric",
         pattern: "[0-9]*",
+        maxLength: 6,
         autoComplete: "one-time-code",
+        name: "one-time-code",
+        autoFocus: true,
         value: props.approvalTotpCode,
-        onChange: props.onApprovalTotpCodeChange,
-        className: "mt-1 min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-brand-dark focus:border-brand-blue focus:outline-none focus:ring-2 focus:ring-brand-blue/20"
+        onChange: handleTotpChange,
+        className: "mt-2 min-h-12 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-center text-lg font-semibold tracking-[0.35em] text-brand-dark focus:border-brand-blue focus:outline-none focus:ring-2 focus:ring-brand-blue/30"
       }
     )
   ] }) });
@@ -27991,21 +28011,27 @@ function requiresApprovalPasswordPrompt(cooldownActive, strictAllDecisions, sele
   }
   return strictAllDecisions;
 }
+function approvalProofModalTitle(recentlySatisfied, needsPassword) {
+  if (recentlySatisfied) return "Recently confirmed";
+  if (needsPassword) return "Approval password required";
+  return "Authenticator code required";
+}
 function ApprovalPasswordModal(props) {
   const passwordRef = reactExports.useRef(null);
-  const totpRef = reactExports.useRef(null);
+  const recentlySatisfied = approvalProofRecentlySatisfied(props.gate);
   const needsPassword = approvalProofRequiresPassword(props.gate);
-  const submitDisabled = needsPassword ? props.approvalPassword.trim() === "" : props.approvalTotpCode.trim() === "";
+  const submitDisabled = isApprovalProofSubmitDisabled(
+    props.gate,
+    { approvalPassword: props.approvalPassword, approvalTotpCode: props.approvalTotpCode },
+    false
+  );
   reactExports.useEffect(() => {
+    if (recentlySatisfied) return void 0;
     const timer = setTimeout(() => {
-      if (needsPassword) {
-        passwordRef.current?.focus();
-      } else {
-        totpRef.current?.focus();
-      }
+      passwordRef.current?.focus();
     }, 50);
-    return () => clearTimeout(timer);
-  }, [needsPassword]);
+    return () => window.clearTimeout(timer);
+  }, [recentlySatisfied]);
   const showCooldownOption = props.gate.cooldown_seconds > 0 && !props.gate.cooldown_active && props.gate.totp_enabled !== true;
   const handleBackdropClick = reactExports.useCallback(
     (e) => {
@@ -28040,42 +28066,24 @@ function ApprovalPasswordModal(props) {
               {
                 id: "approval-password-modal-title",
                 className: "text-lg font-semibold tracking-tight text-brand-dark",
-                children: needsPassword ? "Approval password required" : "Authenticator code required"
+                children: approvalProofModalTitle(recentlySatisfied, needsPassword)
               }
             ),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-brand-dark/70", children: "Guard needs a fresh proof before it can save this decision." })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-brand-dark/70", children: recentlySatisfied ? "A new authenticator code is not needed yet." : "Guard needs a fresh proof before it can save this decision." })
           ] })
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-5 space-y-3", children: [
-          needsPassword ? /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "block", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-sm font-semibold text-brand-dark", children: "Approval password" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx(
-              "input",
-              {
-                ref: passwordRef,
-                type: "password",
-                autoComplete: "current-password",
-                value: props.approvalPassword,
-                onChange: props.onApprovalPasswordChange,
-                className: "mt-1 min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-brand-dark focus:border-brand-blue focus:outline-none focus:ring-2 focus:ring-brand-blue/20"
-              }
-            )
-          ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "block", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-sm font-semibold text-brand-dark", children: "Authenticator code" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx(
-              "input",
-              {
-                ref: totpRef,
-                type: "text",
-                inputMode: "numeric",
-                pattern: "[0-9]*",
-                autoComplete: "one-time-code",
-                value: props.approvalTotpCode,
-                onChange: props.onApprovalTotpCodeChange,
-                className: "mt-1 min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-brand-dark focus:border-brand-blue focus:outline-none focus:ring-2 focus:ring-brand-blue/20"
-              }
-            )
-          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            ApprovalProofFieldInputs,
+            {
+              approvalGate: props.gate,
+              approvalPassword: props.approvalPassword,
+              approvalTotpCode: props.approvalTotpCode,
+              passwordRef,
+              onApprovalPasswordChange: props.onApprovalPasswordChange,
+              onApprovalTotpCodeChange: props.onApprovalTotpCodeChange
+            }
+          ),
           showCooldownOption && /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "flex cursor-pointer items-center gap-2 text-sm text-brand-dark", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx(
               "input",
@@ -28801,7 +28809,6 @@ function ReviewDecisionCard(props) {
   const [pendingAction, setPendingAction] = reactExports.useState(null);
   const [pendingContractKey, setPendingContractKey] = reactExports.useState(null);
   const [rememberExactAction, setRememberExactAction] = reactExports.useState(false);
-  const timerRef = reactExports.useRef(null);
   const allowButtonRef = reactExports.useRef(null);
   const availableScopeChoices = reactExports.useMemo(
     () => item ? standardScopeChoicesForRequest(item, "allow") : [],
@@ -28843,14 +28850,6 @@ function ReviewDecisionCard(props) {
       setRememberExactAction(false);
     }
   }, [item?.request_id, item?.scope_contract_version, item?.scope_contract_digest]);
-  reactExports.useEffect(() => {
-    return () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-  }, []);
   const handleResolve = reactExports.useCallback(
     async (action) => {
       if (!item || resolutionBlockReason !== null) return;
@@ -28865,8 +28864,8 @@ function ReviewDecisionCard(props) {
           action === "allow" ? rememberExactAction : watchOnlyObservation
         );
         const gate = props.approvalGate;
-        const needsPassword = approvalProofRequiresPassword(gate);
         const includeGateFields = gate?.enabled === true && gate?.configured === true && requiresApprovalPasswordPrompt(gate.cooldown_active, gate.strict_all_decisions, requestedScope);
+        const proof = includeGateFields ? buildApprovalProofCredentials(gate, { approvalPassword, approvalTotpCode }) : {};
         await props.onResolve({
           ...buildDecisionPayload({
             item,
@@ -28875,8 +28874,7 @@ function ReviewDecisionCard(props) {
             reason: action === "allow" ? "approved in review" : "blocked in review",
             persistExactAction
           }),
-          ...includeGateFields && needsPassword ? { approval_password: approvalPassword } : {},
-          ...includeGateFields && !needsPassword ? { approval_totp_code: approvalTotpCode } : {},
+          ...proof,
           ...includeGateFields ? { approval_gate_use_cooldown: useCooldown } : {}
         });
         setResolved({ action, persistedExactAction: persistExactAction });
@@ -28885,11 +28883,6 @@ function ReviewDecisionCard(props) {
         setUseCooldown(false);
         setPendingAction(null);
         setPendingContractKey(null);
-        if (timerRef.current) {
-          clearTimeout(timerRef.current);
-          timerRef.current = null;
-        }
-        timerRef.current = setTimeout(() => setResolved(null), 2e3);
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : "Something went wrong. Try again.");
       } finally {
@@ -28924,7 +28917,7 @@ function ReviewDecisionCard(props) {
       setLastAction(action);
       const requestedScope = action === "allow" ? allowScope : blockScope;
       const gate = props.approvalGate;
-      const gateRequiresPassword = gate?.enabled === true && gate?.configured === true && requiresApprovalPasswordPrompt(gate.cooldown_active, gate.strict_all_decisions, requestedScope);
+      const gateRequiresPassword = gate?.enabled === true && gate?.configured === true && requiresApprovalPasswordPrompt(gate.cooldown_active, gate.strict_all_decisions, requestedScope) && !approvalProofRecentlySatisfied(gate);
       if (gateRequiresPassword) {
         setPendingAction(action);
         setPendingContractKey(decisionContractKey);
@@ -28952,7 +28945,7 @@ function ReviewDecisionCard(props) {
   }, [handleRequestResolve]);
   reactExports.useEffect(() => {
     function handleKeyDown(event) {
-      if (submitting !== null || pendingAction !== null || resolutionBlockReason !== null) return;
+      if (submitting !== null || pendingAction !== null || resolved !== null || resolutionBlockReason !== null) return;
       const target = event.target;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
       if (event.key === "a" || event.key === "A") {
@@ -28971,7 +28964,7 @@ function ReviewDecisionCard(props) {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [availableScopeChoices, handleRequestResolve, pendingAction, resolutionBlockReason, submitting]);
+  }, [availableScopeChoices, handleRequestResolve, pendingAction, resolutionBlockReason, resolved, submitting]);
   const handleModalSubmit = reactExports.useCallback(() => {
     if (pendingAction === null) {
       return;
@@ -29103,7 +29096,7 @@ function ReviewDecisionCard(props) {
         ),
         showConsequences && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mt-3 rounded-xl border border-slate-200/70 bg-slate-50 p-4", children: /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-brand-dark", children: whatWouldHappen }) })
       ] }),
-      resolutionBlockReason === null && /* @__PURE__ */ jsxRuntimeExports.jsx(
+      resolutionBlockReason === null && resolved === null && /* @__PURE__ */ jsxRuntimeExports.jsx(
         ReviewScopeControls,
         {
           commonScopeOptions,
@@ -29136,7 +29129,7 @@ function ReviewDecisionCard(props) {
           )
         ] })
       ] }) }),
-      resolutionBlockReason === null && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2", children: [
+      resolutionBlockReason === null && resolved === null && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx(
           ActionButton,
           {
@@ -31425,7 +31418,7 @@ export {
   HiMiniEye as Z,
   HiMiniXCircle as _,
   EvidenceActivityHeatmapMini as a,
-  policyIdentityKey as a$,
+  EvidenceActionDetail as a$,
   HiMiniClipboard as a0,
   PROTECTION_POSTURE_COPY as a1,
   POSTURE_OUTCOME_COLUMNS as a2,
@@ -31447,22 +31440,22 @@ export {
   HiMiniFolder as aI,
   FaWindows as aJ,
   FaAws as aK,
-  HiMiniArrowLeft as aL,
-  HiMiniPlus as aM,
-  guardAwareHref as aN,
-  fetchApprovalPage as aO,
-  fetchPolicy as aP,
-  HiMiniHome as aQ,
-  guardActionPresentation as aR,
-  DEFAULT_FILTER_STATE as aS,
-  filterEvidence as aT,
-  sortEvidence as aU,
-  computeMetrics as aV,
-  CommandActivityWorkspace as aW,
-  EvidenceFilterBar as aX,
-  EvidenceInsightStrip as aY,
-  EvidenceActionList as aZ,
-  EvidenceActionDetail as a_,
+  approvalProofRecentlySatisfied as aL,
+  HiMiniArrowLeft as aM,
+  HiMiniPlus as aN,
+  guardAwareHref as aO,
+  fetchApprovalPage as aP,
+  fetchPolicy as aQ,
+  HiMiniHome as aR,
+  guardActionPresentation as aS,
+  DEFAULT_FILTER_STATE as aT,
+  filterEvidence as aU,
+  sortEvidence as aV,
+  computeMetrics as aW,
+  CommandActivityWorkspace as aX,
+  EvidenceFilterBar as aY,
+  EvidenceInsightStrip as aZ,
+  EvidenceActionList as a_,
   TabBar as aa,
   resolveProtectionLevelCopy as ab,
   fetchSettings as ac,
@@ -31490,80 +31483,81 @@ export {
   fetchExtensionControlApi as ay,
   HiMiniArrowPath as az,
   HiMiniCommandLine as b,
-  isSupplyChainScannerEvidence as b$,
-  HiMiniChartBar as b0,
-  runHarnessAction as b1,
-  GuardHarnessActionError as b2,
-  HiMiniRocketLaunch as b3,
-  HiMiniTrash as b4,
-  clearLabelForScope as b5,
-  formatHarnessCommand as b6,
-  isSupplyChainAuditIncomplete as b7,
-  isSupplyChainAuditEvidence as b8,
-  readString$1 as b9,
-  scopeLabel as bA,
-  HiMiniDocumentText as bB,
-  HiMiniCloudArrowUp as bC,
-  HiMiniCheck as bD,
-  HiMiniCodeBracket as bE,
-  HiMiniClipboardDocument as bF,
-  HiMiniUsers as bG,
-  HiMiniIdentification as bH,
-  policyActionLabel as bI,
-  createCloudExceptionRequest as bJ,
-  HiMiniArrowRight as bK,
-  HiMiniPuzzlePiece as bL,
-  fetchCloudExceptions as bM,
-  fetchCloudExceptionRequests as bN,
-  downloadBlob as bO,
-  PolicyStatField as bP,
-  PaginationControls as bQ,
-  HiMiniNoSymbol as bR,
-  HiMiniArrowDownTray as bS,
-  HiMiniQueueList as bT,
-  Surface as bU,
-  HiMiniCheckBadge as bV,
-  fetchMcpPolicyRequest as bW,
-  resolveMcpPolicyRequest as bX,
-  HiMiniDocumentPlus as bY,
-  HiMiniDocumentMagnifyingGlass as bZ,
-  fetchSupplyChainBundle as b_,
-  isRecord$2 as ba,
-  HiMiniClock as bb,
-  IconActionButton as bc,
-  HiMiniBeaker as bd,
-  ActivationSummary as be,
-  ActionResultPanel as bf,
-  HiMiniBugAnt as bg,
-  GuardModalLayer as bh,
-  ConnectFlowCard as bi,
-  ApprovalProofInline as bj,
-  HiMiniArrowTopRightOnSquare as bk,
-  HiMiniCloudArrowDown as bl,
-  fetchPackageFirewallStatus as bm,
-  runPackageAudit as bn,
-  resolveSupplyChainAuditFailure as bo,
-  runPackageSync as bp,
-  startPackageFirewallConnect as bq,
-  PACKAGE_FIREWALL_CONNECT_POPUP_BLOCKED_MESSAGE as br,
-  repairSupplyChainProtection as bs,
-  runPackageFirewallAction as bt,
-  parseInterceptProofSnapshot as bu,
-  activatePackageFirewallRuntime as bv,
-  EntitlementNotice as bw,
-  fetchReceipts as bx,
-  lazyWorkspace as by,
-  __vitePreload as bz,
+  fetchSupplyChainBundle as b$,
+  policyIdentityKey as b0,
+  HiMiniChartBar as b1,
+  runHarnessAction as b2,
+  GuardHarnessActionError as b3,
+  HiMiniRocketLaunch as b4,
+  HiMiniTrash as b5,
+  clearLabelForScope as b6,
+  formatHarnessCommand as b7,
+  isSupplyChainAuditIncomplete as b8,
+  isSupplyChainAuditEvidence as b9,
+  __vitePreload as bA,
+  scopeLabel as bB,
+  HiMiniDocumentText as bC,
+  HiMiniCloudArrowUp as bD,
+  HiMiniCheck as bE,
+  HiMiniCodeBracket as bF,
+  HiMiniClipboardDocument as bG,
+  HiMiniUsers as bH,
+  HiMiniIdentification as bI,
+  policyActionLabel as bJ,
+  createCloudExceptionRequest as bK,
+  HiMiniArrowRight as bL,
+  HiMiniPuzzlePiece as bM,
+  fetchCloudExceptions as bN,
+  fetchCloudExceptionRequests as bO,
+  downloadBlob as bP,
+  PolicyStatField as bQ,
+  PaginationControls as bR,
+  HiMiniNoSymbol as bS,
+  HiMiniArrowDownTray as bT,
+  HiMiniQueueList as bU,
+  Surface as bV,
+  HiMiniCheckBadge as bW,
+  fetchMcpPolicyRequest as bX,
+  resolveMcpPolicyRequest as bY,
+  HiMiniDocumentPlus as bZ,
+  HiMiniDocumentMagnifyingGlass as b_,
+  readString$1 as ba,
+  isRecord$2 as bb,
+  HiMiniClock as bc,
+  IconActionButton as bd,
+  HiMiniBeaker as be,
+  ActivationSummary as bf,
+  ActionResultPanel as bg,
+  HiMiniBugAnt as bh,
+  GuardModalLayer as bi,
+  ConnectFlowCard as bj,
+  ApprovalProofInline as bk,
+  HiMiniArrowTopRightOnSquare as bl,
+  HiMiniCloudArrowDown as bm,
+  fetchPackageFirewallStatus as bn,
+  runPackageAudit as bo,
+  resolveSupplyChainAuditFailure as bp,
+  runPackageSync as bq,
+  startPackageFirewallConnect as br,
+  PACKAGE_FIREWALL_CONNECT_POPUP_BLOCKED_MESSAGE as bs,
+  repairSupplyChainProtection as bt,
+  runPackageFirewallAction as bu,
+  parseInterceptProofSnapshot as bv,
+  activatePackageFirewallRuntime as bw,
+  EntitlementNotice as bx,
+  fetchReceipts as by,
+  lazyWorkspace as bz,
   HiMiniChevronRight as c,
-  isBlockedGuardAction as c0,
-  HiMiniShieldExclamation as c1,
-  HiMiniComputerDesktop as c2,
-  HiMiniChevronLeft as c3,
-  HiMiniFunnel as c4,
-  HiMiniArrowDown as c5,
-  HiMiniArrowUp as c6,
-  runAuditRemediation as c7,
-  HiMiniSignal as c8,
+  isSupplyChainScannerEvidence as c0,
+  isBlockedGuardAction as c1,
+  HiMiniShieldExclamation as c2,
+  HiMiniComputerDesktop as c3,
+  HiMiniChevronLeft as c4,
+  HiMiniFunnel as c5,
+  HiMiniArrowDown as c6,
+  HiMiniArrowUp as c7,
+  runAuditRemediation as c8,
+  HiMiniSignal as c9,
   createCommandActivityClient as d,
   updateSettings as e,
   fetchCommandActivityApi as f,
