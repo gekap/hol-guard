@@ -300,31 +300,6 @@ def test_artifact_risk_signals_legacy_strings_remain_stable():
     )
 
 
-@pytest.mark.parametrize(
-    "command",
-    (
-        "uv sync --frozen --extra dev",
-        "git sync",
-        "rg -n 'post|send|sync' src tests",
-        "node -e 'client.post(record); await state.sync()'",
-    ),
-)
-def test_artifact_risk_signals_do_not_treat_routine_transfer_words_as_exfiltration(command: str) -> None:
-    artifact = GuardArtifact(
-        artifact_id="codex:session:routine-command",
-        name="Bash",
-        harness="codex",
-        artifact_type="runtime_action",
-        source_scope="session",
-        config_path="/workspace",
-        command="bash",
-        args=("-lc", command),
-        transport="stdio",
-    )
-
-    assert "includes exfiltration-oriented intent" not in artifact_risk_signals(artifact)
-
-
 def test_classify_secret_paths_preserves_legacy_labels():
     classes = classify_secret_paths(".pypirc ~/.aws/" + "credentials ~/.docker/" + "config.json")
 

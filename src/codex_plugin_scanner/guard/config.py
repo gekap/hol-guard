@@ -23,6 +23,7 @@ else:  # pragma: no cover - runtime compatibility
 
 from .action_lattice import coerce_guard_action, normalize_guard_action
 from .approval_gate import ApprovalGateGrant, public_config, require_settings_write
+from .config_preset_support import apply_named_posture_harness_policy
 from .mdm.contracts import ManagedPolicy, ManagedPolicyState
 from .mdm.policy import apply_managed_policy, fail_closed_managed_policy, load_managed_policy
 from .models import GUARD_ACTION_VALUES, GuardAction, GuardMode
@@ -641,21 +642,13 @@ def update_guard_settings(
     current_config = load_guard_config(guard_home)
     next_payload = dict(current)
     switching_to_custom_without_overrides = (
-        payload.get("security_level") == "custom"
-        and "risk_actions" not in payload
-        and "harness_risk_actions" not in payload
+        payload.get("security_level") == "custom" and not {"risk_actions", "harness_risk_actions"} & payload.keys()
     )
     if switching_to_custom_without_overrides:
         next_payload["risk_actions"] = _effective_risk_actions(current_config)
-    requested_security_level = payload.get("security_level")
-    selecting_named_posture = (
-        isinstance(requested_security_level, str)
-        and requested_security_level in VALID_SECURITY_LEVELS - {"custom"}
-        and payload.get("risk_actions") == {}
-        and payload.get("harness_risk_actions") == {}
+    next_payload = apply_named_posture_harness_policy(
+        next_payload, payload, valid_security_levels=VALID_SECURITY_LEVELS
     )
-    if selecting_named_posture:
-        next_payload["harnesses"] = _without_blanket_harness_reapproval(next_payload.get("harnesses"))
     for key, value in payload.items():
         if key not in EDITABLE_GUARD_SETTING_KEYS:
             continue
@@ -696,27 +689,6 @@ def update_guard_settings(
             auto=event_source == "auto-revert",
         )
     return updated
-
-
-def _without_blanket_harness_reapproval(value: object) -> dict[str, object]:
-    """Remove blanket ask fallbacks when a named posture is selected."""
-
-    harnesses = _string_object_table(value)
-    if harnesses is None:
-        return {}
-    preserved: dict[str, object] = {}
-    for harness, raw_settings in harnesses.items():
-        settings = _string_object_table(raw_settings)
-        if settings is None:
-            preserved[harness] = raw_settings
-            continue
-        remaining = dict(settings)
-        for key in ("action", "default_action"):
-            if remaining.get(key) in {"review", "require-reapproval"}:
-                remaining.pop(key)
-        if remaining:
-            preserved[harness] = remaining
-    return preserved
 
 
 def update_guard_update_channel(
