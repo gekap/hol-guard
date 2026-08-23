@@ -142,7 +142,16 @@ class TestPresetCliCommands:
         assert loaded.harness_actions == {"cursor": "block", "grok": "block"}
         assert loaded.default_action == "warn"
 
-    def test_turning_protection_on_clears_blanket_harness_review(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("requested_posture", "expected_posture"),
+        [("Protected", "protected"), ("extra-careful", "extra_careful")],
+    )
+    def test_turning_protection_on_clears_blanket_harness_review(
+        self,
+        tmp_path: Path,
+        requested_posture: str,
+        expected_posture: str,
+    ) -> None:
         home_dir = tmp_path / "home"
         config_toml = (
             'mode = "observe"\n'
@@ -158,11 +167,11 @@ class TestPresetCliCommands:
 
         updated = update_guard_settings(
             home_dir,
-            {"protection_posture": "Protected"},
+            {"protection_posture": requested_posture},
             skip_approval_gate=True,
         )
 
-        assert updated.protection_posture == "protected"
+        assert updated.protection_posture == expected_posture
         assert updated.mode == "enforce"
         assert updated.harness_actions == {"cursor": "block"}
 

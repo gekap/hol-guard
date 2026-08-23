@@ -13,7 +13,7 @@ def apply_named_posture_harness_policy(
     *,
     valid_security_levels: Set[str],
 ) -> dict[str, object]:
-    """Clear blanket ask policy when the caller explicitly resets a named profile."""
+    """Clear blanket ask policy for named-profile resets or transitions away from Watch."""
 
     requested_level = incoming.get("security_level")
     selects_named_level = (
