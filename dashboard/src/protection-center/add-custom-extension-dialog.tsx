@@ -172,9 +172,13 @@ export function AddCustomExtensionWorkspace(props: {
   const openScriptReview = useCallback(() => setReviewingScripts(true), []);
   const closeScriptReview = useCallback(() => setReviewingScripts(false), []);
   const applyBulk = useCallback((state: LocalCliCommandState) => {
-    setCommands((current) => applyBulkCommandState(current, state));
+    setCommands((current) => applyBulkCommandState(
+      current,
+      state,
+      recognized?.surface === "package-scripts" ? new Set(["root", "other"]) : new Set(),
+    ));
     setPending(state === "block" ? "blocked" : "allowed");
-  }, []);
+  }, [recognized]);
   const handleSubmit = useCallback(async (event: FormEvent) => {
     event.preventDefault();
     if (recognized === null) {

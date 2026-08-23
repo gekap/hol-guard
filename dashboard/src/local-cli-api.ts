@@ -208,8 +208,11 @@ export function enrollmentCommandStates(
 export function applyBulkCommandState(
   commands: readonly LocalCliCommand[],
   state: LocalCliCommandState,
+  skipIds: ReadonlySet<string> = new Set(),
 ): LocalCliCommand[] {
-  return commands.map((command) => ({ ...command, state }));
+  return commands.map((command) => (
+    skipIds.has(command.command_id) ? command : { ...command, state }
+  ));
 }
 
 export function bulkCommandState(commands: readonly LocalCliCommand[]): LocalCliCommandState | "mixed" {

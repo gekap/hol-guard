@@ -306,8 +306,8 @@ function enrollmentCommandStates(commands, pending, surface) {
     state: packageScriptEnrollmentState(command, pending)
   }));
 }
-function applyBulkCommandState(commands, state) {
-  return commands.map((command) => ({ ...command, state }));
+function applyBulkCommandState(commands, state, skipIds = /* @__PURE__ */ new Set()) {
+  return commands.map((command) => skipIds.has(command.command_id) ? command : { ...command, state });
 }
 function bulkCommandState(commands) {
   if (commands.length === 0) return "inherit";
@@ -3031,9 +3031,13 @@ function AddCustomExtensionWorkspace(props) {
   const openScriptReview = reactExports.useCallback(() => setReviewingScripts(true), []);
   const closeScriptReview = reactExports.useCallback(() => setReviewingScripts(false), []);
   const applyBulk = reactExports.useCallback((state) => {
-    setCommands((current) => applyBulkCommandState(current, state));
+    setCommands((current) => applyBulkCommandState(
+      current,
+      state,
+      recognized?.surface === "package-scripts" ? /* @__PURE__ */ new Set(["root", "other"]) : /* @__PURE__ */ new Set()
+    ));
     setPending(state === "block" ? "blocked" : "allowed");
-  }, []);
+  }, [recognized]);
   const handleSubmit = reactExports.useCallback(async (event) => {
     event.preventDefault();
     if (recognized === null) {

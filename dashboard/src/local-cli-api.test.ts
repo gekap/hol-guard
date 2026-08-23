@@ -267,6 +267,14 @@ assert.deepEqual(
   ["allow", "allow"],
 );
 assert.equal(bulkCommandState(applyBulkCommandState(packageScripts.commands, "block")), "block");
+const withSynthetic = [
+  { command_id: "root", name: "pnpm run", usage: "pnpm run", description: "", parent_id: null, state: "inherit" as const },
+  ...packageScripts.commands,
+];
+assert.equal(
+  applyBulkCommandState(withSynthetic, "allow", new Set(["root", "other"])).find((entry) => entry.command_id === "root")?.state,
+  "inherit",
+);
 assert.equal(seenSuggestionMeta(frequentTool), "Seen 4 times");
 assert.equal(seenSuggestionMeta(rareTool), "Seen once");
 
