@@ -183,7 +183,6 @@ def public_config(guard_home: Path, *, now: str | None = None) -> ApprovalGatePu
         now_epoch = _epoch(now)
         cooldown_expires_at = _optional_string(state.get("cooldown_expires_at"))
         locked_until = _optional_string(state.get("locked_until"))
-        totp_enabled = bool(state.get("totp_enabled") is True)
         return ApprovalGatePublicConfig(
             enabled=_enabled(state),
             configured=_verifier(state) is not None,
@@ -193,16 +192,14 @@ def public_config(guard_home: Path, *, now: str | None = None) -> ApprovalGatePu
             locked_until=locked_until if _is_future(locked_until, now_epoch) else None,
             fail_closed=bool(state.get("fail_closed") is True),
             strict_all_decisions=bool(state.get("strict_all_decisions") is True),
-            totp_enabled=totp_enabled,
+            totp_enabled=bool(state.get("totp_enabled") is True),
             totp_pending=_has_pending_totp(state, now_epoch),
-            totp_recent_satisfied=totp_enabled
-            and _recent_totp_satisfied_locked(guard_home, state, now_epoch=now_epoch),
+            totp_recent_satisfied=_totp_enabled(state) and _recent_totp_satisfied_locked(guard_home, state, now_epoch=now_epoch),
         )
 
 
 def recent_totp_satisfied(guard_home: Path, *, now: str | None = None) -> bool:
     """Return whether this local OS session has a valid recent TOTP proof."""
-
     with _APPROVAL_GATE_LOCK:
         state = _load_state(guard_home)
         if not _enabled(state) or not _totp_enabled(state):
@@ -1006,9 +1003,8 @@ def _verify_or_raise_locked(
     accepted_counter: int | None = None
     factor_set = ("password",)
     if _totp_enabled(state):
-        recent = _recent_totp_satisfied_locked(guard_home, state, now_epoch=now_epoch)
-        if gate_input.totp_code is None or recent:
-            if not recent:
+        if gate_input.totp_code is None or _recent_totp_satisfied_locked(guard_home, state, now_epoch=now_epoch):
+            if not _recent_totp_satisfied_locked(guard_home, state, now_epoch=now_epoch):
                 raise ApprovalGateError("approval_gate_totp_required", "TOTP code is required.")
             accepted_counter = _optional_int(state.get("totp_last_counter"))
             if accepted_counter is None:

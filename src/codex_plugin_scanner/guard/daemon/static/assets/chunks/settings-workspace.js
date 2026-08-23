@@ -2730,8 +2730,7 @@ function applyApprovalGateDraft(settings, updates) {
       fail_closed: gate?.fail_closed ?? false,
       strict_all_decisions: updates.strict_all_decisions ?? gate?.strict_all_decisions ?? false,
       totp_enabled: gate?.totp_enabled ?? false,
-      totp_pending: gate?.totp_pending ?? false,
-      totp_recent_satisfied: gate?.totp_recent_satisfied ?? false
+      totp_pending: gate?.totp_pending ?? false
     }
   };
 }
@@ -3079,7 +3078,6 @@ function SettingsWorkspace({ onApprovalGateChange }) {
         strict_all_decisions: approvalGateStrictAllDecisions,
         totp_enabled: draft.approval_gate?.totp_enabled ?? false,
         totp_pending: draft.approval_gate?.totp_pending ?? false,
-        totp_recent_satisfied: draft.approval_gate?.totp_recent_satisfied ?? false,
         ...proof?.currentPassword ? { current_password: proof.currentPassword } : {},
         ...proof?.newPassword ? { new_password: proof.newPassword } : {},
         ...proof?.confirmPassword ? { confirm_password: proof.confirmPassword } : {},
