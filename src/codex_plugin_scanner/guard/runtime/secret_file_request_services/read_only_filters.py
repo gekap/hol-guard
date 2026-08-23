@@ -35,6 +35,15 @@ def _read_only_lookup_filter_segment_is_safe(
     return False
 
 
+def _read_only_lookup_may_be_primary(
+    known_command: bool,
+    control_before: tuple[str, ...],
+    safe_pipe_filter: bool,
+) -> bool:
+    """Keep pipe filters on the stricter stdin-filter validation path."""
+    return known_command and (control_before != ("|",) or safe_pipe_filter)
+
+
 def _read_only_lookup_sed_args_are_safe(
     args: list[str],
     *,
