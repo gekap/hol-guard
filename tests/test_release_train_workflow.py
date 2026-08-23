@@ -99,6 +99,9 @@ def test_main_push_build_computes_a_registry_derived_stable_version() -> None:
     assert "compute_alpha_release_version.py" in compute_run
     assert "validate_alpha_release.py" in compute_run
     assert 'elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]' in compute_run
+    assert compute_run.index('"$GITHUB_EVENT_ACTION" == "closed"') < compute_run.index(
+        'elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]'
+    )
     assert 'elif [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]' in compute_run
     assert 'CHANNEL="stable"' in compute_run
     assert "verify_release_registry.py" in compute_run
