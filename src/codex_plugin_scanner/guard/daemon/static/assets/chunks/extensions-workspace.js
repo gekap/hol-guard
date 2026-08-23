@@ -306,6 +306,14 @@ function enrollmentCommandStates(commands, pending, surface) {
     state: packageScriptEnrollmentState(command, pending)
   }));
 }
+function applyBulkCommandState(commands, state) {
+  return commands.map((command) => ({ ...command, state }));
+}
+function bulkCommandState(commands) {
+  if (commands.length === 0) return "inherit";
+  const first = commands[0].state;
+  return commands.every((command) => command.state === first) ? first : "mixed";
+}
 function commandStatesFrom(commands) {
   return commands.map((command) => ({ command_id: command.command_id, state: command.state }));
 }
@@ -2779,9 +2787,12 @@ function blockActionLabel(surface) {
   if (surface === "package-scripts") return "Block these scripts";
   return "Block this tool";
 }
-function dialogIntro(hasProjects, showingCatalog) {
-  if (showingCatalog) {
+function dialogIntro(hasProjects, surface) {
+  if (surface === "package-scripts") {
     return "Allow these scripts so Protect can stop asking about them. Type a nested name such as guard:audit to inspect one.";
+  }
+  if (surface === "mcp") {
+    return "Choose Recommended, Allow all, or Block all, then confirm this server.";
   }
   if (hasProjects) {
     return "Guard already found project scripts on this device. Pick a project, or paste another folder.";
@@ -2803,7 +2814,7 @@ function suggestionSummary(item) {
     return `Find this tool to list npm scripts from ${item.name}.`;
   }
   if (item.surface === "mcp" && item.commands.length > 0) {
-    return `Guard listed ${item.commands.length} tools from this MCP server. Recommended keeps the usual review. Allow or block each one.`;
+    return `${item.commands.length} tools from this server. Recommended keeps the usual review. Allow all lets them run.`;
   }
   if (item.surface === "mcp") {
     return `Find this tool to list MCP tools from ${item.name}.`;
@@ -2960,7 +2971,7 @@ function AddCustomExtensionWorkspace(props) {
       setRecognized(result.item);
       setCommands(result.item.commands);
       setSummary(result.summary);
-      setPending(result.item.surface === "package-scripts" ? "allowed" : null);
+      setPending("allowed");
       setError(null);
     } catch (caught) {
       if (recognizeGeneration.current !== generation) return;
@@ -2987,7 +2998,7 @@ function AddCustomExtensionWorkspace(props) {
     setRecognized(item);
     setCommands(item.commands);
     setSummary(suggestionSummary(item));
-    setPending(item.surface === "package-scripts" && item.commands.length > 0 ? "allowed" : null);
+    setPending("allowed");
     setReviewingScripts(false);
   }, [runRecognize]);
   const findTool = reactExports.useCallback(async () => {
@@ -3014,6 +3025,10 @@ function AddCustomExtensionWorkspace(props) {
   const requestBlock = reactExports.useCallback(() => setPending("blocked"), []);
   const openScriptReview = reactExports.useCallback(() => setReviewingScripts(true), []);
   const closeScriptReview = reactExports.useCallback(() => setReviewingScripts(false), []);
+  const applyBulk = reactExports.useCallback((state) => {
+    setCommands((current) => applyBulkCommandState(current, state));
+    setPending(state === "block" ? "blocked" : "allowed");
+  }, []);
   const handleSubmit = reactExports.useCallback(async (event) => {
     event.preventDefault();
     if (recognized === null) {
@@ -3059,9 +3074,12 @@ function AddCustomExtensionWorkspace(props) {
     busy
   );
   const showingPackageCatalog = recognized?.surface === "package-scripts";
-  const enrollable = enrollablePackageScriptCommands(commands);
+  const showingMcpCatalog = recognized?.surface === "mcp";
+  const showingCatalog = showingPackageCatalog || showingMcpCatalog;
+  const enrollable = showingPackageCatalog ? enrollablePackageScriptCommands(commands) : commands;
   const visibleCommands = showingPackageCatalog ? filterPackageScriptCommands(enrollable, command) : commands;
   const previewNames = visibleCommands.slice(0, 8).map((entry) => entry.name);
+  const bulkState = bulkCommandState(enrollable);
   return /* @__PURE__ */ jsxRuntimeExports.jsxs(
     "form",
     {
@@ -3073,11 +3091,11 @@ function AddCustomExtensionWorkspace(props) {
           /* @__PURE__ */ jsxRuntimeExports.jsx(HiMiniArrowLeft, { className: "size-4", "aria-hidden": "true" }),
           "Extensions"
         ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("header", { className: "mt-4 max-w-2xl border-b border-slate-200 pb-6", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("header", { className: "mt-3 max-w-2xl pb-4", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("h1", { id: "add-custom-extension-title", className: "text-2xl font-semibold tracking-tight text-brand-dark", children: "Add a custom extension" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-2 text-sm leading-6 text-slate-500", children: dialogIntro(rememberedProjects.length > 0, showingPackageCatalog === true) })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-2 text-sm leading-6 text-slate-500", children: dialogIntro(rememberedProjects.length > 0, recognized?.surface ?? null) })
         ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "custom-extension-command", className: "mt-6 block text-sm font-semibold text-brand-dark", children: showingPackageCatalog ? "Find a script" : "Command" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("label", { htmlFor: "custom-extension-command", className: "mt-4 block text-sm font-semibold text-brand-dark", children: showingPackageCatalog ? "Find a script" : showingMcpCatalog ? "Launch command" : "Command" }),
         /* @__PURE__ */ jsxRuntimeExports.jsx(
           "input",
           {
@@ -3091,23 +3109,27 @@ function AddCustomExtensionWorkspace(props) {
           }
         ),
         recognized !== null && showingPackageCatalog ? /* @__PURE__ */ jsxRuntimeExports.jsx(ProjectSwitcher, { items: rememberedProjects, currentId: recognized.cli_id, onSelect: selectSuggestion }) : null,
-        recognized ? /* @__PURE__ */ jsxRuntimeExports.jsxs("section", { className: "mt-8 max-w-3xl", "aria-labelledby": "custom-extension-selected", children: [
+        recognized ? /* @__PURE__ */ jsxRuntimeExports.jsxs("section", { className: "mt-5 max-w-3xl", "aria-labelledby": "custom-extension-selected", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { id: "custom-extension-selected", className: "text-xl font-semibold tracking-tight text-brand-dark", children: recognized.name }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-1 font-mono text-xs text-brand-dark/70", children: recognized.source_label ? `${recognized.source_label} · ${recognized.example_label}` : recognized.example_label }),
-          summary ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-3 max-w-2xl text-sm leading-6 text-slate-500", children: summary }) : null,
-          showingPackageCatalog ? /* @__PURE__ */ jsxRuntimeExports.jsx(
-            PackageScriptPreview,
+          summary ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-2 max-w-2xl text-sm leading-6 text-slate-500", children: summary }) : null,
+          showingCatalog && enrollable.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx(BulkPolicyPicker, { value: bulkState, disabled: busy, onChange: applyBulk }) : null,
+          showingCatalog ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+            CatalogPreview,
             {
               query: command,
+              showFilterCount: showingPackageCatalog,
               previewNames,
               visibleCount: visibleCommands.length,
               totalCount: enrollable.length,
               reviewing: reviewingScripts,
+              adjustLabel: showingMcpCatalog ? "Adjust individual tools" : "Adjust individual scripts",
+              hideLabel: "Hide individual settings",
               onOpenReview: openScriptReview,
               onCloseReview: closeScriptReview
             }
           ) : null,
-          (!showingPackageCatalog || reviewingScripts) && visibleCommands.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mt-4 overflow-auto rounded-2xl border border-slate-200 bg-white", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+          (!showingCatalog || reviewingScripts) && visibleCommands.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mt-3 overflow-auto rounded-2xl border border-slate-200 bg-white", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
             CustomExtensionCommandList,
             {
               commands: visibleCommands,
@@ -3141,17 +3163,17 @@ function AddCustomExtensionWorkspace(props) {
           ) }) : null,
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-wrap items-center gap-3", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "submit", disabled: submitDisabled, className: "min-h-11 rounded-xl bg-brand-blue px-5 text-sm font-semibold text-white disabled:opacity-60", children: addDialogSubmitLabel({ recognized, busy, pending }) }),
-            recognized && showingPackageCatalog && pending === "allowed" ? /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", onClick: requestBlock, className: "min-h-11 rounded-xl px-4 text-sm font-semibold text-brand-dark", children: blockActionLabel(recognized.surface) }) : null,
-            recognized && showingPackageCatalog && pending === "blocked" ? /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", onClick: requestAllow, className: "min-h-11 rounded-xl px-4 text-sm font-semibold text-brand-dark", children: allowActionLabel(recognized.surface) }) : null
+            recognized && pending === "allowed" ? /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", onClick: requestBlock, className: "min-h-11 rounded-xl px-4 text-sm font-semibold text-brand-dark", children: blockActionLabel(recognized.surface) }) : null,
+            recognized && pending === "blocked" ? /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", onClick: requestAllow, className: "min-h-11 rounded-xl px-4 text-sm font-semibold text-brand-dark", children: allowActionLabel(recognized.surface) }) : null
           ] })
         ] })
       ]
     }
   );
 }
-function PackageScriptPreview(props) {
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-5", children: [
-    props.query.trim() !== "" ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs leading-5 text-brand-dark/60", children: filterCountCopy(props.visibleCount, props.totalCount) }) : null,
+function CatalogPreview(props) {
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-4", children: [
+    props.showFilterCount && props.query.trim() !== "" ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs leading-5 text-brand-dark/60", children: filterCountCopy(props.visibleCount, props.totalCount) }) : null,
     props.previewNames.length > 0 && !props.reviewing ? /* @__PURE__ */ jsxRuntimeExports.jsxs("ul", { className: "mt-3 flex flex-wrap gap-2", children: [
       props.previewNames.map((name) => /* @__PURE__ */ jsxRuntimeExports.jsx("li", { className: "rounded-full bg-slate-100 px-3 py-1.5 font-mono text-xs text-brand-dark", children: name }, name)),
       props.visibleCount > props.previewNames.length ? /* @__PURE__ */ jsxRuntimeExports.jsxs("li", { className: "rounded-full px-3 py-1.5 text-xs font-semibold text-brand-dark/60", children: [
@@ -3165,11 +3187,45 @@ function PackageScriptPreview(props) {
       {
         type: "button",
         onClick: props.reviewing ? props.onCloseReview : props.onOpenReview,
-        className: "mt-4 min-h-11 text-sm font-semibold text-brand-blue",
-        children: props.reviewing ? "Hide individual settings" : "Adjust individual scripts"
+        className: "mt-3 min-h-11 text-sm font-semibold text-brand-blue",
+        children: props.reviewing ? props.hideLabel : props.adjustLabel
       }
     )
   ] });
+}
+function BulkPolicyPicker(props) {
+  const choices = [
+    { value: "inherit", label: "Recommended" },
+    { value: "allow", label: "Allow all" },
+    { value: "block", label: "Block all" }
+  ];
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { role: "radiogroup", "aria-label": "All tools protection setting", className: "guard-segmented mt-4 w-fit", children: choices.map((choice) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+    BulkPolicyChoice,
+    {
+      choice,
+      checked: props.value === choice.value,
+      disabled: props.disabled,
+      onChoose: props.onChange
+    },
+    choice.value
+  )) });
+}
+function BulkPolicyChoice(props) {
+  const handleClick = reactExports.useCallback(() => {
+    props.onChoose(props.choice.value);
+  }, [props]);
+  return /* @__PURE__ */ jsxRuntimeExports.jsx(
+    "button",
+    {
+      type: "button",
+      role: "radio",
+      "aria-checked": props.checked,
+      disabled: props.disabled,
+      onClick: handleClick,
+      className: "min-h-11 px-4 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-45",
+      children: props.choice.label
+    }
+  );
 }
 function randomToken$1() {
   return crypto.randomUUID().replaceAll("-", "");

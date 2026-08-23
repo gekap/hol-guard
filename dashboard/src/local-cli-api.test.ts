@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   addedCustomExtensions,
   filterExtensionSuggestions,
+  applyBulkCommandState,
+  bulkCommandState,
   enrollmentCommandStates,
   filterPackageScriptCommands,
   isLocalCliId,
@@ -259,6 +261,12 @@ assert.deepEqual(
   enrollmentCommandStates(packageScripts.commands, "allowed", "package-scripts").map((entry) => entry.state),
   ["allow", "allow"],
 );
+assert.equal(bulkCommandState(packageScripts.commands), "inherit");
+assert.deepEqual(
+  applyBulkCommandState(packageScripts.commands, "allow").map((entry) => entry.state),
+  ["allow", "allow"],
+);
+assert.equal(bulkCommandState(applyBulkCommandState(packageScripts.commands, "block")), "block");
 assert.equal(seenSuggestionMeta(frequentTool), "Seen 4 times");
 assert.equal(seenSuggestionMeta(rareTool), "Seen once");
 
