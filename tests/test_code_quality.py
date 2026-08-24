@@ -91,6 +91,20 @@ class TestCheckNoShellInjection:
             assert result.passed is True
             assert result.points == 5
 
+    @pytest.mark.parametrize("receiver", ("mycp", "scp", "foochild_process"))
+    def test_ignores_shell_receiver_identifier_suffixes(self, receiver: str):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "runner.js").write_text(
+                f"{receiver}.exec(`echo ${{userInput}}`);\n",
+                encoding="utf-8",
+            )
+
+            result = check_no_shell_injection(root)
+
+            assert result.passed is True
+            assert result.points == 5
+
     def test_detects_interpolated_template_passed_directly_to_exec(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
