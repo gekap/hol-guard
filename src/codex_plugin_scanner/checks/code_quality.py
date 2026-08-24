@@ -14,6 +14,7 @@ EXCLUDED_DIRS = {"node_modules", ".git", "dist", ".next", "coverage", "__pycache
 EVAL_RE = re.compile(r"\beval\s*\(")
 FUNCTION_RE = re.compile(r"new\s+Function\s*\(")
 INTERPOLATED_TEMPLATE_PATTERN = r"`[^`]*\$\{[^}]+\}[^`]*`"
+TS_TEMPLATE_SUFFIX_PATTERN = r"(?:[ \t]+(?:as|satisfies)[ \t]+[^;\n]+)?"
 SHELL_CALL_PATTERN = r"(?:execSync|spawnSync|exec|spawn)"
 SHELL_RECEIVER_PATTERN = (
     r"(?:child_process|childProcess|cp|"
@@ -29,7 +30,8 @@ MEMBER_SHELL_TEMPLATE_RE = re.compile(
 )
 INTERPOLATED_TEMPLATE_ASSIGNMENT_RE = re.compile(
     rf"\b(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)"
-    rf"(?:\s*:\s*[^=;\n]+)?\s*=\s*{INTERPOLATED_TEMPLATE_PATTERN}\s*;?",
+    rf"(?:\s*:\s*[^=;\n]+)?\s*=\s*{INTERPOLATED_TEMPLATE_PATTERN}"
+    rf"{TS_TEMPLATE_SUFFIX_PATTERN}[ \t]*;?",
     re.S,
 )
 
@@ -50,9 +52,7 @@ def _find_code_files(plugin_dir: Path) -> list[Path]:
 def _shell_call_uses_variable(content: str, variable: str) -> bool:
     escaped_variable = re.escape(variable)
     variable_boundary = r"(?![\w$])"
-    direct_call = re.compile(
-        rf"(?<![\w.]){SHELL_CALL_PATTERN}\s*\(\s*{escaped_variable}{variable_boundary}"
-    )
+    direct_call = re.compile(rf"(?<![\w.]){SHELL_CALL_PATTERN}\s*\(\s*{escaped_variable}{variable_boundary}")
     member_call = re.compile(
         rf"{SHELL_RECEIVER_PATTERN}\s*\.\s*{SHELL_CALL_PATTERN}\s*\(\s*"
         rf"{escaped_variable}{variable_boundary}"
