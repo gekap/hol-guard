@@ -37,12 +37,17 @@ This contract freezes the v2 review vocabulary only. It does not change v1 Local
 - `resolved-allow-requires-allow-once-outcome`: `if_equals_then_equals`.
 - `resolved-block-requires-recorded-decision`: `if_equals_then_equals`.
 - `resolved-block-requires-block-outcome`: `if_equals_then_equals`.
+- `resolved-block-requires-blocked-continuation`: `if_equals_then_equals`.
 - `resolved-request-requires-applied-application`: `if_in_then_equals`.
+- `recorded-block-requires-blocked-continuation`: `if_all_equals_then_in`.
+- `applied-block-requires-blocked-continuation`: `if_all_equals_then_in`.
 - `resumed-continuation-requires-recorded-decision`: `if_in_then_equals`.
 - `resumed-continuation-requires-allow-once-decision`: `if_in_then_equals`.
 - `recorded-decision-has-delivery`: `if_equals_then_in`.
 - `delivery-requires-recorded-decision`: `if_in_then_equals`.
-- `applied-application-requires-applied-delivery`: `if_equals_then_equals`.
+- `completed-application-requires-applied-delivery`: `if_in_then_equals`.
+- `not-applicable-application-requires-not-applicable-delivery`: `if_equals_then_equals`.
+- `not-applicable-delivery-requires-not-applicable-application`: `if_equals_then_equals`.
 - `applied-continuation-requires-applied-application`: `if_in_then_equals`.
 - `not-applicable-continuation-requires-not-applicable-application`: `if_equals_then_equals`.
 - `failed-continuation-requires-compatible-application`: `if_equals_then_in`.
@@ -69,7 +74,7 @@ It must be attached to `localRequest`, `reviewRequest`, `decisionReceipt`, `deli
 
 ### deliveryStatus
 
-`none`, `queued`, `queued_offline`, `leased`, `applying`, `applied`, `rejected`, `failed`, `cancelled`
+`none`, `queued`, `queued_offline`, `leased`, `applying`, `applied`, `rejected`, `failed`, `cancelled`, `not_applicable`
 
 ### applicationStatus
 

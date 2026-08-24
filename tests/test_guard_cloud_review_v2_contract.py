@@ -12,6 +12,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
+from codex_plugin_scanner.guard.contracts import guard_cloud_review_v2 as contract_adapter
 from codex_plugin_scanner.guard.contracts.guard_cloud_review_v2 import (
     CONTRACT_PATH,
     CONTRACT_VERSION,
@@ -21,6 +22,7 @@ from codex_plugin_scanner.guard.contracts.guard_cloud_review_v2 import (
     load_contract,
     load_fixtures,
     render_public_documentation,
+    resolve_json_pointer,
     result_validation_schema,
     status_values,
     validate_generated_artifacts,
@@ -160,6 +162,7 @@ def test_valid_result_fixtures_cover_recorded_applied_and_continuation_outcomes(
         "allow-once-applied-and-resumed",
         "allow-once-applied-manual-retry",
         "block-applied-without-continuation",
+        "block-recorded-awaiting-local-application",
         "allow-once-applied-and-already-resumed",
         "continuation-failed-after-terminal-local-application",
         "continuation-not-applicable-without-local-application",
@@ -212,7 +215,7 @@ def test_reviewability_fixtures_preserve_the_immutable_block_boundary() -> None:
         validate_reviewability_case(case)
 
 
-def test_statuses_have_one_contract_owned_source_of_truth() -> None:
+def test_statuses_have_one_contract_owned_source_of_truth(monkeypatch: pytest.MonkeyPatch) -> None:
     assert status_values("requestStatus") == (
         "pending",
         "resolved_allow",
@@ -230,6 +233,23 @@ def test_statuses_have_one_contract_owned_source_of_truth() -> None:
     assert "sent" not in status_values("applicationStatus")
     with pytest.raises(ValueError, match="unknown Guard Cloud Review vocabulary"):
         _ = status_values("legacyDaemonAckStatus")
+    escaped_contract: dict[str, object] = {
+        "$defs": {"stage/status~values": [{"enum": ["queued", "applied"]}]},
+        "x-hol-contract": {"vocabularyPaths": {"escapedStatus": "#/$defs/stage~1status~0values/0"}},
+    }
+    monkeypatch.setattr(contract_adapter, "load_contract", lambda: escaped_contract)
+    assert status_values("escapedStatus") == ("queued", "applied")
+    assert resolve_json_pointer({"stages": [{"a/b~c": "ready"}]}, "/stages/0/a~1b~0c") == "ready"
+    assert resolve_json_pointer({"space key": "ready"}, "#/space%20key") == "ready"
+    assert resolve_json_pointer({"/": "ready"}, "#/%7E1") == "ready"
+    with pytest.raises(ValueError, match="invalid escape"):
+        _ = resolve_json_pointer({}, "/invalid~2escape")
+    with pytest.raises(ValueError, match="invalid percent escape"):
+        _ = resolve_json_pointer({}, "#/invalid%2")
+    with pytest.raises(ValueError, match="not valid UTF-8"):
+        _ = resolve_json_pointer({}, "#/%FF")
+    with pytest.raises(ValueError, match="invalid array index"):
+        _ = resolve_json_pointer(["ready"], "/01")
 
 
 def test_semantic_rules_are_portable_contract_data() -> None:
@@ -241,14 +261,19 @@ def test_semantic_rules_are_portable_contract_data() -> None:
         "correlation-equality",
         "exact-result-reviewable-pause",
         "recorded-decision-has-delivery",
-        "applied-application-requires-applied-delivery",
+        "completed-application-requires-applied-delivery",
         "resolved-allow-requires-recorded-decision",
         "resolved-block-requires-recorded-decision",
+        "resolved-block-requires-blocked-continuation",
         "resolved-request-requires-applied-application",
+        "recorded-block-requires-blocked-continuation",
+        "applied-block-requires-blocked-continuation",
         "resumed-continuation-requires-recorded-decision",
         "resumed-continuation-requires-allow-once-decision",
         "not-applicable-continuation-requires-not-applicable-application",
+        "not-applicable-delivery-requires-not-applicable-application",
         "failed-continuation-requires-compatible-application",
+        "not-applicable-application-requires-not-applicable-delivery",
     }
     assert {rule["operator"] for rule in rules} >= {
         "all_equal",

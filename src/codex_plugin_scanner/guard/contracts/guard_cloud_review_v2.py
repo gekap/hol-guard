@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Final, Protocol, cast
+from urllib.parse import unquote_to_bytes
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
@@ -45,10 +46,16 @@ _RFC3339_DATE_TIME: Final = re.compile(
     r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d"
     + r"(?P<fraction>\.\d+)?(?:Z|[+-](?:0\d|1\d|2[0-3]):[0-5]\d)$"
 )
+_JSON_POINTER_ARRAY_INDEX: Final = re.compile(r"^(?:0|[1-9]\d*)$")
+_INVALID_JSON_POINTER_PERCENT_ESCAPE: Final = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
 
 class _Validator(Protocol):
     def validate(self, instance: object) -> None: ...
+
+
+class _UnresolvedJsonPointerError(ValueError):
+    """A syntactically valid JSON pointer did not resolve in the document."""
 
 
 def _read_mapping(path: Path) -> dict[str, object]:
@@ -117,10 +124,12 @@ def status_values(name: str) -> tuple[str, ...]:
     contract = load_contract()
     paths = _mapping_field(_contract_metadata(contract), "vocabularyPaths")
     pointer = paths.get(name)
-    if not isinstance(pointer, str) or not pointer.startswith("#/$defs/"):
+    if not isinstance(pointer, str) or not pointer.startswith("#"):
         raise ValueError(f"unknown Guard Cloud Review vocabulary: {name}")
-    definitions = _mapping_field(contract, "$defs")
-    definition = _mapping_field(definitions, pointer.removeprefix("#/$defs/"))
+    try:
+        definition = _string_keyed_mapping(resolve_json_pointer(contract, pointer), "vocabulary definition")
+    except ValueError as error:
+        raise ValueError(f"invalid Guard Cloud Review vocabulary: {name}") from error
     try:
         values = _string_array(definition.get("enum"), f"invalid Guard Cloud Review vocabulary: {name}")
     except ValueError as error:
@@ -144,28 +153,82 @@ def result_validation_schema() -> dict[str, object]:
     return load_contract()
 
 
+def _decode_json_pointer_token(token: str) -> str:
+    decoded: list[str] = []
+    index = 0
+    while index < len(token):
+        character = token[index]
+        if character != "~":
+            decoded.append(character)
+            index += 1
+            continue
+        if index + 1 >= len(token) or token[index + 1] not in {"0", "1"}:
+            raise ValueError("JSON pointer contains an invalid escape")
+        decoded.append("~" if token[index + 1] == "0" else "/")
+        index += 2
+    return "".join(decoded)
+
+
+def _json_pointer_tokens(pointer: str) -> tuple[str, ...]:
+    value = pointer
+    if value.startswith("#"):
+        fragment = value.removeprefix("#")
+        if _INVALID_JSON_POINTER_PERCENT_ESCAPE.search(fragment) is not None:
+            raise ValueError("JSON pointer fragment contains an invalid percent escape")
+        try:
+            value = unquote_to_bytes(fragment).decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("JSON pointer fragment is not valid UTF-8") from error
+    if value and not value.startswith("/"):
+        raise ValueError("JSON pointer must be absolute or a fragment pointer")
+    if not value:
+        return ()
+    return tuple(_decode_json_pointer_token(token) for token in value.removeprefix("/").split("/"))
+
+
+def resolve_json_pointer(document: object, pointer: str) -> object:
+    """Resolve an RFC6901 absolute or fragment JSON pointer through objects and arrays."""
+
+    value = document
+    for token in _json_pointer_tokens(pointer):
+        if isinstance(value, Mapping):
+            mapping = _string_keyed_mapping(cast(Mapping[object, object], value), "JSON pointer value")
+            if token not in mapping:
+                raise _UnresolvedJsonPointerError(f"JSON pointer token does not resolve: {token}")
+            value = mapping[token]
+            continue
+        if not isinstance(value, list):
+            raise _UnresolvedJsonPointerError("JSON pointer does not resolve through an object or array")
+        if _JSON_POINTER_ARRAY_INDEX.fullmatch(token) is None:
+            raise ValueError("JSON pointer contains an invalid array index")
+        values = cast(list[object], value)
+        index = int(token)
+        if index >= len(values):
+            raise _UnresolvedJsonPointerError(f"JSON pointer array index is out of range: {token}")
+        value = values[index]
+    return value
+
+
 def _value_at_path(payload: Mapping[str, object], path: object) -> object:
     if not isinstance(path, str) or not path.startswith("/"):
         raise ValueError("semantic rule path must be an absolute JSON pointer")
-    value: object = payload
-    for segment in path.removeprefix("/").split("/"):
-        mapping = _string_keyed_mapping(value, f"semantic rule path is not an object: {path}")
-        if segment not in mapping:
-            raise ValueError(f"semantic rule path is missing: {path}")
-        value = mapping[segment]
-    return value
+    try:
+        return resolve_json_pointer(payload, path)
+    except _UnresolvedJsonPointerError as error:
+        raise ValueError(f"semantic rule path is missing: {path}") from error
+    except ValueError as error:
+        raise ValueError(f"semantic rule path is invalid: {path}") from error
 
 
 def _optional_value_at_path(payload: Mapping[str, object], path: object) -> object:
     if not isinstance(path, str) or not path.startswith("/"):
         raise ValueError("semantic rule path must be an absolute JSON pointer")
-    value: object = payload
-    for segment in path.removeprefix("/").split("/"):
-        mapping = _string_keyed_mapping(value, f"semantic rule path is not an object: {path}")
-        if segment not in mapping:
-            return _MISSING
-        value = mapping[segment]
-    return value
+    try:
+        return resolve_json_pointer(payload, path)
+    except _UnresolvedJsonPointerError:
+        return _MISSING
+    except ValueError as error:
+        raise ValueError(f"semantic rule path is invalid: {path}") from error
 
 
 def _is_rfc3339_date_time(value: object) -> bool:

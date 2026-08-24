@@ -68,6 +68,19 @@
       }
     },
     {
+      "name": "block-recorded-awaiting-local-application",
+      "result": {
+        "contractVersion": "guard-cloud-review-v2",
+        "correlationId": "gcrv2_018f0a12-1234-7abc-8def-0123456789ab",
+        "observedAt": "2026-08-23T18:01:00Z",
+        "request": {"correlationId": "gcrv2_018f0a12-1234-7abc-8def-0123456789ab", "localRequestId": "local-request-08", "reviewRequestId": "review-request-08", "kind": "reviewable_pause", "status": "pending", "visibilityStatus": "visible"},
+        "decision": {"correlationId": "gcrv2_018f0a12-1234-7abc-8def-0123456789ab", "receiptId": "receipt-08", "outcome": "block", "status": "recorded", "recordedAt": "2026-08-23T18:00:00Z"},
+        "delivery": {"correlationId": "gcrv2_018f0a12-1234-7abc-8def-0123456789ab", "commandJobId": "command-job-08", "status": "queued"},
+        "application": {"correlationId": "gcrv2_018f0a12-1234-7abc-8def-0123456789ab", "status": "waiting"},
+        "continuation": {"correlationId": "gcrv2_018f0a12-1234-7abc-8def-0123456789ab", "capability": "unsupported", "status": "waiting"}
+      }
+    },
+    {
       "name": "allow-once-applied-and-already-resumed",
       "result": {
         "contractVersion": "guard-cloud-review-v2",
@@ -99,9 +112,9 @@
         "contractVersion": "guard-cloud-review-v2",
         "correlationId": "gcrv2_018f0a11-1234-7abc-8def-0123456789ab",
         "observedAt": "2026-08-23T18:03:00Z",
-        "request": {"correlationId": "gcrv2_018f0a11-1234-7abc-8def-0123456789ab", "localRequestId": "local-request-07", "reviewRequestId": "review-request-07", "kind": "reviewable_pause", "status": "expired", "visibilityStatus": "stale"},
-        "decision": {"correlationId": "gcrv2_018f0a11-1234-7abc-8def-0123456789ab", "status": "none"},
-        "delivery": {"correlationId": "gcrv2_018f0a11-1234-7abc-8def-0123456789ab", "status": "none"},
+        "request": {"correlationId": "gcrv2_018f0a11-1234-7abc-8def-0123456789ab", "localRequestId": "local-request-07", "reviewRequestId": "review-request-07", "kind": "reviewable_pause", "status": "pending", "visibilityStatus": "visible"},
+        "decision": {"correlationId": "gcrv2_018f0a11-1234-7abc-8def-0123456789ab", "receiptId": "receipt-07", "outcome": "allow_once", "status": "recorded", "recordedAt": "2026-08-23T18:00:00Z"},
+        "delivery": {"correlationId": "gcrv2_018f0a11-1234-7abc-8def-0123456789ab", "status": "not_applicable"},
         "application": {"correlationId": "gcrv2_018f0a11-1234-7abc-8def-0123456789ab", "status": "not_applicable"},
         "continuation": {"correlationId": "gcrv2_018f0a11-1234-7abc-8def-0123456789ab", "resultId": "continuation-07", "capability": "unsupported", "status": "not_applicable", "completedAt": "2026-08-23T18:03:00Z"}
       }
@@ -120,10 +133,16 @@
     {"name": "resolved-allow-requires-recorded-decision", "source": "pending-without-decision-or-delivery", "mutations": [{"path": ["request", "status"], "value": "resolved_allow"}], "error": "conditional value must match"},
     {"name": "resolved-block-requires-recorded-decision", "source": "pending-without-decision-or-delivery", "mutations": [{"path": ["request", "status"], "value": "resolved_block"}], "error": "conditional value must match"},
     {"name": "resolved-allow-requires-matching-outcome", "source": "allow-once-applied-and-resumed", "mutations": [{"path": ["decision", "outcome"], "value": "block"}], "error": "conditional value is not allowed"},
-    {"name": "not-applicable-continuation-requires-not-applicable-application", "source": "continuation-not-applicable-without-local-application", "mutations": [{"path": ["application", "status"], "value": "waiting"}], "error": "not-applicable-continuation-requires-not-applicable-application"},
+    {"name": "not-applicable-continuation-requires-not-applicable-application", "source": "continuation-not-applicable-without-local-application", "mutations": [{"path": ["delivery", "status"], "value": "queued"}, {"path": ["delivery", "commandJobId"], "value": "command-job-07"}, {"path": ["application", "status"], "value": "waiting"}], "error": "not-applicable-continuation-requires-not-applicable-application"},
     {"name": "failed-continuation-requires-compatible-application", "source": "continuation-failed-after-terminal-local-application", "mutations": [{"path": ["application", "status"], "value": "waiting"}, {"path": ["application", "reason"], "delete": true}, {"path": ["application", "completedAt"], "delete": true}], "error": "failed-continuation-requires-compatible-application"},
+    {"name": "completed-application-requires-applied-delivery", "source": "continuation-failed-after-terminal-local-application", "mutations": [{"path": ["delivery", "status"], "value": "queued"}, {"path": ["delivery", "leasedAt"], "delete": true}, {"path": ["delivery", "completedAt"], "delete": true}], "error": "completed-application-requires-applied-delivery"},
+    {"name": "rejected-application-requires-applied-delivery", "source": "decision-recorded-awaiting-local-application", "mutations": [{"path": ["application", "status"], "value": "rejected_stale"}, {"path": ["application", "reason"], "value": "stale request"}, {"path": ["application", "completedAt"], "value": "2026-08-23T18:02:00Z"}], "error": "completed-application-requires-applied-delivery"},
+    {"name": "not-applicable-application-requires-not-applicable-delivery", "source": "continuation-not-applicable-without-local-application", "mutations": [{"path": ["delivery", "status"], "value": "queued"}, {"path": ["delivery", "commandJobId"], "value": "command-job-07"}], "error": "not-applicable-application-requires-not-applicable-delivery"},
     {"name": "resolved-request-requires-applied-application", "source": "allow-once-applied-manual-retry", "mutations": [{"path": ["application", "status"], "value": "failed_terminal"}, {"path": ["application", "appliedAt"], "delete": true}, {"path": ["application", "reason"], "value": "local application failed"}, {"path": ["application", "completedAt"], "value": "2026-08-23T18:03:00Z"}], "error": "resolved-request-requires-applied-application"},
-    {"name": "block-decision-cannot-resume", "source": "block-applied-without-continuation", "mutations": [{"path": ["continuation", "status"], "value": "resumed"}], "error": "resumed-continuation-requires-allow-once-decision"},
+    {"name": "block-decision-cannot-resume", "source": "block-applied-without-continuation", "mutations": [{"path": ["continuation", "status"], "value": "resumed"}], "error": "resolved-block-requires-blocked-continuation"},
+    {"name": "block-decision-cannot-already-resume", "source": "block-applied-without-continuation", "mutations": [{"path": ["continuation", "status"], "value": "already_resumed"}], "error": "resolved-block-requires-blocked-continuation"},
+    {"name": "block-decision-cannot-manually-retry", "source": "block-applied-without-continuation", "mutations": [{"path": ["continuation", "status"], "value": "manual_retry_required"}], "error": "resolved-block-requires-blocked-continuation"},
+    {"name": "applied-block-cannot-remain-waiting", "source": "block-applied-without-continuation", "mutations": [{"path": ["continuation", "status"], "value": "waiting"}, {"path": ["continuation", "resultId"], "delete": true}, {"path": ["continuation", "completedAt"], "delete": true}], "error": "resolved-block-requires-blocked-continuation"},
     {"name": "resumed-continuation-requires-recorded-decision", "source": "allow-once-applied-and-resumed", "mutations": [{"path": ["request", "status"], "value": "pending"}, {"path": ["decision", "status"], "value": "none"}, {"path": ["decision", "receiptId"], "delete": true}, {"path": ["decision", "outcome"], "delete": true}, {"path": ["decision", "recordedAt"], "delete": true}], "error": "resumed-continuation-requires-recorded-decision"}
   ],
   "reviewabilityCases": [
