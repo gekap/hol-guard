@@ -1,20 +1,33 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import urllib.error
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypedDict
 
 import pytest
 
 from codex_plugin_scanner.guard import store_review_event_dead_letters
-from codex_plugin_scanner.guard.models import GuardApprovalRequest
-from codex_plugin_scanner.guard.review_event_integrity import review_event_payload_digest
 from codex_plugin_scanner.guard.runtime import live_request_sync
 from codex_plugin_scanner.guard.store import GuardStore
-from tests.guard_review_event_outbox_test_support import as_int
+from tests.guard_review_event_outbox_test_support import (
+    as_int,
+)
+from tests.guard_review_event_outbox_test_support import (
+    auth_context as _auth,
+)
+from tests.guard_review_event_outbox_test_support import (
+    connect_store as _connect,
+)
+from tests.guard_review_event_outbox_test_support import (
+    event_row as _event_row,
+)
+from tests.guard_review_event_outbox_test_support import (
+    replace_event_payload as _replace_event_payload,
+)
+from tests.guard_review_event_outbox_test_support import (
+    review_request as _request,
+)
 from tests.test_guard_review_event_batch_worker import assert_byte_capped_batch
 
 # pyright: reportAny=false, reportPrivateUsage=false, reportUnknownMemberType=false
@@ -22,54 +35,6 @@ from tests.test_guard_review_event_batch_worker import assert_byte_capped_batch
 
 _NOW = "2026-08-24T14:00:00+00:00"
 _LATER = "2026-08-24T14:00:01+00:00"
-
-
-class _Binding(TypedDict):
-    oauth_subject_hash: str
-    workspace_id: str
-    machine_id: str
-    machine_installation_id: str
-
-
-def _request(request_id: str, *, summary: str = "Review action") -> GuardApprovalRequest:
-    return GuardApprovalRequest(
-        request_id=request_id,
-        harness="codex",
-        artifact_id=f"codex:project:{request_id}",
-        artifact_name="Test action",
-        artifact_hash="hash-abc",
-        policy_action="require-reapproval",
-        recommended_scope="artifact",
-        changed_fields=("tool_action_request",),
-        source_scope="project",
-        config_path="/test/config.toml",
-        review_command=f"hol-guard approvals approve {request_id}",
-        approval_url=f"http://127.0.0.1:5474/requests/{request_id}",
-        action_identity=request_id,
-        queue_group_id=request_id,
-        trigger_summary=summary,
-        last_seen_at=_NOW,
-    )
-
-
-def _connect(store: GuardStore) -> _Binding:
-    store.set_sync_payload(
-        "oauth_local_credentials",
-        {"grant_id": "grant-1", "workspace_id": "workspace-1", "machine_id": "machine-1"},
-        _NOW,
-    )
-    binding = store.get_live_request_oauth_binding()
-    assert binding is not None
-    return {
-        "oauth_subject_hash": binding["oauth_subject_hash"],
-        "workspace_id": binding["workspace_id"],
-        "machine_id": binding["machine_id"],
-        "machine_installation_id": binding["machine_installation_id"],
-    }
-
-
-def _auth(binding: _Binding) -> dict[str, object]:
-    return {"oauth_source": "default", **binding}
 
 
 def _accepting_transport(captured: list[dict[str, object]]) -> Callable[..., dict[str, object]]:
@@ -85,36 +50,6 @@ def _accepting_transport(captured: list[dict[str, object]]) -> Callable[..., dic
         }
 
     return post
-
-
-def _event_row(store: GuardStore) -> sqlite3.Row:
-    with store._connect() as connection:
-        row = connection.execute("select * from guard_review_outbox_events").fetchone()
-    assert row is not None
-    return row
-
-
-def _replace_event_payload(store: GuardStore, row: sqlite3.Row, payload: dict[str, object]) -> None:
-    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    with store._connect() as connection:
-        connection.execute(
-            """
-            update guard_review_outbox_events set payload_json = ?, payload_hash = ?
-            where stream_sequence = ?
-            """,
-            (
-                payload_json,
-                review_event_payload_digest(
-                    payload_json,
-                    oauth_source=row["oauth_source"],
-                    oauth_subject_hash=row["oauth_subject_hash"],
-                    workspace_id=row["workspace_id"],
-                    machine_id=row["machine_id"],
-                    machine_installation_id=row["machine_installation_id"],
-                ),
-                row["stream_sequence"],
-            ),
-        )
 
 
 def test_create_then_resolve_before_sync_delivers_distinct_immutable_transitions(
@@ -250,6 +185,40 @@ def test_dead_letter_access_is_binding_scoped_and_retry_appends_new_sequence(tmp
     assert len(retried) == 1 and int(retried[0]["sequence"]) > sequence
 
 
+def test_oversized_dead_letter_leaves_active_stream_and_retries_at_tail(tmp_path: Path) -> None:
+    store = GuardStore(tmp_path / "guard")
+    binding = _connect(store)
+    store.add_approval_request(_request("oversized"), _NOW)
+    sequence = int(_event_row(store)["stream_sequence"])
+
+    assert (
+        store.dead_letter_live_request_outbox_event(
+            sequence, reason="batch_byte_limit_exceeded", error="too large", **binding
+        )
+        == 1
+    )
+    with store._connect() as connection:
+        active = connection.execute("select 1 from guard_review_outbox_events").fetchone()
+    assert active is None
+    assert store.retry_live_request_outbox_dead_letters(**binding) == 1
+    retried = store.list_ready_live_request_outbox(now=_LATER, limit=1, **binding)
+    assert len(retried) == 1 and int(retried[0]["sequence"]) > sequence
+
+
+def test_explicit_invalid_dead_letter_filter_never_retries_all(tmp_path: Path) -> None:
+    store = GuardStore(tmp_path / "guard")
+    binding = _connect(store)
+    store.add_approval_request(_request("request-1"), _NOW)
+    sequence = int(_event_row(store)["stream_sequence"])
+    assert (
+        store.dead_letter_live_request_outbox_event(sequence, reason="invalid_event_schema", error="invalid", **binding)
+        == 1
+    )
+
+    assert store.retry_live_request_outbox_dead_letters([0, -1], **binding) == 0
+    assert len(store.list_live_request_outbox_dead_letters(**binding)) == 1
+
+
 def test_dead_letter_retention_is_bounded_per_binding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -321,7 +290,12 @@ def _assert_batch_worker_load_and_recovery(tmp_path: Path, monkeypatch: pytest.M
     store.add_approval_request(_request("dead-letter"), clock[0])
     live_request_sync.sync_live_requests_once(store, _auth(binding))
     assert len(store.list_live_request_outbox_dead_letters(**binding)) == 1
+    retained = _event_row(store)
+    assert retained["stream_sequence"] == 1_001
+    assert retained["binding_status"] == "quarantined"
     assert store.retry_live_request_outbox_dead_letters(**binding) == 1
+    retried = store.list_ready_live_request_outbox(now="2026-08-25T14:01:00+00:00", limit=1, **binding)
+    assert len(retried) == 1 and retried[0]["stream_sequence"] == 1_001
 
 
 def test_request_sequence_survives_ack_compaction_refresh_and_restart(

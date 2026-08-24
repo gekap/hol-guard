@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from collections.abc import Callable
@@ -35,6 +36,7 @@ class LiveRequestSyncWorker:
 
 _WATCHDOG_INTERVAL_SECONDS = 5.0
 _MINIMUM_STALLED_HEARTBEAT_SECONDS = 90.0
+_LOGGER = logging.getLogger(__name__)
 
 
 def _sync_module() -> Any:
@@ -55,10 +57,17 @@ def start_cloud_sync_sync_worker(
     sync = _sync_module()
     thread_runtime = sync.threading
     existing_watchdog = getattr(existing, "watchdog_thread", None) if existing is not None else None
+    if existing is not None and not existing.stop_event.is_set() and existing.thread.is_alive():
+        if isinstance(existing, LiveRequestSyncWorker) and (
+            existing_watchdog is None or not existing_watchdog.is_alive()
+        ):
+            _start_review_event_watchdog(store, existing)
+        return existing
     if (
         existing is not None
         and not existing.stop_event.is_set()
-        and (existing.thread.is_alive() or (existing_watchdog is not None and existing_watchdog.is_alive()))
+        and existing_watchdog is not None
+        and existing_watchdog.is_alive()
     ):
         return existing
     if existing is not None and existing.thread.is_alive():
@@ -103,7 +112,12 @@ def start_cloud_sync_sync_worker(
     )
     worker.unregister_wake = register_review_event_outbox_wake_callback(store, wake_event.set)
     thread.start()
-    watchdog_thread = thread_runtime.Thread(
+    _start_review_event_watchdog(store, worker)
+    return worker
+
+
+def _start_review_event_watchdog(store: GuardStore, worker: LiveRequestSyncWorker) -> None:
+    watchdog_thread = threading.Thread(
         target=_watch_review_event_worker,
         kwargs={"store": store, "worker": worker},
         daemon=True,
@@ -111,7 +125,6 @@ def start_cloud_sync_sync_worker(
     )
     worker.watchdog_thread = watchdog_thread
     watchdog_thread.start()
-    return worker
 
 
 def stop_cloud_sync_sync_worker(worker: LiveRequestSyncWorker | None) -> LiveRequestSyncWorker | None:
@@ -139,10 +152,16 @@ def _watch_review_event_worker(store: GuardStore, worker: LiveRequestSyncWorker)
     ):
         if worker.stop_event.is_set():
             return
-        if not worker.thread.is_alive():
-            _restart_dead_review_event_worker(store, worker)
-            continue
-        _record_stalled_heartbeat_if_needed(store, worker)
+        try:
+            if not worker.thread.is_alive():
+                _ = _restart_dead_review_event_worker(store, worker)
+                continue
+            _record_stalled_heartbeat_if_needed(store, worker)
+        except Exception as error:
+            _LOGGER.warning(
+                "Guard Review event watchdog check failed: %s",
+                type(error).__name__,
+            )
 
 
 def _restart_dead_review_event_worker(store: GuardStore, worker: LiveRequestSyncWorker) -> bool:
@@ -266,6 +285,8 @@ def _cloud_sync_sync_loop(
     sync = _sync_module()
     error_streak = 0
     while not stop_event.is_set():
+        if wake_event is not None:
+            wake_event.clear()
         try:
             state = sync._load_sync_state(store)
             state.update({"worker_heartbeat_at": sync._now(), "worker_state": "running"})
@@ -304,11 +325,13 @@ def _cloud_sync_sync_loop(
             if error_streak
             else _configured_seconds("GUARD_LIVE_REQUEST_POLL_INTERVAL", poll_interval)
         )
+        if stop_event.is_set():
+            return
         if wake_event is None:
             if stop_event.wait(wait):
                 return
-        elif wake_event.wait(wait):
-            wake_event.clear()
+        else:
+            wake_event.wait(wait)
         if stop_event.is_set():
             return
 

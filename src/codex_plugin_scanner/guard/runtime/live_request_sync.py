@@ -253,6 +253,7 @@ def sync_live_requests_once(
                         cursor=None,
                         events=[],
                     )
+                    attempted_authenticated_round_trip = True
                 break
 
             batch = prepare_review_event_batch(
@@ -344,7 +345,6 @@ def sync_live_requests_once(
                 "state": "idle",
                 "last_sync_at": completed_at,
                 "last_success_at": completed_at,
-                "last_authenticated_round_trip_at": completed_at,
                 "synced_count": total_accepted,
                 "rejected_count": total_rejected,
                 "last_error": all_errors[0] if all_errors else None,
@@ -354,6 +354,8 @@ def sync_live_requests_once(
                 "in_flight_sequences": [],
             }
         )
+        if attempted_authenticated_round_trip:
+            state["last_authenticated_round_trip_at"] = completed_at
         _save_sync_state(store, state)
 
         outbox_depth = outbox_status["depth"]

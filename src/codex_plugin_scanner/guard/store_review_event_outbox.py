@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 
 from .review_event_wake import notify_review_event_outbox_wake
+from .runtime.time_support import parse_utc_timestamp
 from .store_review_event_outbox_binding import (
     explicitly_reassign_quarantined_events,
     load_review_oauth_binding,
@@ -28,14 +29,9 @@ def _retry_at(now: str, attempt_count: int) -> str:
 
 
 def _event_age_seconds(now: str, occurred_at: object) -> int | None:
-    if not isinstance(occurred_at, str):
-        return None
-    try:
-        observed = datetime.fromisoformat(now.replace("Z", "+00:00"))
-        occurred = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if observed.tzinfo is None or occurred.tzinfo is None:
+    observed = parse_utc_timestamp(now)
+    occurred = parse_utc_timestamp(occurred_at)
+    if observed is None or occurred is None:
         return None
     return max(0, int((observed - occurred).total_seconds()))
 

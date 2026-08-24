@@ -80,6 +80,7 @@ class StoreReviewEventDeadLetterMixin:
         workspace_id: str,
         machine_id: str,
         machine_installation_id: str,
+        retain_outbox_event: bool = False,
     ) -> int:
         binding = normalized_delivery_binding(
             oauth_subject_hash=oauth_subject_hash,
@@ -117,7 +118,7 @@ class StoreReviewEventDeadLetterMixin:
                 """,
                 (*values, reason[:128], error[:512], datetime.now(timezone.utc).isoformat()),
             )
-            if reason == "batch_byte_limit_exceeded":
+            if retain_outbox_event:
                 connection.execute(
                     """
                     update guard_review_outbox_events
@@ -196,6 +197,8 @@ class StoreReviewEventDeadLetterMixin:
             machine_installation_id=machine_installation_id,
         )
         requested = tuple(sorted({int(sequence) for sequence in sequences or () if int(sequence) > 0}))
+        if sequences is not None and not requested:
+            return 0
         query = """
             select * from guard_review_outbox_dead_letters where oauth_source = ?
               and oauth_subject_hash = ? and workspace_id = ?

@@ -9,6 +9,13 @@ from collections.abc import Callable
 from ..store import GuardStore
 
 
+def _positive_sequence(value: str) -> int:
+    sequence = int(value)
+    if sequence < 1:
+        raise argparse.ArgumentTypeError("dead-letter sequence must be positive")
+    return sequence
+
+
 def add_review_event_dead_letter_arguments(parser: argparse.ArgumentParser) -> None:
     """Add explicit, bounded dead-letter recovery controls."""
 
@@ -20,9 +27,21 @@ def add_review_event_dead_letter_arguments(parser: argparse.ArgumentParser) -> N
     parser.add_argument(
         "--dead-letter-sequence",
         action="append",
-        type=int,
+        type=_positive_sequence,
         help="With dead-letters and --retry-dead-letters, retry one stream sequence.",
     )
+
+
+def review_event_dead_letter_usage_error(args: argparse.Namespace, connect_subcommand: object) -> str | None:
+    """Reject recovery-only flags before ordinary connect can start OAuth."""
+
+    retry = bool(getattr(args, "retry_dead_letters", False))
+    sequences = getattr(args, "dead_letter_sequence", None)
+    if connect_subcommand != "dead-letters" and (retry or sequences is not None):
+        return "dead-letter options require `hol-guard connect dead-letters`"
+    if sequences is not None and not retry:
+        return "--dead-letter-sequence requires --retry-dead-letters"
+    return None
 
 
 def run_review_event_dead_letters_command(

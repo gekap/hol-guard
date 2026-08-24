@@ -49,6 +49,7 @@ from ..runtime.command_queue import command_queue_status
 from ._commands_shared import *
 from .commands_parser_helpers import *
 from .commands_review_event_dead_letters import (
+    review_event_dead_letter_usage_error,
     run_review_event_dead_letters_command,
     run_review_event_reassign_command,
 )
@@ -131,6 +132,10 @@ def _run_guard_connect_command(
 ) -> int:
     store = _require_guard_store(store)
     connect_subcommand = getattr(args, "connect_command", None)
+    dead_letter_usage_error = review_event_dead_letter_usage_error(args, connect_subcommand)
+    if dead_letter_usage_error is not None:
+        print(dead_letter_usage_error, file=sys.stderr)
+        return 2
     if connect_subcommand == "repair":
         payload = run_guard_connect_repair_command(
             store=store,

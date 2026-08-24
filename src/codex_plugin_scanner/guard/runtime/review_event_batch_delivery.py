@@ -58,7 +58,10 @@ def prepare_review_event_batch(
             sequence,
             reason="batch_byte_limit_exceeded",
             error="Review event exceeds the configured delivery byte limit.",
-            **delivery_binding,
+            oauth_subject_hash=delivery_binding["oauth_subject_hash"],
+            workspace_id=delivery_binding["workspace_id"],
+            machine_id=delivery_binding["machine_id"],
+            machine_installation_id=delivery_binding["machine_installation_id"],
         )
     return batch
 
@@ -196,7 +199,11 @@ def _reconcile_per_event_results(
                 sequence,
                 reason=str(item.get("code") or "permanent_rejection"),
                 error=retry_message([item]),
-                **delivery_binding,
+                retain_outbox_event=sequence > contiguous_ack,
+                oauth_subject_hash=delivery_binding["oauth_subject_hash"],
+                workspace_id=delivery_binding["workspace_id"],
+                machine_id=delivery_binding["machine_id"],
+                machine_installation_id=delivery_binding["machine_installation_id"],
             )
         else:
             retries.append(sequence)
