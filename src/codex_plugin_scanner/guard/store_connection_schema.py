@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import ClassVar
 from uuid import uuid4
 
+from . import store_review_event_outbox_schema
 from .mcp.policy_store import ensure_mcp_policy_request_schema
 from .sqlite_profile import (
     SQLiteMigrationGateReport,
@@ -34,10 +35,6 @@ from .store_command_shadow_schema import ensure_command_shadow_schema
 from .store_extension_control_authority_schema import ensure_extension_control_authority_schema
 from .store_live_request_outbox import ensure_live_request_outbox_schema, seed_live_request_outbox
 from .store_local_cli_schema import ensure_local_cli_schema
-from .store_review_event_outbox_schema import (
-    REVIEW_EVENT_OUTBOX_MIGRATION_VERSION,
-    finalize_review_event_payload_hashes,
-)
 from .store_secret_policy_integrity import _POLICY_INTEGRITY_LOOKUP_UNSET
 from .store_storage_maintenance import (
     STORAGE_MAINTENANCE_MIGRATION_VERSION,
@@ -158,14 +155,11 @@ _POLICY_INDEX_STATEMENTS = (
 )
 
 _RECEIPT_WARN_ROLLUP_MIGRATION_VERSION = 16
-# Include the workflow-capability retired-index migration so a database created under an
-# earlier schema version (which still owns the retired index) is not treated as current and
-# is forced through ``_initialize_schema`` on the next open, where the index is reaped.
-_REQUIRED_SCHEMA_MIGRATION_VERSIONS = (
+_REQUIRED_SCHEMA_MIGRATION_VERSIONS = (  # Keep retired-index databases on the path that reaps the index.
     *range(2, STORAGE_QUERY_INDEX_MIGRATION_VERSION + 1),
     WORKFLOW_CAPABILITY_RECEIPT_EVENT_INDEX_MIGRATION_VERSION,
     WATCH_ONLY_APPROVAL_MIGRATION_VERSION,
-    REVIEW_EVENT_OUTBOX_MIGRATION_VERSION,
+    store_review_event_outbox_schema.REVIEW_EVENT_OUTBOX_MIGRATION_VERSION,
 )
 
 
@@ -388,7 +382,7 @@ class StoreConnectionSchemaMixin:
             connection.execute(f"pragma cache_size=-{SQLITE_CACHE_SIZE_KIB}")
             connection.execute(f"pragma mmap_size={SQLITE_MMAP_SIZE_BYTES}")
             yield connection
-            finalize_review_event_payload_hashes(connection)
+            store_review_event_outbox_schema.finalize_review_event_payload_hashes(connection)
             commit_started = time.monotonic()
             try:
                 connection.commit()
