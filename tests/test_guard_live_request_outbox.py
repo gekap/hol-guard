@@ -175,9 +175,9 @@ def test_acknowledgement_compacts_only_contiguous_binding_prefix(tmp_path) -> No
     assert cursor["acknowledged_stream_sequence"] == second
 
 
-def test_request_creation_rolls_back_when_event_append_fails(tmp_path) -> None:
-    store = GuardStore(tmp_path / "guard")
-    with store._connect() as connection:
+def test_request_mutations_roll_back_when_event_append_fails(tmp_path) -> None:
+    create_store = GuardStore(tmp_path / "create-guard")
+    with create_store._connect() as connection:
         connection.execute(
             """
             create trigger reject_review_event before insert on guard_review_outbox_events
@@ -186,17 +186,15 @@ def test_request_creation_rolls_back_when_event_append_fails(tmp_path) -> None:
         )
 
     with pytest.raises(sqlite3.IntegrityError, match="event write failed"):
-        store.add_approval_request(_request("request-1"), _NOW)
+        create_store.add_approval_request(_request("request-1"), _NOW)
 
-    assert store.get_approval_request("request-1") is None
-    assert _all_events(store) == []
+    assert create_store.get_approval_request("request-1") is None
+    assert _all_events(create_store) == []
 
-
-def test_request_resolution_rolls_back_when_event_append_fails(tmp_path) -> None:
-    store = GuardStore(tmp_path / "guard")
-    _connect(store)
-    store.add_approval_request(_request("request-1"), _NOW)
-    with store._connect() as connection:
+    resolve_store = GuardStore(tmp_path / "resolve-guard")
+    _connect(resolve_store)
+    resolve_store.add_approval_request(_request("request-1"), _NOW)
+    with resolve_store._connect() as connection:
         connection.execute(
             """
             create trigger reject_resolution_event before insert on guard_review_outbox_events
@@ -206,7 +204,7 @@ def test_request_resolution_rolls_back_when_event_append_fails(tmp_path) -> None
         )
 
     with pytest.raises(sqlite3.IntegrityError, match="resolution event failed"):
-        store.resolve_approval_request(
+        resolve_store.resolve_approval_request(
             "request-1",
             resolution_action="approve",
             resolution_scope="artifact",
@@ -214,10 +212,10 @@ def test_request_resolution_rolls_back_when_event_append_fails(tmp_path) -> None
             resolved_at=_LATER,
         )
 
-    request = store.get_approval_request("request-1")
+    request = resolve_store.get_approval_request("request-1")
     assert request is not None
     assert request["status"] == "pending"
-    assert [row["event_type"] for row in _all_events(store)] == ["review.request.created"]
+    assert [row["event_type"] for row in _all_events(resolve_store)] == ["review.request.created"]
 
 
 def test_requeue_appends_snapshot_without_replacing_history(tmp_path) -> None:
