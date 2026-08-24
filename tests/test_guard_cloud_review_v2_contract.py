@@ -244,6 +244,7 @@ def test_semantic_rules_are_portable_contract_data() -> None:
         "applied-application-requires-applied-delivery",
         "resolved-allow-requires-recorded-decision",
         "resolved-block-requires-recorded-decision",
+        "resolved-request-requires-applied-application",
         "resumed-continuation-requires-recorded-decision",
         "resumed-continuation-requires-allow-once-decision",
         "not-applicable-continuation-requires-not-applicable-application",

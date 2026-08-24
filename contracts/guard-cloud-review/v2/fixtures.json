@@ -86,7 +86,7 @@
         "contractVersion": "guard-cloud-review-v2",
         "correlationId": "gcrv2_018f0a10-1234-7abc-8def-0123456789ab",
         "observedAt": "2026-08-23T18:03:00Z",
-        "request": {"correlationId": "gcrv2_018f0a10-1234-7abc-8def-0123456789ab", "localRequestId": "local-request-06", "reviewRequestId": "review-request-06", "kind": "reviewable_pause", "status": "resolved_allow", "visibilityStatus": "visible"},
+        "request": {"correlationId": "gcrv2_018f0a10-1234-7abc-8def-0123456789ab", "localRequestId": "local-request-06", "reviewRequestId": "review-request-06", "kind": "reviewable_pause", "status": "pending", "visibilityStatus": "visible"},
         "decision": {"correlationId": "gcrv2_018f0a10-1234-7abc-8def-0123456789ab", "receiptId": "receipt-06", "outcome": "allow_once", "status": "recorded", "recordedAt": "2026-08-23T18:00:00Z"},
         "delivery": {"correlationId": "gcrv2_018f0a10-1234-7abc-8def-0123456789ab", "commandJobId": "command-job-06", "status": "applied", "leasedAt": "2026-08-23T18:01:00Z", "completedAt": "2026-08-23T18:02:00Z"},
         "application": {"correlationId": "gcrv2_018f0a10-1234-7abc-8def-0123456789ab", "status": "failed_terminal", "reason": "local application failed", "completedAt": "2026-08-23T18:02:00Z"},
@@ -122,6 +122,7 @@
     {"name": "resolved-allow-requires-matching-outcome", "source": "allow-once-applied-and-resumed", "mutations": [{"path": ["decision", "outcome"], "value": "block"}], "error": "conditional value is not allowed"},
     {"name": "not-applicable-continuation-requires-not-applicable-application", "source": "continuation-not-applicable-without-local-application", "mutations": [{"path": ["application", "status"], "value": "waiting"}], "error": "not-applicable-continuation-requires-not-applicable-application"},
     {"name": "failed-continuation-requires-compatible-application", "source": "continuation-failed-after-terminal-local-application", "mutations": [{"path": ["application", "status"], "value": "waiting"}, {"path": ["application", "reason"], "delete": true}, {"path": ["application", "completedAt"], "delete": true}], "error": "failed-continuation-requires-compatible-application"},
+    {"name": "resolved-request-requires-applied-application", "source": "allow-once-applied-manual-retry", "mutations": [{"path": ["application", "status"], "value": "failed_terminal"}, {"path": ["application", "appliedAt"], "delete": true}, {"path": ["application", "reason"], "value": "local application failed"}, {"path": ["application", "completedAt"], "value": "2026-08-23T18:03:00Z"}], "error": "resolved-request-requires-applied-application"},
     {"name": "block-decision-cannot-resume", "source": "block-applied-without-continuation", "mutations": [{"path": ["continuation", "status"], "value": "resumed"}], "error": "resumed-continuation-requires-allow-once-decision"},
     {"name": "resumed-continuation-requires-recorded-decision", "source": "allow-once-applied-and-resumed", "mutations": [{"path": ["request", "status"], "value": "pending"}, {"path": ["decision", "status"], "value": "none"}, {"path": ["decision", "receiptId"], "delete": true}, {"path": ["decision", "outcome"], "delete": true}, {"path": ["decision", "recordedAt"], "delete": true}], "error": "resumed-continuation-requires-recorded-decision"}
   ],
