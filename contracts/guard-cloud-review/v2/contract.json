@@ -222,18 +222,22 @@
       {"id": "resolved-allow-requires-allow-once-outcome", "operator": "if_equals_then_equals", "ifPath": "/request/status", "ifValue": "resolved_allow", "thenPath": "/decision/outcome", "thenValue": "allow_once"},
       {"id": "resolved-block-requires-recorded-decision", "operator": "if_equals_then_equals", "ifPath": "/request/status", "ifValue": "resolved_block", "thenPath": "/decision/status", "thenValue": "recorded"},
       {"id": "resolved-block-requires-block-outcome", "operator": "if_equals_then_equals", "ifPath": "/request/status", "ifValue": "resolved_block", "thenPath": "/decision/outcome", "thenValue": "block"},
+      {"id": "resumed-continuation-requires-recorded-decision", "operator": "if_in_then_equals", "ifPath": "/continuation/status", "ifValues": ["resumed", "already_resumed"], "thenPath": "/decision/status", "thenValue": "recorded"},
+      {"id": "resumed-continuation-requires-allow-once-decision", "operator": "if_in_then_equals", "ifPath": "/continuation/status", "ifValues": ["resumed", "already_resumed"], "thenPath": "/decision/outcome", "thenValue": "allow_once"},
       {"id": "recorded-decision-has-delivery", "operator": "if_equals_then_in", "ifPath": "/decision/status", "ifValue": "recorded", "thenPath": "/delivery/status", "thenValues": ["queued", "queued_offline", "leased", "applying", "applied", "rejected", "failed", "cancelled"]},
       {"id": "delivery-requires-recorded-decision", "operator": "if_in_then_equals", "ifPath": "/delivery/status", "ifValues": ["queued", "queued_offline", "leased", "applying", "applied", "rejected", "failed", "cancelled"], "thenPath": "/decision/status", "thenValue": "recorded"},
       {"id": "applied-application-requires-applied-delivery", "operator": "if_equals_then_equals", "ifPath": "/application/status", "ifValue": "applied", "thenPath": "/delivery/status", "thenValue": "applied"},
-      {"id": "terminal-continuation-requires-application", "operator": "if_in_then_equals", "ifPath": "/continuation/status", "ifValues": ["resumed", "already_resumed", "manual_retry_required", "blocked_not_resumed", "unsupported", "failed", "not_applicable"], "thenPath": "/application/status", "thenValue": "applied"},
+      {"id": "applied-continuation-requires-applied-application", "operator": "if_in_then_equals", "ifPath": "/continuation/status", "ifValues": ["resumed", "already_resumed", "manual_retry_required", "blocked_not_resumed", "unsupported"], "thenPath": "/application/status", "thenValue": "applied"},
+      {"id": "not-applicable-continuation-requires-not-applicable-application", "operator": "if_equals_then_equals", "ifPath": "/continuation/status", "ifValue": "not_applicable", "thenPath": "/application/status", "thenValue": "not_applicable"},
+      {"id": "failed-continuation-requires-compatible-application", "operator": "if_equals_then_in", "ifPath": "/continuation/status", "ifValue": "failed", "thenPath": "/application/status", "thenValues": ["failed_terminal", "applied"]},
       {"id": "blocked-continuation-requires-block-decision", "operator": "if_equals_then_equals", "ifPath": "/continuation/status", "ifValue": "blocked_not_resumed", "thenPath": "/decision/outcome", "thenValue": "block"}
     ],
     "generation": {
       "algorithm": "sha256",
       "excludes": ["contract.json"],
       "artifacts": {
-        "fixtures": {"path": "contracts/guard-cloud-review/v2/fixtures.json", "sha256": "ce708bea30dc9b995cee0060345a56dc4ea4d9676f7b328032d7b2ce23629b3c"},
-        "publicDocumentation": {"path": "docs/guard/contracts/guard-cloud-review-v2.md", "sha256": "4d4712d33ae96f2ea3891699d1129686a9ab83d9e3a9ae4e1786fb0326078e3e"}
+        "fixtures": {"path": "contracts/guard-cloud-review/v2/fixtures.json", "sha256": "3de9257e407d6245c0ce9876a42d46f3d40e6db805050e45d9627ae2babab5d8"},
+        "publicDocumentation": {"path": "docs/guard/contracts/guard-cloud-review-v2.md", "sha256": "625d7bb004df45be8899efd840fd8ab4ec6327d0c1b379952c3ea18b454e6dea"}
       }
     }
   }

@@ -160,6 +160,9 @@ def test_valid_result_fixtures_cover_recorded_applied_and_continuation_outcomes(
         "allow-once-applied-and-resumed",
         "allow-once-applied-manual-retry",
         "block-applied-without-continuation",
+        "allow-once-applied-and-already-resumed",
+        "continuation-failed-after-terminal-local-application",
+        "continuation-not-applicable-without-local-application",
     }
     for case in cases:
         validate_review_result(_string_keyed_mapping(case.get("result"), "result"))
@@ -241,6 +244,10 @@ def test_semantic_rules_are_portable_contract_data() -> None:
         "applied-application-requires-applied-delivery",
         "resolved-allow-requires-recorded-decision",
         "resolved-block-requires-recorded-decision",
+        "resumed-continuation-requires-recorded-decision",
+        "resumed-continuation-requires-allow-once-decision",
+        "not-applicable-continuation-requires-not-applicable-application",
+        "failed-continuation-requires-compatible-application",
     }
     assert {rule["operator"] for rule in rules} >= {
         "all_equal",
