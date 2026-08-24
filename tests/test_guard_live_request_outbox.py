@@ -315,6 +315,7 @@ def test_same_subject_refresh_updates_machine_binding_without_confirmation(tmp_p
     assert store.list_ready_live_request_outbox(now=_NOW, limit=10, **old_binding) == []
     rows = store.list_ready_live_request_outbox(now=_NOW, limit=10, **new_binding)
     assert len(rows) == 1
+    assert decode_stored_review_event(rows[0]).request_sequence == 1
 
 
 def test_cross_subject_or_workspace_change_requires_explicit_reassignment(tmp_path) -> None:
@@ -343,7 +344,9 @@ def test_cross_subject_or_workspace_change_requires_explicit_reassignment(tmp_pa
         )
         == 1
     )
-    assert len(store.list_ready_live_request_outbox(now=_NOW, limit=10, **new_binding)) == 1
+    reassigned = store.list_ready_live_request_outbox(now=_NOW, limit=10, **new_binding)
+    assert len(reassigned) == 1
+    assert decode_stored_review_event(reassigned[0]).request_sequence == 1
 
 
 def test_oauth_source_remains_immutable(tmp_path) -> None:

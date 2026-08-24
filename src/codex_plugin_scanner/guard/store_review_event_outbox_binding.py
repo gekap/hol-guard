@@ -159,11 +159,9 @@ def refresh_same_subject_binding(connection: sqlite3.Connection, source: str) ->
     binding = load_review_oauth_binding(connection, source)
     if binding is None:
         return 0
-    cursor = connection.execute(
+    candidates = connection.execute(
         """
-        update guard_review_outbox_events
-        set machine_id = ?, machine_installation_id = ?,
-            binding_status = 'ready', quarantine_reason = null
+        select stream_sequence, payload_json from guard_review_outbox_events
         where oauth_source = ?
           and oauth_subject_hash = ?
           and workspace_id = ?
@@ -171,16 +169,37 @@ def refresh_same_subject_binding(connection: sqlite3.Connection, source: str) ->
           and (machine_id is not ? or machine_installation_id is not ?)
         """,
         (
-            binding["machine_id"],
-            binding["machine_installation_id"],
             source,
             binding["oauth_subject_hash"],
             binding["workspace_id"],
             binding["machine_id"],
             binding["machine_installation_id"],
         ),
-    )
-    refreshed = max(0, int(cursor.rowcount or 0))
+    ).fetchall()
+    for candidate in candidates:
+        payload_hash = review_event_payload_digest(
+            str(candidate["payload_json"]),
+            oauth_source=source,
+            oauth_subject_hash=binding["oauth_subject_hash"],
+            workspace_id=binding["workspace_id"],
+            machine_id=binding["machine_id"],
+            machine_installation_id=binding["machine_installation_id"],
+        )
+        connection.execute(
+            """
+            update guard_review_outbox_events
+            set payload_hash = ?, machine_id = ?, machine_installation_id = ?,
+                binding_status = 'ready', quarantine_reason = null
+            where stream_sequence = ?
+            """,
+            (
+                payload_hash,
+                binding["machine_id"],
+                binding["machine_installation_id"],
+                candidate["stream_sequence"],
+            ),
+        )
+    refreshed = len(candidates)
     connection.execute(
         """
         update guard_review_outbox_request_sequences
@@ -223,11 +242,9 @@ def explicitly_reassign_quarantined_events(
         raise ValueError("active OAuth source does not have a complete live-request binding")
     if approved_workspace_id.strip() != binding["workspace_id"]:
         raise ValueError("approved workspace does not match the active OAuth workspace")
-    cursor = connection.execute(
+    candidates = connection.execute(
         """
-        update guard_review_outbox_events
-        set oauth_source = ?, oauth_subject_hash = ?, workspace_id = ?, machine_id = ?,
-            machine_installation_id = ?, binding_status = 'ready', quarantine_reason = null
+        select stream_sequence, payload_json from guard_review_outbox_events
         where binding_status = 'quarantined'
           and quarantine_reason in (
             'identity_incomplete',
@@ -241,14 +258,36 @@ def explicitly_reassign_quarantined_events(
         """,
         (
             source,
-            binding["oauth_subject_hash"],
-            binding["workspace_id"],
-            binding["machine_id"],
-            binding["machine_installation_id"],
-            source,
             approved_workspace_id.strip(),
         ),
-    )
+    ).fetchall()
+    for candidate in candidates:
+        payload_hash = review_event_payload_digest(
+            str(candidate["payload_json"]),
+            oauth_source=source,
+            oauth_subject_hash=binding["oauth_subject_hash"],
+            workspace_id=binding["workspace_id"],
+            machine_id=binding["machine_id"],
+            machine_installation_id=binding["machine_installation_id"],
+        )
+        connection.execute(
+            """
+            update guard_review_outbox_events
+            set payload_hash = ?, oauth_source = ?, oauth_subject_hash = ?, workspace_id = ?,
+                machine_id = ?, machine_installation_id = ?,
+                binding_status = 'ready', quarantine_reason = null
+            where stream_sequence = ?
+            """,
+            (
+                payload_hash,
+                source,
+                binding["oauth_subject_hash"],
+                binding["workspace_id"],
+                binding["machine_id"],
+                binding["machine_installation_id"],
+                candidate["stream_sequence"],
+            ),
+        )
     connection.execute(
         """
         update guard_review_outbox_request_sequences
@@ -281,4 +320,4 @@ def explicitly_reassign_quarantined_events(
         """,
         (source, source, binding["workspace_id"]),
     )
-    return max(0, int(cursor.rowcount or 0))
+    return len(candidates)
