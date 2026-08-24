@@ -120,7 +120,7 @@
           "then": {"required": ["completedAt"]}
         },
         {
-          "if": {"properties": {"status": {"const": "none"}}, "required": ["status"]},
+          "if": {"properties": {"status": {"enum": ["none", "not_applicable"]}}, "required": ["status"]},
           "then": {"not": {"anyOf": [{"required": ["commandJobId"]}, {"required": ["leasedAt"]}, {"required": ["completedAt"]}]}}
         }
       ]
@@ -242,7 +242,7 @@
       "algorithm": "sha256",
       "excludes": ["contract.json"],
       "artifacts": {
-        "fixtures": {"path": "contracts/guard-cloud-review/v2/fixtures.json", "sha256": "ef99d07dc8e74f3233fa340a48de249a995175a406c691cce623ecf25f3669ab"},
+        "fixtures": {"path": "contracts/guard-cloud-review/v2/fixtures.json", "sha256": "59c024aebbe1044055144efccdd4a4920503fd1a2722c448fda01c935e6d474f"},
         "publicDocumentation": {"path": "docs/guard/contracts/guard-cloud-review-v2.md", "sha256": "d0bb892db98150fed454a53f3fbdcb420e0cd2c6dde0ac5d1c81a94d6c30bf85"}
       }
     }
