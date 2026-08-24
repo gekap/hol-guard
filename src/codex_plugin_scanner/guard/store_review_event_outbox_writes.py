@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Mapping
-from hashlib import blake2b
 from uuid import uuid4
 
-from .store_review_event_outbox_binding import load_review_oauth_binding
+from .review_event_integrity import review_event_payload_digest
+from .store_review_event_outbox_binding import bind_review_events_for_request, load_review_oauth_binding
 from .store_review_event_outbox_schema import REVIEW_EVENT_SCHEMA_VERSION, review_event_payload_json
 
 # pyright: reportAny=false, reportUnusedCallResult=false
@@ -83,13 +83,33 @@ def append_request_snapshot_event(
     connection.execute(
         """
         insert into guard_review_outbox_request_sequences (
-          local_request_id, last_sequence, updated_at
-        ) values (?, 1, ?)
+          local_request_id, last_sequence, updated_at, oauth_source,
+          oauth_subject_hash, workspace_id, machine_id, machine_installation_id
+        ) values (?, 1, ?, ?, ?, ?, ?, ?)
         on conflict(local_request_id) do update set
           last_sequence = guard_review_outbox_request_sequences.last_sequence + 1,
-          updated_at = excluded.updated_at
+          updated_at = excluded.updated_at,
+          oauth_source = coalesce(guard_review_outbox_request_sequences.oauth_source, excluded.oauth_source),
+          oauth_subject_hash = coalesce(
+            guard_review_outbox_request_sequences.oauth_subject_hash,
+            excluded.oauth_subject_hash
+          ),
+          workspace_id = coalesce(guard_review_outbox_request_sequences.workspace_id, excluded.workspace_id),
+          machine_id = coalesce(guard_review_outbox_request_sequences.machine_id, excluded.machine_id),
+          machine_installation_id = coalesce(
+            guard_review_outbox_request_sequences.machine_installation_id,
+            excluded.machine_installation_id
+          )
         """,
-        (request_id, occurred_at),
+        (
+            request_id,
+            occurred_at,
+            source,
+            values["oauth_subject_hash"],
+            values["workspace_id"],
+            values["machine_id"],
+            values["machine_installation_id"],
+        ),
     )
     row = connection.execute(
         "select last_sequence from guard_review_outbox_request_sequences where local_request_id = ?",
@@ -113,7 +133,14 @@ def append_request_snapshot_event(
             event_type,
             REVIEW_EVENT_SCHEMA_VERSION,
             payload,
-            blake2b(payload.encode("utf-8"), digest_size=32).hexdigest(),
+            review_event_payload_digest(
+                payload,
+                oauth_source=source,
+                oauth_subject_hash=values["oauth_subject_hash"],
+                workspace_id=values["workspace_id"],
+                machine_id=values["machine_id"],
+                machine_installation_id=values["machine_installation_id"],
+            ),
             occurred_at,
             source,
             values["oauth_subject_hash"],
@@ -137,13 +164,15 @@ def requeue_pending_request_events(connection: sqlite3.Connection, *, source: st
         """,
         (source,),
     ).fetchall()
-    return sum(
-        append_request_snapshot_event(
+    appended = 0
+    for row in rows:
+        request_id = str(row["request_id"])
+        bind_review_events_for_request(connection, request_id=request_id, oauth_source=source)
+        appended += append_request_snapshot_event(
             connection,
-            request_id=str(row["request_id"]),
+            request_id=request_id,
             source=source,
             event_type="review.request.snapshot_requeued",
             occurred_at=changed_at,
         )
-        for row in rows
-    )
+    return appended

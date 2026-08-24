@@ -5,15 +5,17 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Mapping
-from hashlib import blake2b
 from typing import Final
 from uuid import uuid4
+
+from .review_event_integrity import review_event_payload_digest
+from .store_review_event_outbox_upgrade import ensure_review_event_outbox_upgrade
 
 # pyright: reportAny=false, reportUnusedCallResult=false
 
 REVIEW_EVENT_SCHEMA_VERSION: Final = 1
 REVIEW_EVENT_SCHEMA_NAME: Final = "guard-cloud-review-event-v2"
-REVIEW_EVENT_OUTBOX_MIGRATION_VERSION: Final = 24
+REVIEW_EVENT_OUTBOX_MIGRATION_VERSION: Final = 25
 _MIGRATION_STATE_KEY: Final = "guard_review_outbox_events_migrated_v2"
 REVIEW_REQUEST_SNAPSHOT_COLUMNS: Final = (
     "request_id",
@@ -71,13 +73,27 @@ def finalize_review_event_payload_hashes(connection: sqlite3.Connection) -> None
     """Finalize trigger-written hashes inside the surrounding SQLite transaction."""
 
     rows = connection.execute(
-        "select stream_sequence, payload_json from guard_review_outbox_events where payload_hash = ''"
+        """
+        select stream_sequence, payload_json, oauth_source, oauth_subject_hash,
+               workspace_id, machine_id, machine_installation_id
+        from guard_review_outbox_events where payload_hash = ''
+        """
     ).fetchall()
     for row in rows:
         payload = str(row["payload_json"])
         connection.execute(
             "update guard_review_outbox_events set payload_hash = ? where stream_sequence = ?",
-            (blake2b(payload.encode("utf-8"), digest_size=32).hexdigest(), row["stream_sequence"]),
+            (
+                review_event_payload_digest(
+                    payload,
+                    oauth_source=row["oauth_source"],
+                    oauth_subject_hash=row["oauth_subject_hash"],
+                    workspace_id=row["workspace_id"],
+                    machine_id=row["machine_id"],
+                    machine_installation_id=row["machine_installation_id"],
+                ),
+                row["stream_sequence"],
+            ),
         )
 
 
@@ -288,6 +304,10 @@ def review_event_outbox_schema_statements() -> tuple[str, ...]:
         on guard_review_outbox_events (binding_status, quarantine_reason, stream_sequence)
         """,
         """
+        create index if not exists idx_guard_review_outbox_empty_payload_digest
+        on guard_review_outbox_events (payload_hash) where payload_hash = ''
+        """,
+        """
         create trigger if not exists guard_approval_oauth_source_immutable
         before update of oauth_source on approval_requests
         when old.oauth_source is not null and new.oauth_source is not old.oauth_source
@@ -380,7 +400,14 @@ def _migrate_latest_row_outbox(connection: sqlite3.Connection, now: str) -> None
                     row["local_request_id"],
                     REVIEW_EVENT_SCHEMA_VERSION,
                     payload,
-                    blake2b(payload.encode("utf-8"), digest_size=32).hexdigest(),
+                    review_event_payload_digest(
+                        payload,
+                        oauth_source=identity[0],
+                        oauth_subject_hash=identity[1],
+                        workspace_id=identity[2],
+                        machine_id=identity[3],
+                        machine_installation_id=identity[4],
+                    ),
                     row["changed_at"],
                     *identity,
                     "ready" if quarantine_reason is None else "quarantined",
@@ -410,6 +437,7 @@ def _migrate_latest_row_outbox(connection: sqlite3.Connection, now: str) -> None
 def ensure_review_event_outbox_schema(connection: sqlite3.Connection, now: str) -> None:
     for statement in review_event_outbox_schema_statements():
         connection.execute(statement)
+    ensure_review_event_outbox_upgrade(connection, migration_version=REVIEW_EVENT_OUTBOX_MIGRATION_VERSION)
     _migrate_latest_row_outbox(connection, now)
     connection.execute("drop trigger if exists guard_live_request_outbox_after_insert")
     connection.execute("drop trigger if exists guard_live_request_outbox_after_update")

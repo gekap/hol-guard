@@ -181,7 +181,7 @@ class StoreReviewEventOutboxMixin:
         machine_id: str,
         machine_installation_id: str,
     ) -> int:
-        """Compact only the acknowledged contiguous prefix for one binding."""
+        """Compact the acknowledged deliverable prefix; retain quarantined evidence."""
 
         acknowledged = {int(sequence) for sequence in sequences if int(sequence) > 0}
         if not acknowledged:
@@ -211,6 +211,7 @@ class StoreReviewEventOutboxMixin:
                 select stream_sequence, acknowledged_at from guard_review_outbox_events
                 where oauth_source = ? and oauth_subject_hash = ? and workspace_id = ?
                   and machine_id = ? and machine_installation_id = ?
+                  and binding_status = 'ready'
                 order by stream_sequence
                 """,
                 (self._guard_source, *binding),
@@ -224,7 +225,10 @@ class StoreReviewEventOutboxMixin:
                 return 0
             placeholders = ",".join("?" for _ in prefix)
             cursor = connection.execute(
-                f"delete from guard_review_outbox_events where stream_sequence in ({placeholders})",
+                f"""
+                delete from guard_review_outbox_events
+                where stream_sequence in ({placeholders}) and binding_status = 'ready'
+                """,
                 prefix,
             )
             highest = prefix[-1]

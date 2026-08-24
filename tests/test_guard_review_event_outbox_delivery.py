@@ -3,15 +3,16 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable
-from hashlib import blake2b
 from pathlib import Path
 from typing import TypedDict
 
 import pytest
 
 from codex_plugin_scanner.guard.models import GuardApprovalRequest
+from codex_plugin_scanner.guard.review_event_integrity import review_event_payload_digest
 from codex_plugin_scanner.guard.runtime import live_request_sync
 from codex_plugin_scanner.guard.store import GuardStore
+from tests.guard_review_event_outbox_test_support import as_int
 
 # pyright: reportAny=false, reportPrivateUsage=false, reportUnknownMemberType=false
 # pyright: reportUnusedCallResult=false
@@ -38,7 +39,7 @@ def _request(request_id: str, *, summary: str = "Review action") -> GuardApprova
         recommended_scope="artifact",
         changed_fields=("tool_action_request",),
         source_scope="project",
-        config_path="/tmp/config.toml",
+        config_path="/test/config.toml",
         review_command=f"hol-guard approvals approve {request_id}",
         approval_url=f"http://127.0.0.1:5474/requests/{request_id}",
         action_identity=request_id,
@@ -68,11 +69,6 @@ def _auth(binding: _Binding) -> dict[str, object]:
     return {"oauth_source": "default", **binding}
 
 
-def _as_int(value: object) -> int:
-    assert isinstance(value, int)
-    return value
-
-
 def _accepting_transport(captured: list[dict[str, object]]) -> Callable[..., dict[str, object]]:
     def post(*_args: object, events: list[dict[str, object]], **_kwargs: object) -> dict[str, object]:
         captured.extend(events)
@@ -100,7 +96,18 @@ def _replace_event_payload(store: GuardStore, row: sqlite3.Row, payload: dict[st
             update guard_review_outbox_events set payload_json = ?, payload_hash = ?
             where stream_sequence = ?
             """,
-            (payload_json, blake2b(payload_json.encode(), digest_size=32).hexdigest(), row["stream_sequence"]),
+            (
+                payload_json,
+                review_event_payload_digest(
+                    payload_json,
+                    oauth_source=row["oauth_source"],
+                    oauth_subject_hash=row["oauth_subject_hash"],
+                    workspace_id=row["workspace_id"],
+                    machine_id=row["machine_id"],
+                    machine_installation_id=row["machine_installation_id"],
+                ),
+                row["stream_sequence"],
+            ),
         )
 
 
@@ -145,7 +152,7 @@ def test_request_sequence_survives_ack_compaction_refresh_and_restart(
     binding = _connect(store)
     store.add_approval_request(_request("request-1"), _NOW)
     first = store.list_ready_live_request_outbox(now=_NOW, limit=1, **binding)[0]
-    assert store.acknowledge_live_request_outbox([_as_int(first["sequence"])], **binding) == 1
+    assert store.acknowledge_live_request_outbox([as_int(first["sequence"])], **binding) == 1
 
     restarted = GuardStore(guard_home)
     restarted.add_approval_request(_request("request-1", summary="refreshed"), _LATER)

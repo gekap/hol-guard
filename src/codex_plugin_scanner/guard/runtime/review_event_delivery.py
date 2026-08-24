@@ -5,9 +5,9 @@ from __future__ import annotations
 import hmac
 import json
 from dataclasses import dataclass
-from hashlib import blake2b
 from typing import cast
 
+from ..review_event_integrity import review_event_payload_digest
 from ..store_review_event_outbox_schema import (
     REVIEW_EVENT_SCHEMA_NAME,
     REVIEW_EVENT_SCHEMA_VERSION,
@@ -145,9 +145,16 @@ def decode_stored_review_event(row: dict[str, object]) -> StoredReviewEvent:
     payload_hash = row.get("payload_hash")
     if not isinstance(payload_json, str) or not isinstance(payload_hash, str):
         raise StoredReviewEventError("payload_hash_mismatch", "Stored Review event payload metadata is invalid.")
-    actual_hash = blake2b(payload_json.encode("utf-8"), digest_size=32).hexdigest()
+    actual_hash = review_event_payload_digest(
+        payload_json,
+        oauth_source=row.get("oauth_source"),
+        oauth_subject_hash=row.get("oauth_subject_hash"),
+        workspace_id=row.get("workspace_id"),
+        machine_id=row.get("machine_id"),
+        machine_installation_id=row.get("machine_installation_id"),
+    )
     if not hmac.compare_digest(actual_hash, payload_hash):
-        raise StoredReviewEventError("payload_hash_mismatch", "Stored Review event payload authentication failed.")
+        raise StoredReviewEventError("payload_hash_mismatch", "Stored Review event payload integrity check failed.")
     try:
         payload = _object(
             cast(object, json.loads(payload_json)),
