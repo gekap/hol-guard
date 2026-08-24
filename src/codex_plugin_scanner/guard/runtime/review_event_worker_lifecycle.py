@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,9 +14,14 @@ from typing import TYPE_CHECKING, Any
 
 from ..mdm.user_health import run_user_health_cadence, user_health_report_due
 from ..review_contracts import GuardReviewContractError, guard_review_oauth_metadata
-from ..review_event_wake import register_review_event_outbox_wake_callback
+from ..review_event_wake import (
+    consume_review_event_outbox_signal,
+    register_review_event_outbox_wake_callback,
+    review_event_outbox_signal_token,
+)
 from ..store_live_request_outbox import live_request_oauth_subject_hash
 from .review_event_batch_worker import classify_review_event_sync_error, next_review_event_backoff_seconds
+from .time_support import parse_utc_timestamp
 
 if TYPE_CHECKING:
     from ..store import GuardStore
@@ -43,6 +49,49 @@ def _sync_module() -> Any:
     from . import live_request_sync
 
     return live_request_sync
+
+
+def _monotonic() -> float:
+    return time.monotonic()
+
+
+def _retry_deadline(result: object, *, now: str, monotonic_now: float) -> float | None:
+    if not isinstance(result, Mapping):
+        return None
+    outbox = result.get("outbox")
+    if not isinstance(outbox, Mapping):
+        return None
+    next_attempt = parse_utc_timestamp(outbox.get("next_attempt_at"))
+    observed = parse_utc_timestamp(now)
+    if next_attempt is None or observed is None:
+        return None
+    return monotonic_now + max(0.0, (next_attempt - observed).total_seconds())
+
+
+def _worker_wait_seconds(
+    poll_interval: float,
+    *,
+    monotonic_now: float,
+    health_deadline: float,
+    retry_deadline: float | None,
+) -> float:
+    deadlines = tuple(deadline for deadline in (health_deadline, retry_deadline) if deadline is not None)
+    if not deadlines:
+        return poll_interval
+    return min(poll_interval, max(0.0, min(deadlines) - monotonic_now))
+
+
+def _wait_for_worker_signal(
+    stop_event: threading.Event,
+    wake_event: threading.Event | None,
+    seconds: float,
+) -> bool:
+    if stop_event.is_set():
+        return True
+    if wake_event is None:
+        return stop_event.wait(seconds)
+    _ = wake_event.wait(seconds)
+    return stop_event.is_set()
 
 
 def start_cloud_sync_sync_worker(
@@ -284,9 +333,29 @@ def _cloud_sync_sync_loop(
 
     sync = _sync_module()
     error_streak = 0
+    next_health_sync_at = 0.0
+    next_retry_sync_at: float | None = None
     while not stop_event.is_set():
+        wake_requested = wake_event is not None and wake_event.is_set()
         if wake_event is not None:
             wake_event.clear()
+        signal = review_event_outbox_signal_token(store)
+        signal_pending = signal is not None
+        now_monotonic = _monotonic()
+        health_due = now_monotonic >= next_health_sync_at
+        retry_due = next_retry_sync_at is not None and now_monotonic >= next_retry_sync_at
+        if not health_due and not retry_due and not signal_pending and not wake_requested:
+            wait = _worker_wait_seconds(
+                _configured_seconds("GUARD_LIVE_REQUEST_POLL_INTERVAL", poll_interval),
+                monotonic_now=now_monotonic,
+                health_deadline=next_health_sync_at,
+                retry_deadline=next_retry_sync_at,
+            )
+            if _wait_for_worker_signal(stop_event, wake_event, wait):
+                return
+            continue
+        if signal_pending:
+            _ = consume_review_event_outbox_signal(store)
         try:
             state = sync._load_sync_state(store)
             state.update({"worker_heartbeat_at": sync._now(), "worker_state": "running"})
@@ -294,6 +363,7 @@ def _cloud_sync_sync_loop(
             if not _cloud_connection_is_ready(store):
                 state.update({"state": "waiting_for_cloud_connection", "last_error": None})
                 sync._save_sync_state(store, state)
+                next_retry_sync_at = None
                 error_streak = 0
             else:
                 resolver = getattr(
@@ -301,11 +371,20 @@ def _cloud_sync_sync_loop(
                     "_resolve_live_request_sync_auth_context",
                     _resolve_live_request_sync_auth_context,
                 )
-                sync.sync_live_requests_once(store, resolver(store))
+                result = sync.sync_live_requests_once(store, resolver(store))
+                completed_monotonic = _monotonic()
+                next_retry_sync_at = _retry_deadline(
+                    result,
+                    now=sync._now(),
+                    monotonic_now=completed_monotonic,
+                )
                 with suppress(OSError, PermissionError, RuntimeError, ValueError):
                     if user_health_report_due(store.guard_home):
                         run_user_health_cadence(store.guard_home)
                 error_streak = 0
+            if health_due:
+                health_interval = getattr(sync, "DEFAULT_HEALTH_INTERVAL_SECONDS", 30.0)
+                next_health_sync_at = _monotonic() + float(health_interval)
         except (GuardSyncAuthorizationExpiredError, GuardSyncNotConfiguredError) as error:
             error_streak = _record_loop_failure(store, error, "authorization", error_streak, sync)
         except Exception as error:
@@ -325,14 +404,14 @@ def _cloud_sync_sync_loop(
             if error_streak
             else _configured_seconds("GUARD_LIVE_REQUEST_POLL_INTERVAL", poll_interval)
         )
-        if stop_event.is_set():
-            return
-        if wake_event is None:
-            if stop_event.wait(wait):
-                return
-        else:
-            wake_event.wait(wait)
-        if stop_event.is_set():
+        if not error_streak:
+            wait = _worker_wait_seconds(
+                wait,
+                monotonic_now=_monotonic(),
+                health_deadline=next_health_sync_at,
+                retry_deadline=next_retry_sync_at,
+            )
+        if _wait_for_worker_signal(stop_event, wake_event, wait):
             return
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,13 +17,14 @@ from codex_plugin_scanner.guard.cli.commands_review_event_dead_letters import (
 )
 from codex_plugin_scanner.guard.models import GuardApprovalRequest
 from codex_plugin_scanner.guard.review_event_wake import register_review_event_outbox_wake_callback
-from codex_plugin_scanner.guard.runtime import review_event_worker_lifecycle
+from codex_plugin_scanner.guard.runtime import live_request_sync, review_event_worker_lifecycle
 from codex_plugin_scanner.guard.runtime.review_event_batch_worker import take_bounded_batch
 from codex_plugin_scanner.guard.runtime.review_event_worker_lifecycle import (
     LiveRequestSyncWorker,
     _restart_dead_review_event_worker,
 )
 from codex_plugin_scanner.guard.store import GuardStore
+from tests.guard_review_event_outbox_test_support import connect_store
 
 
 def assert_byte_capped_batch() -> None:
@@ -114,6 +116,10 @@ def test_requeue_commit_wakes_delivery_worker(tmp_path: Path) -> None:
     assert wakes == [None]
 
 
+def test_cross_process_fallback_poll_remains_prompt() -> None:
+    assert live_request_sync.DEFAULT_POLL_INTERVAL_SECONDS <= 0.1
+
+
 def test_dead_letter_cli_rejects_invalid_filters_and_context() -> None:
     parser = argparse.ArgumentParser()
     add_guard_root_parser(parser)
@@ -153,7 +159,6 @@ def test_wake_during_sync_triggers_immediate_follow_up(
     monkeypatch.setattr(review_event_worker_lifecycle, "_sync_module", lambda: sync)
     monkeypatch.setattr(review_event_worker_lifecycle, "_cloud_connection_is_ready", lambda _store: True)
     monkeypatch.setattr(review_event_worker_lifecycle, "user_health_report_due", lambda _home: False)
-
     review_event_worker_lifecycle._cloud_sync_sync_loop(
         store,
         stop_event,
@@ -162,6 +167,261 @@ def test_wake_during_sync_triggers_immediate_follow_up(
         error_backoff=1,
     )
     assert calls == [1, 2]
+
+
+def test_idle_fallback_poll_skips_network_and_state_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = GuardStore(tmp_path / "guard")
+    stop_event = threading.Event()
+    network_calls = 0
+    state_writes = 0
+
+    def sync_once(_store: GuardStore, _auth: dict[str, object]) -> None:
+        nonlocal network_calls
+        network_calls += 1
+
+    def save_state(_store: GuardStore, _state: dict[str, object]) -> None:
+        nonlocal state_writes
+        state_writes += 1
+
+    sync = SimpleNamespace(
+        DEFAULT_HEALTH_INTERVAL_SECONDS=30.0,
+        _load_sync_state=lambda _store: {},
+        _save_sync_state=save_state,
+        _now=lambda: "2026-08-24T14:00:00+00:00",
+        _resolve_live_request_sync_auth_context=lambda _store: {},
+        sync_live_requests_once=sync_once,
+        _LOGGER=logging.getLogger(__name__),
+    )
+    monkeypatch.setattr(review_event_worker_lifecycle, "_sync_module", lambda: sync)
+    monkeypatch.setattr(review_event_worker_lifecycle, "_cloud_connection_is_ready", lambda _store: True)
+    monkeypatch.setattr(review_event_worker_lifecycle, "user_health_report_due", lambda _home: False)
+    before = {
+        path.relative_to(store.guard_home): (path.stat().st_size, path.stat().st_mtime_ns)
+        for path in store.guard_home.rglob("*")
+    }
+
+    worker = threading.Thread(
+        target=review_event_worker_lifecycle._cloud_sync_sync_loop,
+        kwargs={
+            "store": store,
+            "stop_event": stop_event,
+            "wake_event": threading.Event(),
+            "poll_interval": 0.001,
+            "error_backoff": 1,
+        },
+    )
+    worker.start()
+    time.sleep(0.02)
+    stop_event.set()
+    worker.join(timeout=1)
+
+    assert worker.is_alive() is False
+    assert network_calls == 1
+    assert state_writes == 1
+    after = {
+        path.relative_to(store.guard_home): (path.stat().st_size, path.stat().st_mtime_ns)
+        for path in store.guard_home.rglob("*")
+    }
+    assert after == before
+
+
+def test_retry_deadline_wakes_before_health_cadence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = GuardStore(tmp_path / "guard")
+    stop_event = threading.Event()
+    calls: list[float] = []
+
+    def sync_once(_store: GuardStore, _auth: dict[str, object]) -> dict[str, object]:
+        calls.append(time.monotonic())
+        if len(calls) == 2:
+            stop_event.set()
+        return {"outbox": {"next_attempt_at": "2026-08-24T14:00:00.050000+00:00"}}
+
+    sync = SimpleNamespace(
+        DEFAULT_HEALTH_INTERVAL_SECONDS=30.0,
+        _load_sync_state=lambda _store: {},
+        _save_sync_state=lambda _store, _state: None,
+        _now=lambda: "2026-08-24T14:00:00+00:00",
+        _resolve_live_request_sync_auth_context=lambda _store: {},
+        sync_live_requests_once=sync_once,
+        _LOGGER=logging.getLogger(__name__),
+    )
+    monkeypatch.setattr(review_event_worker_lifecycle, "_sync_module", lambda: sync)
+    monkeypatch.setattr(review_event_worker_lifecycle, "_cloud_connection_is_ready", lambda _store: True)
+    monkeypatch.setattr(review_event_worker_lifecycle, "user_health_report_due", lambda _home: False)
+
+    review_event_worker_lifecycle._cloud_sync_sync_loop(
+        store,
+        stop_event,
+        wake_event=threading.Event(),
+        poll_interval=60,
+        error_backoff=1,
+    )
+
+    assert len(calls) == 2
+    assert 0.03 <= calls[1] - calls[0] < 0.5
+
+
+def test_event_wake_does_not_postpone_health_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = GuardStore(tmp_path / "guard")
+    stop_event = threading.Event()
+    wake_event = threading.Event()
+    calls: list[float] = []
+
+    def sync_once(_store: GuardStore, _auth: dict[str, object]) -> dict[str, object]:
+        calls.append(time.monotonic())
+        if len(calls) == 1:
+            threading.Timer(0.02, wake_event.set).start()
+        elif len(calls) == 3:
+            stop_event.set()
+        return {"outbox": {"next_attempt_at": None}}
+
+    sync = SimpleNamespace(
+        DEFAULT_HEALTH_INTERVAL_SECONDS=0.06,
+        _load_sync_state=lambda _store: {},
+        _save_sync_state=lambda _store, _state: None,
+        _now=lambda: "2026-08-24T14:00:00+00:00",
+        _resolve_live_request_sync_auth_context=lambda _store: {},
+        sync_live_requests_once=sync_once,
+        _LOGGER=logging.getLogger(__name__),
+    )
+    monkeypatch.setattr(review_event_worker_lifecycle, "_sync_module", lambda: sync)
+    monkeypatch.setattr(review_event_worker_lifecycle, "_cloud_connection_is_ready", lambda _store: True)
+    monkeypatch.setattr(review_event_worker_lifecycle, "user_health_report_due", lambda _home: False)
+
+    review_event_worker_lifecycle._cloud_sync_sync_loop(
+        store,
+        stop_event,
+        wake_event=wake_event,
+        poll_interval=0.005,
+        error_backoff=1,
+    )
+
+    assert len(calls) == 3
+    assert calls[1] - calls[0] < 0.05
+    assert 0.05 <= calls[2] - calls[0] < 0.2
+
+
+def test_disconnected_cloud_clears_due_retry_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = GuardStore(tmp_path / "guard")
+    stop_event = threading.Event()
+    readiness = iter((True, False))
+    network_calls = 0
+    state_writes = 0
+
+    def sync_once(_store: GuardStore, _auth: dict[str, object]) -> dict[str, object]:
+        nonlocal network_calls
+        network_calls += 1
+        return {"outbox": {"next_attempt_at": "2026-08-24T14:00:00.010000+00:00"}}
+
+    def save_state(_store: GuardStore, _state: dict[str, object]) -> None:
+        nonlocal state_writes
+        state_writes += 1
+
+    sync = SimpleNamespace(
+        DEFAULT_HEALTH_INTERVAL_SECONDS=30.0,
+        _load_sync_state=lambda _store: {},
+        _save_sync_state=save_state,
+        _now=lambda: "2026-08-24T14:00:00+00:00",
+        _resolve_live_request_sync_auth_context=lambda _store: {},
+        sync_live_requests_once=sync_once,
+        _LOGGER=logging.getLogger(__name__),
+    )
+    monkeypatch.setattr(review_event_worker_lifecycle, "_sync_module", lambda: sync)
+    monkeypatch.setattr(review_event_worker_lifecycle, "_cloud_connection_is_ready", lambda _store: next(readiness))
+    monkeypatch.setattr(review_event_worker_lifecycle, "user_health_report_due", lambda _home: False)
+    threading.Timer(0.05, stop_event.set).start()
+
+    review_event_worker_lifecycle._cloud_sync_sync_loop(
+        store, stop_event, wake_event=threading.Event(), poll_interval=0.005, error_backoff=1
+    )
+
+    assert network_calls == 1
+    assert state_writes == 3
+
+
+def test_cross_process_write_is_detected_by_read_only_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard_home = tmp_path / "guard"
+    store = GuardStore(guard_home)
+    _ = connect_store(store)
+    writer = GuardStore(guard_home)
+    stop_event = threading.Event()
+    second_sync = threading.Event()
+    network_calls = 0
+
+    def sync_once(_store: GuardStore, _auth: dict[str, object]) -> None:
+        nonlocal network_calls
+        network_calls += 1
+        if network_calls == 2:
+            second_sync.set()
+            stop_event.set()
+
+    sync = SimpleNamespace(
+        DEFAULT_HEALTH_INTERVAL_SECONDS=30.0,
+        _load_sync_state=lambda _store: {},
+        _save_sync_state=lambda _store, _state: None,
+        _now=lambda: "2026-08-24T14:00:00+00:00",
+        _resolve_live_request_sync_auth_context=lambda _store: {},
+        sync_live_requests_once=sync_once,
+        _LOGGER=logging.getLogger(__name__),
+    )
+    monkeypatch.setattr(review_event_worker_lifecycle, "_sync_module", lambda: sync)
+    monkeypatch.setattr(review_event_worker_lifecycle, "_cloud_connection_is_ready", lambda _store: True)
+    monkeypatch.setattr(review_event_worker_lifecycle, "user_health_report_due", lambda _home: False)
+
+    worker = threading.Thread(
+        target=review_event_worker_lifecycle._cloud_sync_sync_loop,
+        kwargs={
+            "store": store,
+            "stop_event": stop_event,
+            "wake_event": threading.Event(),
+            "poll_interval": 0.01,
+            "error_backoff": 1,
+        },
+    )
+    worker.start()
+    deadline = time.monotonic() + 1
+    while network_calls < 1 and time.monotonic() < deadline:
+        time.sleep(0.001)
+    writer.add_approval_request(
+        GuardApprovalRequest(
+            request_id="cross-process",
+            harness="codex",
+            artifact_id="artifact-cross-process",
+            artifact_name="Test action",
+            artifact_hash="hash-cross-process",
+            policy_action="require-reapproval",
+            recommended_scope="artifact",
+            changed_fields=("tool_action_request",),
+            source_scope="project",
+            config_path="/test/config.toml",
+            review_command="hol-guard approvals approve cross-process",
+            approval_url="http://127.0.0.1/requests/cross-process",
+            action_identity="cross-process",
+            queue_group_id="cross-process",
+            trigger_summary="Review action",
+            last_seen_at="2026-08-24T14:00:00+00:00",
+        ),
+        "2026-08-24T14:00:00+00:00",
+    )
+
+    assert second_sync.wait(timeout=0.5) is True
+    worker.join(timeout=1)
+    assert worker.is_alive() is False
 
 
 def test_start_replaces_dead_watchdog_without_replacing_live_delivery(

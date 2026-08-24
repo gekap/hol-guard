@@ -150,7 +150,8 @@ class StoreReviewEventDeadLetterMixin:
                 """,
                 (self._guard_source, *binding, _MAX_DEAD_LETTERS_PER_BINDING),
             )
-            return 1
+        self.notify_review_event_outbox_wake()
+        return 1
 
     def list_live_request_outbox_dead_letters(
         self,

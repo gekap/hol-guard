@@ -8,6 +8,10 @@ from pathlib import Path
 import pytest
 
 from codex_plugin_scanner.guard import store_review_event_dead_letters
+from codex_plugin_scanner.guard.review_event_wake import (
+    consume_review_event_outbox_signal,
+    review_event_outbox_signal_token,
+)
 from codex_plugin_scanner.guard.runtime import live_request_sync
 from codex_plugin_scanner.guard.store import GuardStore
 from tests.guard_review_event_outbox_test_support import (
@@ -185,6 +189,42 @@ def test_dead_letter_access_is_binding_scoped_and_retry_appends_new_sequence(tmp
     assert len(retried) == 1 and int(retried[0]["sequence"]) > sequence
 
 
+def test_lower_sequence_restore_changes_signal_beneath_same_maximum(tmp_path: Path) -> None:
+    store = GuardStore(tmp_path / "guard")
+    binding = _connect(store)
+    store.add_approval_request(_request("request-1"), _NOW)
+    first_sequence = int(_event_row(store)["stream_sequence"])
+    store.add_approval_request(_request("request-2"), _NOW)
+    with store._connect() as connection:
+        maximum_before = connection.execute(
+            "select max(stream_sequence) as maximum from guard_review_outbox_events"
+        ).fetchone()
+    assert maximum_before is not None
+    assert (
+        store.dead_letter_live_request_outbox_event(
+            first_sequence,
+            reason="invalid_event_schema",
+            error="invalid",
+            retain_outbox_event=True,
+            **binding,
+        )
+        == 1
+    )
+    signal_before_restore = review_event_outbox_signal_token(store)
+    assert consume_review_event_outbox_signal(store) is True
+
+    assert store.retry_live_request_outbox_dead_letters([first_sequence], **binding) == 1
+    signal_after_restore = review_event_outbox_signal_token(store)
+    with store._connect() as connection:
+        maximum_after = connection.execute(
+            "select max(stream_sequence) as maximum from guard_review_outbox_events"
+        ).fetchone()
+
+    assert maximum_after is not None
+    assert maximum_after["maximum"] == maximum_before["maximum"]
+    assert signal_before_restore is not None and signal_after_restore is not None
+
+
 def test_oversized_dead_letter_leaves_active_stream_and_retries_at_tail(tmp_path: Path) -> None:
     store = GuardStore(tmp_path / "guard")
     binding = _connect(store)
@@ -324,7 +364,7 @@ def test_request_sequence_survives_ack_compaction_refresh_and_restart(
         ("update guard_review_outbox_events set event_schema_version = 999", "unsupported_event_schema"),
     ],
 )
-def test_invalid_stored_event_is_dead_lettered_without_send_or_ack(
+def test_invalid_stored_event_is_quarantined_without_send_or_ack(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mutation: str,
@@ -343,24 +383,22 @@ def test_invalid_stored_event_is_dead_lettered_without_send_or_ack(
 
     assert result["synced"] == 0
     assert captured == []
-    row = _event_row(store)
-    assert row["stream_sequence"] == original_sequence
-    assert row["binding_status"] == "quarantined"
-    assert row["quarantine_reason"] == expected_reason
-    assert (
-        store.reassign_quarantined_live_request_outbox(
-            approved_source="default",
-            approved_workspace_id=binding["workspace_id"],
-        )
-        == 0
-    )
-    assert _event_row(store)["quarantine_reason"] == expected_reason
+    dead_letters = store.list_live_request_outbox_dead_letters(**binding)
+    assert len(dead_letters) == 1
+    assert dead_letters[0]["stream_sequence"] == original_sequence
+    assert dead_letters[0]["dead_letter_reason"] == expected_reason
+    retained = _event_row(store)
+    assert retained["stream_sequence"] == original_sequence
+    assert retained["binding_status"] == "quarantined"
+    assert store.retry_live_request_outbox_dead_letters(**binding) == 1
+    retried = store.list_ready_live_request_outbox(now=_LATER, limit=1, **binding)
+    assert len(retried) == 1 and int(retried[0]["stream_sequence"]) == original_sequence
     with store._connect() as connection:
         cursor = connection.execute("select * from guard_review_outbox_cursors").fetchone()
     assert cursor is None
 
 
-def test_missing_canonical_snapshot_is_quarantined_without_fabricated_defaults(
+def test_missing_canonical_snapshot_is_dead_lettered_without_fabricated_defaults(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -368,6 +406,7 @@ def test_missing_canonical_snapshot_is_quarantined_without_fabricated_defaults(
     binding = _connect(store)
     store.add_approval_request(_request("request-1"), _NOW)
     row = _event_row(store)
+    original_sequence = int(row["stream_sequence"])
     payload = json.loads(str(row["payload_json"]))
     del payload["requestSnapshot"]
     _replace_event_payload(store, row, payload)
@@ -378,7 +417,10 @@ def test_missing_canonical_snapshot_is_quarantined_without_fabricated_defaults(
 
     assert result["synced"] == 0
     assert captured == []
-    assert _event_row(store)["quarantine_reason"] == "payload_snapshot_missing"
+    dead_letters = store.list_live_request_outbox_dead_letters(**binding)
+    assert len(dead_letters) == 1
+    assert dead_letters[0]["stream_sequence"] == original_sequence
+    assert dead_letters[0]["dead_letter_reason"] == "payload_snapshot_missing"
 
 
 @pytest.mark.parametrize(
@@ -390,7 +432,7 @@ def test_missing_canonical_snapshot_is_quarantined_without_fabricated_defaults(
         ("envelope_source_mismatch", "payload_source_binding_mismatch"),
     ],
 )
-def test_rehashed_noncanonical_snapshot_is_quarantined_before_projection(
+def test_rehashed_noncanonical_snapshot_is_dead_lettered_before_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     tamper: str,
@@ -400,6 +442,7 @@ def test_rehashed_noncanonical_snapshot_is_quarantined_before_projection(
     binding = _connect(store)
     store.add_approval_request(_request("request-1"), _NOW)
     row = _event_row(store)
+    original_sequence = int(row["stream_sequence"])
     payload = json.loads(str(row["payload_json"]))
     snapshot = payload["requestSnapshot"]
     assert isinstance(snapshot, dict)
@@ -419,4 +462,7 @@ def test_rehashed_noncanonical_snapshot_is_quarantined_before_projection(
 
     assert result["synced"] == 0
     assert captured == []
-    assert _event_row(store)["quarantine_reason"] == expected_reason
+    dead_letters = store.list_live_request_outbox_dead_letters(**binding)
+    assert len(dead_letters) == 1
+    assert dead_letters[0]["stream_sequence"] == original_sequence
+    assert dead_letters[0]["dead_letter_reason"] == expected_reason

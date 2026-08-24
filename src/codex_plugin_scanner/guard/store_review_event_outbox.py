@@ -119,12 +119,15 @@ class StoreReviewEventOutboxMixin:
     ) -> int:
         with self._connect() as connection:
             connection.execute("begin immediate")
-            return explicitly_reassign_quarantined_events(
+            count = explicitly_reassign_quarantined_events(
                 connection,
                 source=self._guard_source,
                 approved_source=approved_source,
                 approved_workspace_id=approved_workspace_id,
             )
+        if count:
+            self.notify_review_event_outbox_wake()
+        return count
 
     def list_ready_live_request_outbox(
         self,
@@ -366,6 +369,7 @@ class StoreReviewEventOutboxMixin:
     ) -> dict[str, object]:
         query = """
             select count(*) as depth, min(occurred_at) as oldest_changed_at,
+                   min(next_attempt_at) as next_attempt_at,
                    max(attempt_count) as max_attempt_count, max(last_error) as last_error
             from guard_review_outbox_events where oauth_source = ? and binding_status = 'ready'
               and acknowledged_at is null
@@ -441,6 +445,7 @@ class StoreReviewEventOutboxMixin:
             "binding_hint": "Review events require explicit identity repair." if quarantined else None,
             "depth": int(row["depth"] if row is not None else 0),
             "oldest_changed_at": oldest_changed_at,
+            "next_attempt_at": row["next_attempt_at"] if row is not None else None,
             "oldest_age_seconds": _event_age_seconds(now, oldest_changed_at),
             "max_attempt_count": int(row["max_attempt_count"] or 0) if row is not None else 0,
             "last_error": row["last_error"] if row is not None else None,
