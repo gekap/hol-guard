@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Mapping
-from hashlib import sha256
+from hashlib import blake2b
 from typing import Final
 from uuid import uuid4
 
@@ -77,7 +77,7 @@ def finalize_review_event_payload_hashes(connection: sqlite3.Connection) -> None
         payload = str(row["payload_json"])
         connection.execute(
             "update guard_review_outbox_events set payload_hash = ? where stream_sequence = ?",
-            (sha256(payload.encode("utf-8")).hexdigest(), row["stream_sequence"]),
+            (blake2b(payload.encode("utf-8"), digest_size=32).hexdigest(), row["stream_sequence"]),
         )
 
 
@@ -380,7 +380,7 @@ def _migrate_latest_row_outbox(connection: sqlite3.Connection, now: str) -> None
                     row["local_request_id"],
                     REVIEW_EVENT_SCHEMA_VERSION,
                     payload,
-                    sha256(payload.encode("utf-8")).hexdigest(),
+                    blake2b(payload.encode("utf-8"), digest_size=32).hexdigest(),
                     row["changed_at"],
                     *identity,
                     "ready" if quarantine_reason is None else "quarantined",

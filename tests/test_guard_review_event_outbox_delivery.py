@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable
-from hashlib import sha256
+from hashlib import blake2b
 from pathlib import Path
 from typing import TypedDict
 
@@ -100,7 +100,7 @@ def _replace_event_payload(store: GuardStore, row: sqlite3.Row, payload: dict[st
             update guard_review_outbox_events set payload_json = ?, payload_hash = ?
             where stream_sequence = ?
             """,
-            (payload_json, sha256(payload_json.encode()).hexdigest(), row["stream_sequence"]),
+            (payload_json, blake2b(payload_json.encode(), digest_size=32).hexdigest(), row["stream_sequence"]),
         )
 
 

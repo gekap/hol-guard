@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Mapping
-from hashlib import sha256
+from hashlib import blake2b
 from uuid import uuid4
 
 from .store_review_event_outbox_binding import load_review_oauth_binding
@@ -113,7 +113,7 @@ def append_request_snapshot_event(
             event_type,
             REVIEW_EVENT_SCHEMA_VERSION,
             payload,
-            sha256(payload.encode("utf-8")).hexdigest(),
+            blake2b(payload.encode("utf-8"), digest_size=32).hexdigest(),
             occurred_at,
             source,
             values["oauth_subject_hash"],

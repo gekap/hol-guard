@@ -5,7 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 from dataclasses import dataclass
-from hashlib import sha256
+from hashlib import blake2b
 from typing import cast
 
 from ..store_review_event_outbox_schema import (
@@ -145,7 +145,7 @@ def decode_stored_review_event(row: dict[str, object]) -> StoredReviewEvent:
     payload_hash = row.get("payload_hash")
     if not isinstance(payload_json, str) or not isinstance(payload_hash, str):
         raise StoredReviewEventError("payload_hash_mismatch", "Stored Review event payload metadata is invalid.")
-    actual_hash = sha256(payload_json.encode("utf-8")).hexdigest()
+    actual_hash = blake2b(payload_json.encode("utf-8"), digest_size=32).hexdigest()
     if not hmac.compare_digest(actual_hash, payload_hash):
         raise StoredReviewEventError("payload_hash_mismatch", "Stored Review event payload authentication failed.")
     try:

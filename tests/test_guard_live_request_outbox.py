@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from hashlib import sha256
+from hashlib import blake2b
 from typing import TypedDict
 
 import pytest
@@ -97,7 +97,7 @@ def test_identity_incomplete_event_is_quarantined_with_valid_hash(tmp_path) -> N
     assert event["binding_status"] == "quarantined"
     assert event["quarantine_reason"] == "identity_incomplete"
     assert event["event_schema_version"] == REVIEW_EVENT_SCHEMA_VERSION
-    assert event["payload_hash"] == sha256(str(event["payload_json"]).encode()).hexdigest()
+    assert event["payload_hash"] == blake2b(str(event["payload_json"]).encode(), digest_size=32).hexdigest()
     assert store.list_ready_live_request_outbox(now=_NOW, limit=10) == []
     assert store.live_request_outbox_status(now=_NOW)["quarantined_depth"] == 1
 
@@ -361,7 +361,7 @@ def test_migration_quarantines_legacy_row_without_request_snapshot() -> None:
     assert row["request_sequence"] == 1
     assert row["binding_status"] == "quarantined"
     assert row["quarantine_reason"] == "legacy_request_snapshot_missing"
-    assert row["payload_hash"] == sha256(str(row["payload_json"]).encode()).hexdigest()
+    assert row["payload_hash"] == blake2b(str(row["payload_json"]).encode(), digest_size=32).hexdigest()
     old_triggers = connection.execute(
         "select name from sqlite_master where type = 'trigger' and name like 'guard_live_request_outbox_%'"
     ).fetchall()
