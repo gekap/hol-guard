@@ -149,6 +149,22 @@ class TestCheckNoShellInjection:
             assert result.points == 0
             assert result.findings[0].file_path == "runner.ts"
 
+    @pytest.mark.parametrize("suffix", ("as const", "satisfies string"))
+    def test_detects_typescript_template_assertion_suffixes(self, suffix: str):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "runner.ts").write_text(
+                f"const cmd = `echo ${{userInput}}` {suffix};\n"
+                "child_process.exec(cmd);\n",
+                encoding="utf-8",
+            )
+
+            result = check_no_shell_injection(root)
+
+            assert result.passed is False
+            assert result.points == 0
+            assert result.findings[0].file_path == "runner.ts"
+
     def test_detects_interpolated_template_dollar_variable_passed_to_child_process_exec(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
