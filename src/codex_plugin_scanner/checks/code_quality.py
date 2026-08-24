@@ -17,7 +17,7 @@ INTERPOLATED_TEMPLATE_PATTERN = r"`[^`]*\$\{[^}]+\}[^`]*`"
 TS_TEMPLATE_SUFFIX_PATTERN = r"(?:[ \t]+(?:as|satisfies)[ \t]+[^;\n]+)?"
 SHELL_CALL_PATTERN = r"(?:execSync|spawnSync|exec|spawn)"
 SHELL_RECEIVER_PATTERN = (
-    r"(?:child_process|childProcess|cp|"
+    r"(?<![\w$])(?:child_process|childProcess|cp|"
     r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\))"
 )
 DIRECT_SHELL_TEMPLATE_RE = re.compile(
