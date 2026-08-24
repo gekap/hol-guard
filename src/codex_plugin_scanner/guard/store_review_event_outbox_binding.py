@@ -216,7 +216,10 @@ def explicitly_reassign_quarantined_events(
             'legacy_identity_incomplete',
             'identity_changed_requires_confirmation'
           )
-          and (oauth_source is null or oauth_source = ?)
+          and (
+            oauth_source = ?
+            or (oauth_source is null and (workspace_id is null or workspace_id = ?))
+          )
         """,
         (
             source,
@@ -225,6 +228,7 @@ def explicitly_reassign_quarantined_events(
             binding["machine_id"],
             binding["machine_installation_id"],
             source,
+            approved_workspace_id.strip(),
         ),
     )
     connection.execute(

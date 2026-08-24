@@ -359,22 +359,47 @@ class StoreReviewEventOutboxMixin:
               and machine_id = ? and machine_installation_id = ?
             """
             parameters.extend(binding)
+        diagnostics_query = """
+            select
+              sum(case when binding_status = 'quarantined' then 1 else 0 end) as quarantined_depth,
+              sum(case when binding_status = 'quarantined' and oauth_source is null then 1 else 0 end)
+                as legacy_unbound_depth,
+              sum(case when binding_status = 'quarantined' and workspace_id is null then 1 else 0 end)
+                as unbound_depth,
+              0 as other_workspace_depth
+            from guard_review_outbox_events
+        """
+        diagnostics_parameters: list[object] = []
+        if workspace_id is not None:
+            diagnostics_query = """
+                select
+                  sum(case when binding_status = 'quarantined'
+                    and (oauth_source = ? or (oauth_source is null and (workspace_id is null or workspace_id = ?)))
+                    then 1 else 0 end) as quarantined_depth,
+                  sum(case when binding_status = 'quarantined' and oauth_source is null
+                    and (workspace_id is null or workspace_id = ?) then 1 else 0 end) as legacy_unbound_depth,
+                  sum(case when binding_status = 'quarantined' and workspace_id is null
+                    and (oauth_source = ? or oauth_source is null) then 1 else 0 end) as unbound_depth,
+                  sum(case when binding_status = 'quarantined' and workspace_id is not null
+                    and workspace_id != ? and (oauth_source = ? or oauth_source is null)
+                    then 1 else 0 end) as other_workspace_depth
+                from guard_review_outbox_events
+            """
+            diagnostics_parameters = [
+                self._guard_source,
+                workspace_id,
+                workspace_id,
+                self._guard_source,
+                workspace_id,
+                self._guard_source,
+            ]
         with self._connect() as connection:
             row = connection.execute(query, parameters).fetchone()
-            diagnostics = connection.execute(
-                """
-                select
-                  sum(case when binding_status = 'quarantined' then 1 else 0 end) as quarantined_depth,
-                  sum(case when binding_status = 'quarantined' and oauth_source is null then 1 else 0 end)
-                    as legacy_unbound_depth,
-                  sum(case when binding_status = 'quarantined' and workspace_id is null then 1 else 0 end)
-                    as unbound_depth
-                from guard_review_outbox_events
-                """
-            ).fetchone()
+            diagnostics = connection.execute(diagnostics_query, diagnostics_parameters).fetchone()
         quarantined = int(diagnostics["quarantined_depth"] or 0) if diagnostics is not None else 0
         legacy = int(diagnostics["legacy_unbound_depth"] or 0) if diagnostics is not None else 0
         unbound = int(diagnostics["unbound_depth"] or 0) if diagnostics is not None else 0
+        other_workspace = int(diagnostics["other_workspace_depth"] or 0) if diagnostics is not None else 0
         return {
             "oauth_source": self._guard_source,
             "oauth_subject_hash": oauth_subject_hash,
@@ -385,8 +410,8 @@ class StoreReviewEventOutboxMixin:
             "max_attempt_count": int(row["max_attempt_count"] or 0) if row is not None else 0,
             "last_error": row["last_error"] if row is not None else None,
             "unbound_depth": unbound,
-            "other_workspace_depth": 0,
-            "identity_mismatch_depth": quarantined - unbound,
+            "other_workspace_depth": other_workspace,
+            "identity_mismatch_depth": max(0, quarantined - legacy),
             "legacy_unbound_depth": legacy,
             "repairable_legacy_unbound_depth": legacy,
             "quarantined_depth": quarantined,

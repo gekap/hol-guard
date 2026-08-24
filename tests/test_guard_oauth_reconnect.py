@@ -350,15 +350,10 @@ def test_storage_repair_recovers_missing_oauth_binding_and_claims_unowned_reques
     rows = store.list_ready_live_request_outbox(
         now="9999-12-31T23:59:59+00:00",
         limit=10,
-        **{
-            key: binding[key]
-            for key in (
-                "oauth_subject_hash",
-                "workspace_id",
-                "machine_id",
-                "machine_installation_id",
-            )
-        },
+        oauth_subject_hash=binding["oauth_subject_hash"],
+        workspace_id=binding["workspace_id"],
+        machine_id=binding["machine_id"],
+        machine_installation_id=binding["machine_installation_id"],
     )
     assert rows[0]["oauth_subject_hash"] == binding["oauth_subject_hash"]
 
