@@ -48,6 +48,10 @@ from ..runtime.command_executors import SUPPORTED_COMMAND_OPERATIONS
 from ..runtime.command_queue import command_queue_status
 from ._commands_shared import *
 from .commands_parser_helpers import *
+from .commands_review_event_dead_letters import (
+    run_review_event_dead_letters_command,
+    run_review_event_reassign_command,
+)
 
 
 def _cloud_guard_sync_auth_context(store: GuardStore) -> dict[str, object]:
@@ -140,33 +144,9 @@ def _run_guard_connect_command(
         _emit("connect", {"sources": sources}, getattr(args, "json", False))
         return 0
     if connect_subcommand == "reassign-quarantined":
-        approved_source = getattr(args, "confirm_source", None)
-        approved_workspace = getattr(args, "confirm_workspace", None)
-        if not isinstance(approved_source, str) or not isinstance(approved_workspace, str):
-            print(
-                "reassign-quarantined requires --confirm-source and --confirm-workspace",
-                file=sys.stderr,
-            )
-            return 2
-        try:
-            reassigned = store.reassign_quarantined_live_request_outbox(
-                approved_source=approved_source,
-                approved_workspace_id=approved_workspace,
-            )
-        except ValueError as error:
-            print(str(error), file=sys.stderr)
-            return 2
-        _emit(
-            "connect",
-            {
-                "status": "reassigned",
-                "source": store.guard_source,
-                "workspace_id": approved_workspace,
-                "reassigned_count": reassigned,
-            },
-            getattr(args, "json", False),
-        )
-        return 0
+        return run_review_event_reassign_command(args=args, store=store, emit=_emit)
+    if connect_subcommand == "dead-letters":
+        return run_review_event_dead_letters_command(args=args, store=store, emit=_emit)
     if connect_subcommand in {"status", "re-pair"}:
         payload = build_connect_status_payload(
             store=store,
