@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import copy
+import subprocess
+import sys
+import zipfile
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -195,6 +199,9 @@ def test_portable_rfc3339_validation_does_not_depend_on_jsonschema_format_checke
     _schema_validate(load_contract(), candidate)
     with pytest.raises(ValueError, match="RFC3339 date-time"):
         validate_review_result(candidate)
+    for timestamp in ("2026-08-23T17:59:00.1234567Z", "2026-08-23T17:59:00.123456789+05:30"):
+        candidate["observedAt"] = timestamp
+        validate_review_result(candidate)
 
 
 def test_reviewability_fixtures_preserve_the_immutable_block_boundary() -> None:
@@ -247,7 +254,7 @@ def test_public_documentation_is_generated_from_contract_source() -> None:
     assert PUBLIC_DOCUMENTATION_PATH.read_text(encoding="utf-8") == render_public_documentation()
 
 
-def test_generated_artifacts_match_non_self_referential_contract_digests() -> None:
+def test_generated_artifacts_match_non_self_referential_contract_digests(tmp_path: Path) -> None:
     metadata = load_contract()["x-hol-contract"]
     assert isinstance(metadata, Mapping)
     generation = metadata["generation"]
@@ -256,3 +263,42 @@ def test_generated_artifacts_match_non_self_referential_contract_digests() -> No
     expected = expected_artifact_digests()
     assert set(expected) == {"fixtures", "publicDocumentation"}
     assert validate_generated_artifacts() == expected
+    wheel_directory = tmp_path / "wheel"
+    wheel_directory.mkdir()
+    _ = subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(wheel_directory)],
+        check=True,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+    wheel_paths = tuple(wheel_directory.glob("*.whl"))
+    assert len(wheel_paths) == 1
+    wheel_path = wheel_paths[0]
+    resource_names = {
+        "codex_plugin_scanner/guard/contracts/data/guard-cloud-review/v2/contract.json",
+        "codex_plugin_scanner/guard/contracts/data/guard-cloud-review/v2/fixtures.json",
+        "codex_plugin_scanner/guard/contracts/data/guard-cloud-review/v2/guard-cloud-review-v2.md",
+    }
+    with zipfile.ZipFile(wheel_path) as archive:
+        assert resource_names <= set(archive.namelist())
+        archive.extractall(tmp_path / "unpacked-wheel")
+    probe = "\n".join(
+        (
+            "from pathlib import Path",
+            "import sys",
+            "unpacked, repository = (Path(value).resolve() for value in sys.argv[1:])",
+            "checkout_import_roots = {repository, repository / 'src'}",
+            "def is_checkout_import_path(entry: str) -> bool:",
+            "    return Path(entry or '.').resolve() in checkout_import_roots",
+            "sys.path[:] = [str(unpacked), *(entry for entry in sys.path if not is_checkout_import_path(entry))]",
+            "from codex_plugin_scanner.guard.contracts import guard_cloud_review_v2 as contract",
+            "resources = (contract.CONTRACT_PATH, contract.FIXTURES_PATH, contract.PUBLIC_DOCUMENTATION_PATH)",
+            "assert all(path.is_relative_to(unpacked) for path in resources)",
+            "assert contract.load_contract()['x-hol-contract']['contractVersion'] == contract.CONTRACT_VERSION",
+            "assert contract.validate_generated_artifacts() == contract.expected_artifact_digests()",
+        )
+    )
+    _ = subprocess.run(
+        [sys.executable, "-c", probe, str(tmp_path / "unpacked-wheel"), str(Path(__file__).resolve().parents[1])],
+        check=True,
+        cwd=tmp_path,
+    )

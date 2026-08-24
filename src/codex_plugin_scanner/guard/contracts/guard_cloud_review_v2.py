@@ -14,18 +14,36 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 CONTRACT_VERSION: Final = "guard-cloud-review-v2"
-_ROOT: Final = Path(__file__).resolve().parents[4]
-CONTRACT_PATH: Final = _ROOT / "contracts" / "guard-cloud-review" / "v2" / "contract.json"
-FIXTURES_PATH: Final = _ROOT / "contracts" / "guard-cloud-review" / "v2" / "fixtures.json"
-PUBLIC_DOCUMENTATION_PATH: Final = _ROOT / "docs" / "guard" / "contracts" / "guard-cloud-review-v2.md"
+_SOURCE_ROOT: Final = Path(__file__).resolve().parents[4]
+_PACKAGE_DATA_ROOT: Final = Path(__file__).resolve().parent / "data" / "guard-cloud-review" / "v2"
+_SOURCE_ARTIFACTS: Final = {
+    "contract.json": _SOURCE_ROOT / "contracts" / "guard-cloud-review" / "v2" / "contract.json",
+    "fixtures.json": _SOURCE_ROOT / "contracts" / "guard-cloud-review" / "v2" / "fixtures.json",
+    "guard-cloud-review-v2.md": _SOURCE_ROOT / "docs" / "guard" / "contracts" / "guard-cloud-review-v2.md",
+}
+
+
+def _artifact_path(name: str) -> Path:
+    packaged = _PACKAGE_DATA_ROOT / name
+    if packaged.is_file():
+        return packaged
+    source = _SOURCE_ARTIFACTS[name]
+    if source.is_file():
+        return source
+    raise FileNotFoundError(f"Guard Cloud Review v2 artifact is unavailable: {name}")
+
+
+CONTRACT_PATH: Final = _artifact_path("contract.json")
+FIXTURES_PATH: Final = _artifact_path("fixtures.json")
+PUBLIC_DOCUMENTATION_PATH: Final = _artifact_path("guard-cloud-review-v2.md")
 _GENERATED_ARTIFACTS: Final = {
-    "fixtures": FIXTURES_PATH,
-    "publicDocumentation": PUBLIC_DOCUMENTATION_PATH,
+    "fixtures": (FIXTURES_PATH, "contracts/guard-cloud-review/v2/fixtures.json"),
+    "publicDocumentation": (PUBLIC_DOCUMENTATION_PATH, "docs/guard/contracts/guard-cloud-review-v2.md"),
 }
 _MISSING: Final = object()
 _RFC3339_DATE_TIME: Final = re.compile(
-    r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?"
-    + r"(?:Z|[+-](?:0\d|1\d|2[0-3]):[0-5]\d)$"
+    r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d"
+    + r"(?P<fraction>\.\d+)?(?:Z|[+-](?:0\d|1\d|2[0-3]):[0-5]\d)$"
 )
 
 
@@ -151,10 +169,17 @@ def _optional_value_at_path(payload: Mapping[str, object], path: object) -> obje
 
 
 def _is_rfc3339_date_time(value: object) -> bool:
-    if not isinstance(value, str) or _RFC3339_DATE_TIME.fullmatch(value) is None:
+    if not isinstance(value, str):
         return False
+    match = _RFC3339_DATE_TIME.fullmatch(value)
+    if match is None:
+        return False
+    fraction = match.group("fraction")
+    parse_value = value
+    if fraction is not None:
+        parse_value = value[: match.start("fraction")] + value[match.end("fraction") :]
     try:
-        _ = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+        _ = datetime.fromisoformat(parse_value[:-1] + "+00:00" if parse_value.endswith("Z") else parse_value)
     except ValueError:
         return False
     return True
@@ -253,9 +278,8 @@ def expected_artifact_digests() -> dict[str, str]:
         raise ValueError("unsupported contract generation algorithm")
     artifacts = _mapping_field(generation, "artifacts")
     expected: dict[str, str] = {}
-    for name, path in _GENERATED_ARTIFACTS.items():
+    for name, (_, expected_path) in _GENERATED_ARTIFACTS.items():
         entry = _mapping_field(artifacts, name)
-        expected_path = path.relative_to(_ROOT).as_posix()
         digest = entry.get("sha256")
         if (
             entry.get("path") != expected_path
@@ -272,7 +296,7 @@ def validate_generated_artifacts() -> dict[str, str]:
     """Verify generated fixture and public-documentation bytes against the contract."""
 
     expected = expected_artifact_digests()
-    observed = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in _GENERATED_ARTIFACTS.items()}
+    observed = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, (path, _) in _GENERATED_ARTIFACTS.items()}
     for name, digest in expected.items():
         if observed[name] != digest:
             raise ValueError(f"generated artifact digest mismatch: {name}")
