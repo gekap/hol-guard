@@ -336,10 +336,30 @@ def test_storage_repair_recovers_missing_oauth_binding_and_claims_unowned_reques
     assert credentials is not None
     assert credentials["grant_id"] == "grant-1"
     assert result["repaired_oauth_binding"] is True
-    assert result["claimed_live_requests"] == 1
+    assert result["claimed_live_requests"] == 0
     binding = store.get_live_request_oauth_binding()
     assert binding is not None
-    rows = store.list_ready_live_request_outbox(now="9999-12-31T23:59:59+00:00", limit=10)
+    assert store.live_request_outbox_status(now="9999-12-31T23:59:59+00:00")["quarantined_depth"] == 1
+    assert (
+        store.reassign_quarantined_live_request_outbox(
+            approved_source="default",
+            approved_workspace_id="workspace-1",
+        )
+        == 1
+    )
+    rows = store.list_ready_live_request_outbox(
+        now="9999-12-31T23:59:59+00:00",
+        limit=10,
+        **{
+            key: binding[key]
+            for key in (
+                "oauth_subject_hash",
+                "workspace_id",
+                "machine_id",
+                "machine_installation_id",
+            )
+        },
+    )
     assert rows[0]["oauth_subject_hash"] == binding["oauth_subject_hash"]
 
 

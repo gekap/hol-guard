@@ -21,12 +21,14 @@ from ..review_contracts import (
 )
 from ..store import GuardStore
 from ..store_live_request_outbox import live_request_oauth_subject_hash
+from ..store_review_event_outbox_schema import REVIEW_EVENT_SCHEMA_VERSION
 from .local_request_snapshots import (
     _cloud_safe_local_request_payload,
     _cloud_scrub_text,
     _local_request_command_text,
     _resolve_cloud_receipt_redaction_level,
 )
+from .review_event_delivery import StoredReviewEventError, decode_stored_review_event
 
 if TYPE_CHECKING:
     pass
@@ -359,7 +361,6 @@ def sync_live_requests_once(
 
             events: list[dict[str, object]] = []
             sequences: list[int] = []
-            missing_sequences: list[int] = []
             redaction_level = _resolve_cloud_receipt_redaction_level(store)
             try:
                 oauth = guard_review_oauth_metadata(store)
@@ -370,8 +371,6 @@ def sync_live_requests_once(
                 if not isinstance(sequence_value, int):
                     raise RuntimeError("Live-request outbox sequence is invalid.")
                 sequence = sequence_value
-                request_id = str(outbox_row["local_request_id"])
-                request = store.get_approval_request(request_id)
                 row_binding = {
                     key: outbox_row.get(key)
                     for key in (
@@ -381,28 +380,52 @@ def sync_live_requests_once(
                         "machine_installation_id",
                     )
                 }
-                if (
-                    request is None
-                    or request.get("oauth_source") != store.guard_source
-                    or row_binding != delivery_binding
-                ):
-                    missing_sequences.append(sequence)
+                if row_binding != delivery_binding:
+                    _ = store.quarantine_live_request_outbox_event(
+                        sequence,
+                        reason="delivery_identity_mismatch",
+                        error="Stored Review event identity does not match the active delivery binding.",
+                        **delivery_binding,
+                    )
+                    continue
+                try:
+                    stored_event = decode_stored_review_event(outbox_row)
+                except StoredReviewEventError as error:
+                    _ = store.quarantine_live_request_outbox_event(
+                        sequence,
+                        reason=error.reason,
+                        error=str(error),
+                        **delivery_binding,
+                    )
                     continue
                 event = _build_live_request_event(
-                    request,
+                    stored_event.snapshot,
                     redaction_level=redaction_level,
                     oauth=oauth,
                     store=store,
-                    event_sequence=sequence,
+                    event_sequence=stored_event.request_sequence,
                 )
                 if event is None:
-                    missing_sequences.append(sequence)
+                    _ = store.quarantine_live_request_outbox_event(
+                        sequence,
+                        reason="payload_snapshot_invalid",
+                        error="Stored Review event snapshot has no local request identifier.",
+                        **delivery_binding,
+                    )
                     continue
+                event.update(
+                    {
+                        "eventId": stored_event.event_id,
+                        "eventSchemaVersion": REVIEW_EVENT_SCHEMA_VERSION,
+                        "eventType": stored_event.wire_event_type,
+                        "eventPayloadJson": stored_event.payload_json,
+                        "localEventSequence": stored_event.request_sequence,
+                        "localStreamSequence": stored_event.stream_sequence,
+                        "payloadHash": stored_event.payload_hash,
+                    }
+                )
                 sequences.append(sequence)
                 events.append(event)
-
-            if missing_sequences:
-                store.acknowledge_live_request_outbox(missing_sequences, **delivery_binding)
             if not events:
                 continue
 

@@ -34,6 +34,10 @@ from .store_command_shadow_schema import ensure_command_shadow_schema
 from .store_extension_control_authority_schema import ensure_extension_control_authority_schema
 from .store_live_request_outbox import ensure_live_request_outbox_schema, seed_live_request_outbox
 from .store_local_cli_schema import ensure_local_cli_schema
+from .store_review_event_outbox_schema import (
+    REVIEW_EVENT_OUTBOX_MIGRATION_VERSION,
+    finalize_review_event_payload_hashes,
+)
 from .store_secret_policy_integrity import _POLICY_INTEGRITY_LOOKUP_UNSET
 from .store_storage_maintenance import (
     STORAGE_MAINTENANCE_MIGRATION_VERSION,
@@ -161,6 +165,7 @@ _REQUIRED_SCHEMA_MIGRATION_VERSIONS = (
     *range(2, STORAGE_QUERY_INDEX_MIGRATION_VERSION + 1),
     WORKFLOW_CAPABILITY_RECEIPT_EVENT_INDEX_MIGRATION_VERSION,
     WATCH_ONLY_APPROVAL_MIGRATION_VERSION,
+    REVIEW_EVENT_OUTBOX_MIGRATION_VERSION,
 )
 
 
@@ -383,6 +388,7 @@ class StoreConnectionSchemaMixin:
             connection.execute(f"pragma cache_size=-{SQLITE_CACHE_SIZE_KIB}")
             connection.execute(f"pragma mmap_size={SQLITE_MMAP_SIZE_BYTES}")
             yield connection
+            finalize_review_event_payload_hashes(connection)
             commit_started = time.monotonic()
             try:
                 connection.commit()
