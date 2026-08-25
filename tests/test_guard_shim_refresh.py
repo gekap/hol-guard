@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -68,6 +69,14 @@ class ShimRefreshTest(unittest.TestCase):
         self.assertEqual(result.refreshed, ())
         self.assertEqual(result.unchanged, ("kimi",))
         self.assertEqual(result.errors, ())
+
+    def test_launcher_shim_does_not_freeze_installer_pythonpath(self) -> None:
+        installer_pythonpath = str(self.home_dir / "installer-only-imports")
+        with patch.dict("os.environ", {"PYTHONPATH": installer_pythonpath}):
+            body = _build_python_shim("kimi", self._context(), [])
+
+        self.assertIn("combined_env = dict(os.environ)", body)
+        self.assertNotIn(installer_pythonpath, body)
 
     def test_stale_shim_is_refreshed_with_current_generator_content(self) -> None:
         path = self._install("kimi")

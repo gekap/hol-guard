@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
-from .launcher import merge_guard_launcher_env
 from .package_shim_frozen import (
     FROZEN_PACKAGE_SHIM_SENTINEL,
     classify_installed_package_shim_integrity,
@@ -198,7 +197,6 @@ def _build_python_shim(harness: str, context: HarnessContextLike, workspace_args
         *_home_override_args(context),
         *workspace_args,
     ]
-    launcher_env = merge_guard_launcher_env()
     return "\n".join(
         (
             f"#!{sys.executable}",
@@ -206,17 +204,7 @@ def _build_python_shim(harness: str, context: HarnessContextLike, workspace_args
             "import os",
             "import sys",
             f"base_command = {command_args!r}",
-            f"base_env = {launcher_env!r}",
-            "combined_env = {**os.environ, **base_env}",
-            "if 'PYTHONPATH' in os.environ and 'PYTHONPATH' in base_env:",
-            "    pythonpath_entries = []",
-            "    os_pythonpath = os.environ['PYTHONPATH'].split(os.pathsep)",
-            "    base_pythonpath = base_env['PYTHONPATH'].split(os.pathsep)",
-            "    for entry in [*os_pythonpath, *base_pythonpath]:",
-            "        normalized = entry.strip()",
-            "        if normalized and normalized not in pythonpath_entries:",
-            "            pythonpath_entries.append(normalized)",
-            "    combined_env['PYTHONPATH'] = os.pathsep.join(pythonpath_entries)",
+            "combined_env = dict(os.environ)",
             'extra_args = [f"--arg={arg}" for arg in sys.argv[1:]]',
             "os.execvpe(base_command[0], [*base_command, *extra_args], combined_env)",
             "",
@@ -1102,7 +1090,8 @@ def _package_protect_command_args(context: HarnessContextLike, workspace_args: l
         "--package-shim-ui",
         "--guard-home",
         str(context.guard_home),
-        *_home_override_args(context),
+        "--home",
+        str(context.home_dir),
         *workspace_args,
     ]
     if _is_frozen_runtime():
