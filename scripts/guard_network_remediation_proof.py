@@ -11,6 +11,16 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Final, cast
 
+_REPOSITORY_SOURCE = Path(__file__).resolve().parents[1] / "src"
+if str(_REPOSITORY_SOURCE) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY_SOURCE))
+
+from codex_plugin_scanner.guard.runtime.network_capability_reachability import (  # noqa: E402
+    load_reachability_manifest,
+    repository_manifest_path,
+    validate_reachability_manifest,
+)
+
 SCHEMA_VERSION: Final = 1
 TASK_IDS: Final = tuple(f"REM-{number:03d}" for number in range(121, 140))
 ALLOWED_OUTCOMES: Final = frozenset({"passed", "partial", "blocked", "not-ready"})
@@ -47,6 +57,14 @@ _EXCLUDED_SCAN_DIRECTORIES: Final = frozenset(
         "node_modules",
     }
 )
+_CAPABILITY_LINK_FIELDS: Final = (
+    "production_entrypoint",
+    "installed_artifact",
+    "live_probe",
+    "active_generation_source",
+    "observer",
+    "behavioral_test",
+)
 
 
 class ProofValidationError(ValueError):
@@ -60,9 +78,11 @@ def _load_object(path: Path) -> Mapping[str, object]:
     return cast(Mapping[str, object], payload)
 
 
-def _string_list(value: object, *, field: str) -> list[str]:
+def _string_list(value: object, *, field: str, allow_empty: bool = False) -> list[str]:
     if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
         raise ProofValidationError(f"{field} must contain non-empty strings")
+    if not value and not allow_empty:
+        raise ProofValidationError(f"{field} must contain at least one entry")
     return cast(list[str], value)
 
 
@@ -72,10 +92,21 @@ def _repository_file(repository_root: Path, value: object, *, field: str) -> Pat
     relative = Path(value)
     if relative.is_absolute() or ".." in relative.parts:
         raise ProofValidationError(f"{field} must stay within the repository")
-    path = repository_root / relative
-    if not path.is_file():
-        raise ProofValidationError(f"{field} does not exist: {value}")
-    return path
+
+    try:
+        resolved_root = repository_root.resolve(strict=True)
+        lexical_path = resolved_root / relative
+        if lexical_path.is_symlink():
+            raise ProofValidationError(f"{field} must be a non-symlink regular file: {value}")
+        resolved_path = lexical_path.resolve(strict=True)
+    except OSError as exc:
+        raise ProofValidationError(f"{field} does not exist: {value}") from exc
+
+    if not resolved_path.is_relative_to(resolved_root):
+        raise ProofValidationError(f"{field} must stay within the repository")
+    if not resolved_path.is_file() or resolved_path.stat().st_size == 0:
+        raise ProofValidationError(f"{field} must be a non-empty regular file: {value}")
+    return resolved_path
 
 
 def _private_artifact_hits(repository_root: Path) -> list[str]:
@@ -94,8 +125,14 @@ def _private_artifact_hits(repository_root: Path) -> list[str]:
 
 
 def _capability_summary(repository_root: Path) -> tuple[list[str], list[str]]:
-    path = repository_root / "ci" / "guard-network-capability-reachability.v1.json"
-    payload = _load_object(path)
+    manifest_path = repository_manifest_path(repository_root)
+    payload = load_reachability_manifest(manifest_path)
+    validation_errors = validate_reachability_manifest(payload, repository_root=repository_root)
+    if validation_errors:
+        raise ProofValidationError(
+            "capability reachability manifest is invalid: " + "; ".join(validation_errors)
+        )
+
     raw_capabilities = payload.get("capabilities")
     if not isinstance(raw_capabilities, list):
         raise ProofValidationError("capability reachability manifest must contain a capability list")
@@ -109,7 +146,19 @@ def _capability_summary(repository_root: Path) -> tuple[list[str], list[str]]:
         identifier = capability.get("id")
         if not isinstance(identifier, str) or not identifier:
             raise ProofValidationError(f"capabilities[{index}].id must be a non-empty string")
+
+        _repository_file(
+            repository_root,
+            capability.get("contract"),
+            field=f"{identifier}.contract",
+        )
         if capability.get("advertised") is True:
+            for field in _CAPABILITY_LINK_FIELDS:
+                _repository_file(
+                    repository_root,
+                    capability.get(field),
+                    field=f"{identifier}.{field}",
+                )
             advertised.append(identifier)
         if capability.get("production_ready") is True:
             production_ready.append(identifier)
@@ -144,7 +193,9 @@ def validate_proof_manifest(payload: Mapping[str, object], *, repository_root: P
         if privacy.get("raw_domain_storage") is not False:
             errors.append("raw_domain_storage must remain disabled")
         try:
-            prohibited_fields = set(_string_list(privacy.get("prohibited_fields"), field="privacy.prohibited_fields"))
+            prohibited_fields = set(
+                _string_list(privacy.get("prohibited_fields"), field="privacy.prohibited_fields")
+            )
         except ProofValidationError as exc:
             errors.append(str(exc))
         else:
@@ -179,7 +230,11 @@ def validate_proof_manifest(payload: Mapping[str, object], *, repository_root: P
             errors.append(f"{label}: title must be a non-empty string")
         try:
             evidence = _string_list(task.get("evidence"), field=f"{label}.evidence")
-            blockers = _string_list(task.get("blockers"), field=f"{label}.blockers")
+            blockers = _string_list(
+                task.get("blockers"),
+                field=f"{label}.blockers",
+                allow_empty=True,
+            )
         except ProofValidationError as exc:
             errors.append(str(exc))
             continue
@@ -220,7 +275,12 @@ def validate_proof_manifest(payload: Mapping[str, object], *, repository_root: P
         if closure.get("verdict") != expected_verdict:
             errors.append("closure.verdict must match closure.ready")
 
-    advertised, production_ready = _capability_summary(repository_root)
+    advertised: list[str] = []
+    production_ready: list[str] = []
+    try:
+        advertised, production_ready = _capability_summary(repository_root)
+    except (OSError, ValueError, ProofValidationError) as exc:
+        errors.append(str(exc))
     if advertised != production_ready:
         errors.append("advertised and production-ready capability identities must match")
     if closure_ready is True and not advertised:
