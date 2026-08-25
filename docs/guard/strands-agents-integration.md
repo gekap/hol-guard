@@ -6,13 +6,13 @@ This integration is intentionally narrow. It does not claim that arbitrary Stran
 
 ## Install
 
-The vended intervention is currently in the HOL Guard 3.x alpha channel. Install an exact published alpha in the same Python environment as Strands Agents:
+The vended intervention is currently in the HOL Guard 3.x alpha channel. Install the current published prerelease in the same Python environment as Strands Agents:
 
 ```bash
-pip install --pre "hol-guard>=3.0.0a250" "strands-agents>=1.53,<2"
+pip install --pre hol-guard "strands-agents>=1.53,<2"
 ```
 
-Check the [HOL Guard prereleases](https://github.com/hashgraph-online/hol-guard/releases) for the newest 3.x alpha before pinning a production evaluation. Guard Cloud is not required for this local inspection path.
+After evaluating the integration, pin the exact HOL Guard prerelease you tested. Check the [HOL Guard prereleases](https://github.com/hashgraph-online/hol-guard/releases) for the current 3.x alpha. Guard Cloud is not required for this local inspection path.
 
 ## Attach the intervention
 
