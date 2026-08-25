@@ -2,6 +2,12 @@
 
 This document is the public, evidence-bounded closure record for the HOL Guard 3.0 network-isolation proof tasks REM-121 through REM-139.
 
+## Evidence metadata
+
+- **Data as of:** 2026-08-25.
+- **Assurance level:** Source, contract, test, packaging, and reachability validation. This is not a live installed selective-egress or independent-observer attestation.
+- **Primary limitations:** No signed installed Linux selective-egress provider, privileged live matrix, or synchronized Guard Cloud network-control path is production-reachable.
+
 ## Current verdict
 
 **Not ready for an enforcement claim or release action.**
@@ -13,9 +19,10 @@ No release, deployment, promotion, branch deletion, managed-policy activation, o
 ## Proven in this slice
 
 - REM-121 through REM-139 are represented exactly once in a checked-in machine-readable proof record.
+- Each task is bound to a task-specific evidence contract; unrelated existing files cannot substitute for the declared proof.
 - Existing bypass, exfiltration, harness, benign-workflow, approval, recovery, provider, privacy, performance, and supply-chain coverage is linked to the task that it supports.
 - Incomplete interface-level or installed-provider evidence remains explicitly partial or blocked.
-- The proof validator refuses a ready verdict while any required task is incomplete or no advertised production capability exists.
+- The proof validator invokes the authoritative capability reachability contract and refuses a ready verdict while any required task is incomplete or no advertised production capability exists.
 - Raw domain storage remains disabled, and the closure report contains only bounded state and task identifiers.
 - Private planning artifacts are rejected by repository-path hygiene checks.
 - The public capability manifest remains the authority for advertised reachability.
