@@ -54,6 +54,8 @@ def test_network_remediation_proof_manifest_is_valid_and_bounded() -> None:
     assert report["production_ready_capabilities"] == []
     assert report["raw_domain_storage"] is False
     assert report["private_artifact_hits"] == []
+    assert report["reason"] == cast(dict[str, object], _manifest()["closure"])["reason"]
+    assert "--require-ready" in cast(str, report["recommended_action"])
 
 
 def test_network_remediation_tasks_are_exact_and_ordered() -> None:
@@ -100,6 +102,17 @@ def test_network_remediation_proof_rejects_empty_evidence() -> None:
     assert "REM-121.evidence must contain at least one entry" in errors
 
 
+def test_network_remediation_proof_rejects_unrelated_existing_evidence() -> None:
+    module = _load_module()
+    payload = copy.deepcopy(_manifest())
+    task = next(item for item in _tasks(payload) if item["id"] == "REM-130")
+    task["evidence"] = ["README.md"]
+
+    errors = module.validate_proof_manifest(payload, repository_root=_REPOSITORY_ROOT)
+
+    assert "REM-130.evidence must match the task-specific evidence contract" in errors
+
+
 def test_network_remediation_proof_rejects_raw_domain_storage() -> None:
     module = _load_module()
     payload = copy.deepcopy(_manifest())
@@ -130,6 +143,7 @@ def test_network_remediation_require_ready_exits_nonzero_without_overstating_pro
     assert report["verdict"] == "not-ready"
     assert report["advertised_capabilities"] == []
     assert report["release_authorized"] is False
+    assert "--require-ready" in report["recommended_action"]
     assert result.stderr == ""
 
 
