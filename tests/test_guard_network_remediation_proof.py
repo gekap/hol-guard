@@ -90,6 +90,16 @@ def test_network_remediation_proof_rejects_completed_task_with_blocker() -> None
     assert "REM-121: completed tasks must pass without blockers" in errors
 
 
+def test_network_remediation_proof_rejects_empty_evidence() -> None:
+    module = _load_module()
+    payload = copy.deepcopy(_manifest())
+    _tasks(payload)[0]["evidence"] = []
+
+    errors = module.validate_proof_manifest(payload, repository_root=_REPOSITORY_ROOT)
+
+    assert "REM-121.evidence must contain at least one entry" in errors
+
+
 def test_network_remediation_proof_rejects_raw_domain_storage() -> None:
     module = _load_module()
     payload = copy.deepcopy(_manifest())
@@ -132,6 +142,33 @@ def test_network_remediation_proof_rejects_missing_evidence_path() -> None:
     errors = module.validate_proof_manifest(payload, repository_root=_REPOSITORY_ROOT)
 
     assert any("does not exist" in error for error in errors)
+
+
+def test_network_remediation_proof_rejects_external_evidence_symlink(tmp_path: Path) -> None:
+    module = _load_module()
+    repository_root = tmp_path / "repository"
+    repository_root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private host evidence", encoding="utf-8")
+    (repository_root / "evidence.txt").symlink_to(outside)
+
+    with pytest.raises(module.ProofValidationError, match="non-symlink regular file"):
+        module._repository_file(repository_root, "evidence.txt", field="REM-121.evidence[0]")
+
+
+def test_network_remediation_proof_uses_authoritative_reachability_validator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+
+    def invalid_manifest(_payload: object, *, repository_root: Path) -> tuple[str, ...]:
+        assert repository_root == _REPOSITORY_ROOT
+        return ("synthetic reachability failure",)
+
+    monkeypatch.setattr(module, "validate_reachability_manifest", invalid_manifest)
+
+    with pytest.raises(module.ProofValidationError, match="synthetic reachability failure"):
+        module._capability_summary(_REPOSITORY_ROOT)
 
 
 @pytest.mark.parametrize("task_id", ["REM-127", "REM-128", "REM-139"])
