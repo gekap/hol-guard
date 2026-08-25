@@ -11,6 +11,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -259,6 +260,50 @@ def test_daemon_refresh_does_not_trust_newer_state_when_live_identity_differs(
 
     assert payload == {"status": "restarted", "runtime_verified": True}
     assert note == "Restarted the Guard daemon to load the updated package."
+
+
+def test_daemon_refresh_falls_back_when_authenticated_host_is_malformed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from codex_plugin_scanner.guard.daemon import discovery, manager
+
+    context = _context(tmp_path)
+    context.guard_home.mkdir(parents=True)
+    (context.guard_home / "daemon-state.json").write_text("signed", encoding="utf-8")
+    state: dict[str, object] = {
+        "guard_home": str(context.guard_home.resolve()),
+        "host": ["127.0.0.1"],
+        "port": 5245,
+        "pid": 4242,
+        "compatibility_version": 2,
+        "package_version": "3.0.0a253",
+        "runtime_fingerprint": "desktop-core-fingerprint",
+    }
+    monkeypatch.setattr(discovery, "load_authenticated_daemon_state", lambda _home: state)
+    monkeypatch.setattr(manager, "load_guard_daemon_auth_token", lambda _home: "daemon-token")
+    urlopen = MagicMock()
+    monkeypatch.setattr(update_commands.urllib.request, "urlopen", urlopen)
+    restart = SimpleNamespace(
+        returncode=0,
+        stdout='{"status":"restarted","runtime_verified":true}',
+        stderr="",
+        output_limited=False,
+    )
+
+    class RestartContext:
+        def python_command(self, script: str, *_args: str) -> list[str]:
+            return ["/trusted/python", "-c", script]
+
+        def run(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+            return restart
+
+    monkeypatch.setattr(update_commands, "_standalone_update_context", lambda _context: RestartContext())
+    payload, note = update_commands.refresh_guard_daemon_after_update(context)
+
+    assert payload == {"status": "restarted", "runtime_verified": True}
+    assert note == "Restarted the Guard daemon to load the updated package."
+    urlopen.assert_not_called()
 
 
 def test_daemon_refresh_authorizes_breakaway_only_for_restart_child(tmp_path: Path) -> None:

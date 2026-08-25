@@ -2154,6 +2154,7 @@ def _verified_newer_guard_daemon(
     token = load_guard_daemon_auth_token(guard_home)
     if (
         not isinstance(daemon_version_text, str)
+        or not isinstance(host, str)
         or host not in {"127.0.0.1", "::1"}
         or not isinstance(port, int)
         or not 1 <= port <= 65535
