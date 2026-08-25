@@ -1216,8 +1216,8 @@ def test_guard_package_shims_status_ignores_dynamic_generated_paths(tmp_path: Pa
 
 
 def test_guard_package_shims_status_is_stable_across_home_override_contexts(tmp_path: Path) -> None:
-    home_dir = tmp_path / "home"
-    guard_home = home_dir / ".hol-guard"
+    home_dir = Path.home()
+    guard_home = tmp_path / "guard-home"
     install_package_shims(
         HarnessContext(
             home_dir=home_dir,
