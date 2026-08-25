@@ -2143,7 +2143,10 @@ def _verified_newer_guard_daemon(
     """Retain a live newer runtime only after signed-state and loopback health agree."""
 
     from ..daemon.discovery import load_authenticated_daemon_state
-    from ..daemon.manager import load_guard_daemon_auth_token
+    from ..daemon.manager import (
+        GUARD_DAEMON_COMPATIBILITY_VERSION,
+        load_guard_daemon_auth_token,
+    )
 
     state = load_authenticated_daemon_state(guard_home)
     if state is None:
@@ -2151,6 +2154,9 @@ def _verified_newer_guard_daemon(
     daemon_version_text = state.get("package_version")
     host = state.get("host")
     port = state.get("port")
+    compatibility_version = state.get("compatibility_version")
+    runtime_fingerprint = state.get("runtime_fingerprint")
+    daemon_pid = state.get("pid")
     token = load_guard_daemon_auth_token(guard_home)
     if (
         not isinstance(daemon_version_text, str)
@@ -2158,6 +2164,11 @@ def _verified_newer_guard_daemon(
         or host not in {"127.0.0.1", "::1"}
         or not isinstance(port, int)
         or not 1 <= port <= 65535
+        or compatibility_version != GUARD_DAEMON_COMPATIBILITY_VERSION
+        or not isinstance(runtime_fingerprint, str)
+        or not runtime_fingerprint
+        or not isinstance(daemon_pid, int)
+        or daemon_pid <= 0
         or not isinstance(token, str)
         or not token
     ):
@@ -2178,7 +2189,8 @@ def _verified_newer_guard_daemon(
         method="GET",
     )
     try:
-        with urllib.request.urlopen(request, timeout=1.0) as response:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=1.0) as response:
             if response.status != 200:
                 return None
             response_bytes = response.read(65_537)
@@ -2196,6 +2208,7 @@ def _verified_newer_guard_daemon(
     identity_fields = ("package_version", "compatibility_version", "runtime_fingerprint", "pid")
     if (
         details_guard_home != guard_home.expanduser().resolve()
+        or any(field not in state or field not in details for field in identity_fields)
         or any(details.get(field) != state.get(field) for field in identity_fields)
     ):
         return None

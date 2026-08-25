@@ -119,13 +119,18 @@ def test_daemon_refresh_retains_verified_newer_desktop_runtime(
             assert limit == 65_537
             return json.dumps({**state, "ok": True}).encode("utf-8")
 
-    def urlopen(request: urllib.request.Request, *, timeout: float) -> Response:
-        assert request.full_url == "http://127.0.0.1:5245/v1/healthz/details"
-        assert request.headers["X-guard-token"] == "daemon-token"
-        assert timeout == 1.0
-        return Response()
+    class Opener:
+        def open(self, request: urllib.request.Request, *, timeout: float) -> Response:
+            assert request.full_url == "http://127.0.0.1:5245/v1/healthz/details"
+            assert request.headers["X-guard-token"] == "daemon-token"
+            assert timeout == 1.0
+            return Response()
 
-    monkeypatch.setattr(update_commands.urllib.request, "urlopen", urlopen)
+    def build_opener(handler: urllib.request.ProxyHandler) -> Opener:
+        assert handler.proxies == {}
+        return Opener()
+
+    monkeypatch.setattr(update_commands.urllib.request, "build_opener", build_opener)
 
     payload, note = update_commands.refresh_guard_daemon_after_update(
         context,
@@ -176,7 +181,8 @@ def test_daemon_refresh_restarts_runtime_older_than_installed_target(
             assert limit == 65_537
             return json.dumps({**state, "ok": True}).encode("utf-8")
 
-    monkeypatch.setattr(update_commands.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    opener = SimpleNamespace(open=lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(update_commands.urllib.request, "build_opener", lambda *_args: opener)
     restart = SimpleNamespace(
         returncode=0,
         stdout='{"status":"restarted","runtime_verified":true}',
@@ -234,11 +240,10 @@ def test_daemon_refresh_does_not_trust_newer_state_when_live_identity_differs(
 
         def read(self, limit: int) -> bytes:
             assert limit == 65_537
-            return json.dumps(
-                {**state, "ok": True, "runtime_fingerprint": "different-live-fingerprint"}
-            ).encode()
+            return json.dumps({**state, "ok": True, "runtime_fingerprint": "different-live-fingerprint"}).encode()
 
-    monkeypatch.setattr(update_commands.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    opener = SimpleNamespace(open=lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(update_commands.urllib.request, "build_opener", lambda *_args: opener)
     restart = SimpleNamespace(
         returncode=0,
         stdout='{"status":"restarted","runtime_verified":true}',
@@ -282,8 +287,8 @@ def test_daemon_refresh_falls_back_when_authenticated_host_is_malformed(
     }
     monkeypatch.setattr(discovery, "load_authenticated_daemon_state", lambda _home: state)
     monkeypatch.setattr(manager, "load_guard_daemon_auth_token", lambda _home: "daemon-token")
-    urlopen = MagicMock()
-    monkeypatch.setattr(update_commands.urllib.request, "urlopen", urlopen)
+    build_opener = MagicMock()
+    monkeypatch.setattr(update_commands.urllib.request, "build_opener", build_opener)
     restart = SimpleNamespace(
         returncode=0,
         stdout='{"status":"restarted","runtime_verified":true}',
@@ -303,7 +308,65 @@ def test_daemon_refresh_falls_back_when_authenticated_host_is_malformed(
 
     assert payload == {"status": "restarted", "runtime_verified": True}
     assert note == "Restarted the Guard daemon to load the updated package."
-    urlopen.assert_not_called()
+    build_opener.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("compatibility_version", 3),
+        ("runtime_fingerprint", None),
+        ("pid", None),
+    ],
+)
+def test_daemon_refresh_falls_back_for_incomplete_or_incompatible_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    from codex_plugin_scanner.guard.daemon import discovery, manager
+
+    context = _context(tmp_path)
+    context.guard_home.mkdir(parents=True)
+    (context.guard_home / "daemon-state.json").write_text("signed", encoding="utf-8")
+    state: dict[str, object] = {
+        "guard_home": str(context.guard_home.resolve()),
+        "host": "127.0.0.1",
+        "port": 5245,
+        "pid": 4242,
+        "compatibility_version": 2,
+        "package_version": "3.0.0a253",
+        "runtime_fingerprint": "desktop-core-fingerprint",
+    }
+    if value is None:
+        state.pop(field)
+    else:
+        state[field] = value
+    monkeypatch.setattr(discovery, "load_authenticated_daemon_state", lambda _home: state)
+    monkeypatch.setattr(manager, "load_guard_daemon_auth_token", lambda _home: "daemon-token")
+    build_opener = MagicMock()
+    monkeypatch.setattr(update_commands.urllib.request, "build_opener", build_opener)
+    restart = SimpleNamespace(
+        returncode=0,
+        stdout='{"status":"restarted","runtime_verified":true}',
+        stderr="",
+        output_limited=False,
+    )
+
+    class RestartContext:
+        def python_command(self, script: str, *_args: str) -> list[str]:
+            return ["/trusted/python", "-c", script]
+
+        def run(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+            return restart
+
+    monkeypatch.setattr(update_commands, "_standalone_update_context", lambda _context: RestartContext())
+    payload, note = update_commands.refresh_guard_daemon_after_update(context)
+
+    assert payload == {"status": "restarted", "runtime_verified": True}
+    assert note == "Restarted the Guard daemon to load the updated package."
+    build_opener.assert_not_called()
 
 
 def test_daemon_refresh_authorizes_breakaway_only_for_restart_child(tmp_path: Path) -> None:
