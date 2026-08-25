@@ -33,6 +33,7 @@ class HolGuardIntervention(InterventionHandler):
         executable: str = "hol-guard",
         timeout_seconds: float = 10.0,
     ) -> None:
+        super().__init__()
         self._command_fields = dict(command_fields)
         self._executable = executable
         self._timeout_seconds = timeout_seconds
