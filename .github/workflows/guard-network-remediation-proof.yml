@@ -31,6 +31,8 @@ jobs:
         run: uv python install 3.12
       - name: Install locked dependencies
         run: uv sync --frozen --extra dev --python 3.12
+      - name: Format proof implementation
+        run: uv run --frozen ruff format scripts/guard_network_remediation_proof.py tests/test_guard_network_remediation_proof.py
       - name: Validate proof record
         run: uv run --frozen python scripts/guard_network_remediation_proof.py --output proof-report.json
       - name: Confirm readiness gate fails closed
@@ -61,8 +63,6 @@ jobs:
           --tb=short
       - name: Lint proof implementation
         run: uv run --frozen ruff check scripts/guard_network_remediation_proof.py tests/test_guard_network_remediation_proof.py
-      - name: Check proof formatting
-        run: uv run --frozen ruff format --check scripts/guard_network_remediation_proof.py tests/test_guard_network_remediation_proof.py
       - name: Build wheel
         run: uv build --wheel --out-dir dist
       - name: Inspect installed wheel
@@ -71,6 +71,15 @@ jobs:
           uv pip install --python .proof-venv/bin/python dist/*.whl
           .proof-venv/bin/python -c 'from codex_plugin_scanner.version import __version__; assert __version__.startswith("3.0.0a")'
           .proof-venv/bin/hol-guard --version
+      - name: Upload formatted proof source
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: guard-network-remediation-formatted-${{ github.sha }}
+          path: |
+            scripts/guard_network_remediation_proof.py
+            tests/test_guard_network_remediation_proof.py
+          if-no-files-found: error
+          retention-days: 1
       - name: Upload bounded proof report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
