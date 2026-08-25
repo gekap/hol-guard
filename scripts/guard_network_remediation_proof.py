@@ -37,6 +37,89 @@ PROHIBITED_PRIVACY_FIELDS: Final = frozenset(
         "personal_identifier",
     }
 )
+EXPECTED_TASK_EVIDENCE: Final[Mapping[str, tuple[str, ...]]] = {
+    "REM-121": (
+        "tests/test_guard_network_policy_evaluator.py",
+        "tests/test_guard_network_destination_correlator.py",
+        "tests/test_guard_linux_tcp_enforcement.py",
+        "tests/test_guard_linux_udp_dns_enforcement.py",
+    ),
+    "REM-122": (
+        "tests/test_guard_harness_smoke.py",
+        "tests/test_guard_risk.py",
+        "tests/test_guard_containment_executor.py",
+    ),
+    "REM-123": (
+        "tests/test_guard_harness_contracts.py",
+        "tests/test_guard_phase04_harness_ux.py",
+        "tests/test_guard_phase07_harness_coverage_matrix.py",
+    ),
+    "REM-124": (
+        "tests/test_guard_compound_developer_inspection.py",
+        "tests/test_guard_compound_readonly_auto_allow.py",
+        "tests/test_guard_trusted_local_tools.py",
+    ),
+    "REM-125": (
+        "tests/test_guard_approval_store_dedup.py",
+        "tests/test_guard_approval_reuse.py",
+        "tests/test_guard_network_grant_engine.py",
+    ),
+    "REM-126": (
+        "tests/test_guard_network_supervisor.py",
+        "tests/test_guard_daemon_recovery_resilience.py",
+        "tests/test_guard_provider_recovery.py",
+    ),
+    "REM-127": (
+        ".github/workflows/guard-network-remediation-proof.yml",
+        "tests/test_guard_network_capability_reachability.py",
+    ),
+    "REM-128": (
+        "tests/test_guard_linux_tcp_enforcement.py",
+        "tests/test_guard_linux_udp_dns_enforcement.py",
+        "tests/test_guard_linux_network_observer.py",
+    ),
+    "REM-129": (
+        ".github/workflows/guard-gvisor-reference.yml",
+        "tests/test_guard_gvisor_reference_runtime.py",
+        "tests/test_guard_container_network_plan.py",
+        "tests/test_guard_kubernetes_runtime.py",
+    ),
+    "REM-130": (
+        "scripts/guard_network_remediation_proof.py",
+        "tests/test_guard_network_remediation_proof.py",
+    ),
+    "REM-131": (
+        "tests/test_guard_linux_performance_acceptance.py",
+        "tests/test_guard_daemon_perf.py",
+    ),
+    "REM-132": (
+        "tests/test_guard_linux_artifact_lifecycle.py",
+        "tests/test_privileged_workflow_policy.py",
+        "tests/test_guard_gvisor_reference_runtime.py",
+    ),
+    "REM-133": (
+        "ci/guard-network-capability-reachability.v1.json",
+        "tests/test_guard_network_capability_reachability.py",
+    ),
+    "REM-134": (
+        "tests/test_guard_network_remediation_proof.py",
+        "scripts/guard_network_remediation_proof.py",
+    ),
+    "REM-135": (".github/workflows/guard-network-remediation-proof.yml",),
+    "REM-136": (
+        "docs/guard/network-remediation-readiness.md",
+        "ci/guard-network-remediation-proof.v1.json",
+    ),
+    "REM-137": (
+        "scripts/guard_network_remediation_proof.py",
+        "tests/test_guard_network_remediation_proof.py",
+    ),
+    "REM-138": ("docs/guard/network-remediation-readiness.md",),
+    "REM-139": (
+        "ci/guard-network-remediation-proof.v1.json",
+        "docs/guard/network-remediation-readiness.md",
+    ),
+}
 _PRIVATE_ARTIFACT_NAMES: Final = frozenset(
     {
         "prd(4).md",
@@ -238,6 +321,9 @@ def validate_proof_manifest(payload: Mapping[str, object], *, repository_root: P
         except ProofValidationError as exc:
             errors.append(str(exc))
             continue
+        expected_evidence = EXPECTED_TASK_EVIDENCE.get(label)
+        if expected_evidence is None or tuple(evidence) != expected_evidence:
+            errors.append(f"{label}.evidence must match the task-specific evidence contract")
         for evidence_index, evidence_path in enumerate(evidence):
             try:
                 _repository_file(
@@ -314,6 +400,12 @@ def build_proof_report(payload: Mapping[str, object], *, repository_root: Path) 
         "task_range": payload["task_range"],
         "ready": closure["ready"],
         "verdict": closure["verdict"],
+        "reason": closure["reason"],
+        "recommended_action": (
+            "Preserve the proof contract and continue routine verification."
+            if closure["ready"] is True
+            else "Resolve the listed incomplete tasks and missing production evidence, then rerun with --require-ready."
+        ),
         "release_authorized": False,
         "task_counts": {
             "total": len(tasks),
