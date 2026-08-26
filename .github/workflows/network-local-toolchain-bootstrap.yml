@@ -12,7 +12,8 @@ jobs:
   package-docker-toolchain:
     runs-on: ubuntu-24.04
     steps:
-      - name: Collect runner Docker toolchain
+      - uses: actions/checkout@v4
+      - name: Collect runner Docker toolchain and offline lab base
         shell: bash
         run: |
           set -euo pipefail
@@ -36,11 +37,26 @@ jobs:
           test -x toolchain/bin/runc
           tar -C toolchain -czf docker-toolchain.tar.gz .
           sha256sum docker-toolchain.tar.gz > docker-toolchain.tar.gz.sha256
+
+          cat > /tmp/Dockerfile.network-lab-base <<'EOF'
+          FROM python:3.13-slim
+          RUN apt-get update \
+              && apt-get install -y --no-install-recommends ca-certificates iproute2 util-linux \
+              && rm -rf /var/lib/apt/lists/*
+          WORKDIR /bootstrap
+          COPY . .
+          RUN python -m pip install --no-cache-dir .
+          EOF
+          docker build -t hol-guard-network-lab-base:20260826 -f /tmp/Dockerfile.network-lab-base .
+          docker save hol-guard-network-lab-base:20260826 | gzip -1 > network-lab-base.tar.gz
+          sha256sum network-lab-base.tar.gz > network-lab-base.tar.gz.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: network-local-docker-toolchain
           path: |
             docker-toolchain.tar.gz
             docker-toolchain.tar.gz.sha256
+            network-lab-base.tar.gz
+            network-lab-base.tar.gz.sha256
           if-no-files-found: error
           retention-days: 1
