@@ -1,0 +1,99 @@
+name: Rust authority final retry merge v2
+
+on:
+  push:
+    branches: [fix/rust-authority-batch-3]
+    paths:
+      - ".github/workflows/rust-authority-final-retry-merge-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+  checks: read
+  statuses: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: "0.9.26"
+          enable-cache: true
+      - run: uv sync --frozen --extra dev --python 3.12
+      - run: |
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.88.0
+      - id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          number=$(gh pr list --repo hashgraph-online/hol-guard --head fix/rust-authority-batch-3 --state open --json number --jq '.[0].number')
+          test -n "$number"
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          gh pr comment "$number" --repo hashgraph-online/hol-guard --body "@coderabbitai review"
+      - name: Verify permanent ownership and all integrations
+        env:
+          HOL_GUARD_BUILD_SHA: ${{ github.sha }}
+        run: |
+          test "$(grep -c '^- \[x\] T' docs/guard/rust-migration-batch-3-tasks.md)" -eq 20
+          test -f docs/guard/evidence/rust-authority-ownership-final.json
+          uv run --no-sync python scripts/ci/rust_authority_ownership_gate.py --root . --json /tmp/ownership.json
+          cargo metadata --manifest-path rust/Cargo.toml --locked --format-version 1 --no-deps >/dev/null
+          cargo fmt --manifest-path rust/Cargo.toml --all --check
+          cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets -- -D warnings
+          cargo test --manifest-path rust/Cargo.toml --locked --workspace --all-targets
+          VERSION=$(uv run --no-sync python scripts/sync_repo_version.py --check)
+          export HOL_GUARD_PACKAGE_VERSION="$VERSION"
+          cargo build --manifest-path rust/Cargo.toml --locked --release -p hol-guard-runtime
+          rust/target/release/hol-guard-runtime self-test --json
+          uv run --no-sync python scripts/ci/rust_pretool_authority_integration.py --runtime rust/target/release/hol-guard-runtime --json /tmp/pretool.json
+          uv run --no-sync python scripts/ci/rust_posttool_failclosed_integration.py --runtime rust/target/release/hol-guard-runtime --json /tmp/posttool.json
+          HOL_GUARD_NATIVE=force HOL_GUARD_NATIVE_BINARY="$PWD/rust/target/release/hol-guard-runtime" uv run --no-sync pytest -q ci/native_runtime/test_command_model_resident.py ci/native_runtime/test_guard_native_runtime_binary.py ci/native_runtime/test_guard_native_runtime_differential.py ci/native_runtime/test_guard_native_runtime_mutation_differential.py --tb=short
+          uv run --no-sync python scripts/bench_guard_native_release_gate.py --runtime rust/target/release/hol-guard-runtime --warm-iterations 30 --cold-iterations 2 --json /tmp/performance.json --enforce
+          HOL_GUARD_NATIVE=force HOL_GUARD_NATIVE_BINARY="$PWD/rust/target/release/hol-guard-runtime" uv run --no-sync pytest -q ci/native_runtime/test_native_hol_guard_wheel.py --tb=short
+      - name: Wait for exact-head peer CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          CURRENT: ${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, time
+          sha=os.environ['SHA']; current=int(os.environ['CURRENT']); deadline=time.monotonic()+3000
+          required={'CI','Security Gates','CodeQL Analysis','Rust authority ownership'}
+          while True:
+              value=json.loads(subprocess.check_output(['gh','api',f'repos/hashgraph-online/hol-guard/actions/runs?head_sha={sha}&per_page=100'],text=True))
+              runs=[r for r in value.get('workflow_runs',[]) if r.get('id')!=current and r.get('name') not in {'R0 source snapshot','Rust authority final retry merge v2'}]
+              bad=[r for r in runs if r.get('status')=='completed' and r.get('conclusion') not in {'success','skipped','neutral'}]
+              if bad: raise SystemExit(str([(r.get('name'),r.get('conclusion')) for r in bad]))
+              success={r.get('name') for r in runs if r.get('status')=='completed' and r.get('conclusion')=='success'}
+              pending=[r for r in runs if r.get('status')!='completed']
+              if not pending and required<=success: break
+              if time.monotonic()>=deadline: raise SystemExit(f'timeout pending={[r.get("name") for r in pending]} missing={sorted(required-success)}')
+              time.sleep(20)
+          PY
+      - name: Require clean review and merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          sleep 90
+          gh api graphql -f query="query { repository(owner:\"hashgraph-online\", name:\"hol-guard\") { pullRequest(number:${PR}) { reviewThreads(first:100) { nodes { isResolved } } reviews(last:100) { nodes { state } } } } }" > /tmp/review.json
+          python - <<'PY'
+          import json
+          value=json.load(open('/tmp/review.json'))['data']['repository']['pullRequest']
+          if any(not n['isResolved'] for n in value['reviewThreads']['nodes']): raise SystemExit('unresolved review threads')
+          if any(n['state']=='CHANGES_REQUESTED' for n in value['reviews']['nodes']): raise SystemExit('changes requested')
+          PY
+          gh pr merge "$PR" --repo hashgraph-online/hol-guard --squash --delete-branch --subject "ci(guard): permanently enforce Rust runtime authority" --body "Permanent source ownership, compiled PreToolUse and PostToolUse integration, resident differential and mutation testing, performance, installed native wheels, CI, Security Gates, CodeQL, and review-thread checks passed."
