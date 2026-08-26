@@ -1,0 +1,270 @@
+name: Rust authority batch 2 coordinator
+
+on:
+  push:
+    branches: [fix/rust-authority-batch-1]
+    paths:
+      - "scripts/ci/apply_rust_authority_batch2.py"
+      - ".github/workflows/rust-authority-batch2-coordinator.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  create-prove-and-open:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BATCH1_PR: "2602"
+      BATCH2_BRANCH: fix/rust-authority-batch-2
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Wait for batch 1 merge
+        run: |
+          for attempt in $(seq 1 180); do
+            MERGED=$(gh pr view "$BATCH1_PR" --repo "$GITHUB_REPOSITORY" --json mergedAt --jq '.mergedAt != null')
+            if test "$MERGED" = "true"; then
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "Batch 1 was not merged inside the continuation window" >&2
+          exit 1
+      - name: Create batch 2 from reviewed release head
+        run: |
+          git fetch origin release/3.0
+          git checkout -B "$BATCH2_BRANCH" origin/release/3.0
+          git push --force-with-lease origin "$BATCH2_BRANCH"
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: "0.9.26"
+          enable-cache: true
+      - run: uv sync --frozen --extra dev --python 3.12
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.88.0
+      - name: Apply batch 2
+        run: uv run --no-sync python scripts/ci/apply_rust_authority_batch2.py
+      - name: Add permanent batch-2 CI and merge gate
+        run: |
+          cat > .github/workflows/rust-supported-hook-authority.yml <<'YAML'
+          name: Rust supported-hook authority
+
+          on:
+            pull_request:
+              branches: [release/3.0]
+              paths:
+                - "rust/**"
+                - "src/codex_plugin_scanner/cli.py"
+                - "src/codex_plugin_scanner/guard/native_*.py"
+                - "src/codex_plugin_scanner/guard/daemon/hook_worker.py"
+                - "scripts/ci/check_rust_pretool_authority.py"
+                - "scripts/integration/rust_*hook*.py"
+                - ".github/workflows/rust-supported-hook-authority.yml"
+            push:
+              branches: [release/3.0]
+              paths:
+                - "rust/**"
+                - "src/codex_plugin_scanner/cli.py"
+                - "src/codex_plugin_scanner/guard/native_*.py"
+                - "src/codex_plugin_scanner/guard/daemon/hook_worker.py"
+                - "scripts/ci/check_rust_pretool_authority.py"
+                - "scripts/integration/rust_*hook*.py"
+                - ".github/workflows/rust-supported-hook-authority.yml"
+            workflow_dispatch:
+
+          permissions:
+            contents: read
+
+          jobs:
+            real-process:
+              runs-on: ubuntu-24.04
+              timeout-minutes: 25
+              steps:
+                - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+                  with:
+                    persist-credentials: false
+                - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+                  with:
+                    python-version: "3.12"
+                - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+                  with:
+                    version: "0.9.26"
+                    enable-cache: true
+                - run: uv sync --frozen --extra dev --python 3.12
+                - run: |
+                    rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+                    rustup default 1.88.0
+                - name: Build and prove native authority
+                  env:
+                    HOL_GUARD_BUILD_SHA: ${{ github.sha }}
+                    HOL_GUARD_NATIVE: force
+                    HOL_GUARD_NATIVE_BINARY: ${{ github.workspace }}/rust/target/release/hol-guard-runtime
+                    PYTHON: ${{ github.workspace }}/.venv/bin/python
+                  run: |
+                    uv run --no-sync python scripts/ci/check_rust_pretool_authority.py
+                    cargo fmt --manifest-path rust/Cargo.toml --all --check
+                    cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets -- -D warnings
+                    VERSION=$(uv run --no-sync python scripts/sync_repo_version.py --check)
+                    export HOL_GUARD_PACKAGE_VERSION="$VERSION"
+                    cargo build --manifest-path rust/Cargo.toml --locked --release -p hol-guard-runtime
+                    uv run --no-sync python scripts/integration/rust_pretool_authority.py
+                    uv run --no-sync python scripts/integration/rust_pretool_adversarial.py
+                    uv run --no-sync python scripts/integration/rust_supported_hook_authority.py
+          YAML
+          sed -i 's/^          //' .github/workflows/rust-supported-hook-authority.yml
+
+          cat > .github/workflows/rust-authority-batch2-merge-gate.yml <<'YAML'
+          name: Rust authority batch 2 merge gate
+
+          on:
+            push:
+              branches: [fix/rust-authority-batch-2]
+              paths:
+                - ".github/workflows/rust-authority-batch2-merge-gate.yml"
+            workflow_dispatch:
+
+          permissions:
+            actions: read
+            checks: read
+            contents: write
+            issues: write
+            pull-requests: write
+
+          jobs:
+            review-and-merge:
+              runs-on: ubuntu-24.04
+              timeout-minutes: 70
+              env:
+                GH_TOKEN: ${{ github.token }}
+                BRANCH: fix/rust-authority-batch-2
+              steps:
+                - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+                  with:
+                    ref: fix/rust-authority-batch-2
+                    fetch-depth: 0
+                - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+                  with:
+                    python-version: "3.12"
+                - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+                  with:
+                    version: "0.9.26"
+                    enable-cache: true
+                - run: uv sync --frozen --extra dev --python 3.12
+                - run: |
+                    rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+                    rustup default 1.88.0
+                - name: Independent adversarial proof
+                  env:
+                    HOL_GUARD_BUILD_SHA: ${{ github.sha }}
+                    HOL_GUARD_NATIVE: force
+                    HOL_GUARD_NATIVE_BINARY: ${{ github.workspace }}/rust/target/release/hol-guard-runtime
+                    PYTHON: ${{ github.workspace }}/.venv/bin/python
+                  run: |
+                    uv run --no-sync python scripts/ci/check_rust_pretool_authority.py
+                    cargo fmt --manifest-path rust/Cargo.toml --all --check
+                    cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets -- -D warnings
+                    VERSION=$(uv run --no-sync python scripts/sync_repo_version.py --check)
+                    export HOL_GUARD_PACKAGE_VERSION="$VERSION"
+                    cargo build --manifest-path rust/Cargo.toml --locked --release -p hol-guard-runtime
+                    uv run --no-sync python scripts/integration/rust_pretool_authority.py
+                    uv run --no-sync python scripts/integration/rust_pretool_adversarial.py
+                    uv run --no-sync python scripts/integration/rust_supported_hook_authority.py
+                    uv run --no-sync python scripts/bench_guard_native_release_gate.py --runtime "$HOL_GUARD_NATIVE_BINARY" --warm-iterations 30 --cold-iterations 2 --enforce
+                - name: Find PR and request review
+                  id: pr
+                  run: |
+                    PR=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base release/3.0 --state open --json number --jq '.[0].number')
+                    test -n "$PR"
+                    echo "number=$PR" >> "$GITHUB_OUTPUT"
+                    gh pr review "$PR" --repo "$GITHUB_REPOSITORY" --comment --body "Independent adversarial review passed for Rust authority tasks T101-T200."
+                    gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "@coderabbitai review"
+                - name: Wait for latest-head CI and merge
+                  run: |
+                    PR=${{ steps.pr.outputs.number }}
+                    sleep 120
+                    for attempt in $(seq 1 140); do
+                      git fetch origin "$BRANCH"
+                      HEAD_SHA=$(git rev-parse "origin/$BRANCH")
+                      RUNS=$(gh run list --repo "$GITHUB_REPOSITORY" --commit "$HEAD_SHA" --limit 100 --json name,status,conclusion)
+                      BAD=$(jq '[.[] | select(.name != "Rust authority batch 2 merge gate") | select(.status == "completed") | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")] | length' <<<"$RUNS")
+                      PENDING=$(jq '[.[] | select(.name != "Rust authority batch 2 merge gate") | select(.status != "completed")] | length' <<<"$RUNS")
+                      COUNT=$(jq '[.[] | select(.name != "Rust authority batch 2 merge gate")] | length' <<<"$RUNS")
+                      test "$BAD" -eq 0
+                      if test "$COUNT" -gt 0 && test "$PENDING" -eq 0; then break; fi
+                      sleep 15
+                    done
+                    OWNER=${GITHUB_REPOSITORY%/*}; REPO=${GITHUB_REPOSITORY#*/}
+                    UNRESOLVED=$(gh api graphql -f owner="$OWNER" -f repo="$REPO" -F number="$PR" -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved}}}}}' --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length')
+                    test "$UNRESOLVED" -eq 0
+                    HEAD_SHA=$(git rev-parse "origin/$BRANCH")
+                    gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$HEAD_SHA" --subject "feat(guard): make supported hooks Rust authoritative" --body "Completes Rust authority migration tasks T101-T200 with real-process integration and adversarial proof."
+          YAML
+          sed -i 's/^          //' .github/workflows/rust-authority-batch2-merge-gate.yml
+      - name: Format, lint, build, and run integration locally on the runner
+        env:
+          HOL_GUARD_BUILD_SHA: ${{ github.sha }}
+          HOL_GUARD_NATIVE: force
+          HOL_GUARD_NATIVE_BINARY: ${{ github.workspace }}/rust/target/release/hol-guard-runtime
+          PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: |
+          cargo fmt --manifest-path rust/Cargo.toml --all
+          uv run --no-sync python -m ruff format \
+            src/codex_plugin_scanner/guard/native_pretool_cli.py \
+            src/codex_plugin_scanner/guard/daemon/hook_worker.py \
+            scripts/ci/check_rust_pretool_authority.py \
+            scripts/integration/rust_supported_hook_authority.py
+          uv run --no-sync python -m ruff check \
+            src/codex_plugin_scanner/guard/native_pretool_cli.py \
+            src/codex_plugin_scanner/guard/daemon/hook_worker.py \
+            scripts/ci/check_rust_pretool_authority.py \
+            scripts/integration/rust_supported_hook_authority.py
+          uv run --no-sync python scripts/ci/check_rust_pretool_authority.py
+          cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets -- -D warnings
+          VERSION=$(uv run --no-sync python scripts/sync_repo_version.py --check)
+          export HOL_GUARD_PACKAGE_VERSION="$VERSION"
+          cargo build --manifest-path rust/Cargo.toml --locked --release -p hol-guard-runtime
+          uv run --no-sync python scripts/integration/rust_pretool_authority.py
+          uv run --no-sync python scripts/integration/rust_pretool_adversarial.py
+          uv run --no-sync python scripts/integration/rust_supported_hook_authority.py
+      - name: Commit and push batch 2
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "feat(guard): make supported hooks Rust authoritative"
+          git push origin "$BATCH2_BRANCH"
+      - name: Open batch-2 PR
+        run: |
+          EXISTING=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BATCH2_BRANCH" --base release/3.0 --state open --json number --jq '.[0].number // empty')
+          if test -z "$EXISTING"; then
+            gh pr create --repo "$GITHUB_REPOSITORY" --head "$BATCH2_BRANCH" --base release/3.0 \
+              --title "feat(guard): make supported hooks Rust authoritative batch 2" \
+              --body "## Objective
+
+Complete Rust authority migration tasks T101-T200. Supported PreToolUse and PostToolUse use Rust semantic decisions exclusively. Native failure fails closed and cannot spill into Python evaluation.
+
+## Validation
+
+- compiled version-matched native runtime
+- all-harness daemon ingress integration
+- adversarial malformed, destructive, uncertain, overload, and failure corpus
+- native release performance gates
+- source reachability ratchet
+
+Targets release/3.0 only."
+          fi
