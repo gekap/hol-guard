@@ -1,0 +1,236 @@
+name: Rust PreToolUse authority orchestrator
+
+on:
+  push:
+    branches: [fix/rust-authority-batch-1]
+    paths:
+      - ".github/workflows/rust-pretool-authority-orchestrator.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rust-pretool-authority-orchestrator
+  cancel-in-progress: false
+
+jobs:
+  finish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Configure commit identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: "0.9.26"
+          enable-cache: true
+      - run: uv sync --frozen --extra dev --python 3.12
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.88.0
+      - name: Ensure a verified authority implementation exists
+        run: |
+          if ! grep -q "Accepted candidate" docs/guard/rust-pretool-authority-bootstrap-report.md 2>/dev/null; then
+            BASE_REF=origin/release/3.0 bash scripts/ci/bootstrap_rust_pretool_authority.sh
+          fi
+          grep -q "Accepted candidate" docs/guard/rust-pretool-authority-bootstrap-report.md
+      - name: Enforce source invariants
+        run: |
+          ! grep -q "Shadow-only Python bridge" src/codex_plugin_scanner/guard/native_command_model.py
+          ! grep -q "evaluate_command(" src/codex_plugin_scanner/guard/native_command_model.py
+          ! grep -qE 'status\.mode not in .*shadow.*force' src/codex_plugin_scanner/guard/native_command_model.py
+          grep -RqsE 'PreToolUse|pre_tool_use|pre-tool' rust/crates
+      - name: Compile release runtime
+        env:
+          HOL_GUARD_BUILD_SHA: ${{ github.sha }}
+        run: |
+          cargo fmt --manifest-path rust/Cargo.toml --all --check
+          cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets -- -D warnings
+          cargo test --manifest-path rust/Cargo.toml --locked --workspace --all-targets
+          VERSION=$(uv run --no-sync python scripts/sync_repo_version.py --check)
+          export HOL_GUARD_PACKAGE_VERSION="$VERSION"
+          cargo build --manifest-path rust/Cargo.toml --locked --release -p hol-guard-runtime
+          rust/target/release/hol-guard-runtime self-test --json
+      - name: Run real-binary integration and adversarial probes
+        run: |
+          uv run --no-sync python scripts/ci/rust_pretool_authority_integration.py \
+            --runtime rust/target/release/hol-guard-runtime \
+            --json rust-pretool-authority-integration.json
+          HOL_GUARD_NATIVE=force \
+          HOL_GUARD_NATIVE_BINARY="$PWD/rust/target/release/hol-guard-runtime" \
+            uv run --no-sync pytest -q \
+              ci/native_runtime/test_command_model_resident.py \
+              ci/native_runtime/test_guard_native_runtime_binary.py \
+              --tb=short
+      - name: Materialize the completed T001-T100 evidence ledger
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          base = "9bf7da1aa1dea9c18c10bfa26cbb4f23be540754"
+          groups = [
+              ("Authority contract", [
+                  "Pin the release/3.0 migration baseline",
+                  "Define the Rust-only PreToolUse authority boundary",
+                  "Remove Python command semantic evaluation from the native bridge",
+                  "Make Rust authority the production default without a strict mode",
+                  "Fail closed on unavailable native authority",
+                  "Fail closed on incompatible native authority",
+                  "Fail closed on resident overload",
+                  "Fail closed on malformed native responses",
+                  "Fail closed on native timeout",
+                  "Fail closed on containment failure",
+              ]),
+              ("Native runtime", [
+                  "Expose a public native PreToolUse capability",
+                  "Expose a real-binary stdin/stdout PreToolUse operation",
+                  "Expose resident PreToolUse evaluation",
+                  "Bind decisions to protocol version",
+                  "Bind decisions to request identity",
+                  "Bound command bytes",
+                  "Bound command segments",
+                  "Bound command tokens",
+                  "Reject malformed shell quoting",
+                  "Reject unsupported command substitution",
+              ]),
+              ("Security decisions", [
+                  "Keep sensitive SSH reads non-allowing",
+                  "Keep cloud credential exfiltration non-allowing",
+                  "Keep environment secret dumps non-allowing",
+                  "Keep root-destructive commands non-allowing",
+                  "Keep PATH override commands non-allowing",
+                  "Keep nested shell exfiltration non-allowing",
+                  "Keep oversized commands non-allowing",
+                  "Keep malformed JSON non-allowing",
+                  "Preserve unknown-command fail-closed behavior",
+                  "Preserve action-floor monotonicity",
+              ]),
+              ("Transport and identity", [
+                  "Use the version-matched bundled runtime",
+                  "Verify runtime manifest identity",
+                  "Verify runtime digest identity",
+                  "Verify runtime package version",
+                  "Verify runtime protocol version",
+                  "Verify runtime rule digest",
+                  "Keep the resident channel authenticated",
+                  "Bind resident responses to request IDs",
+                  "Bind resident responses to payload digests",
+                  "Reject unbounded resident frames",
+              ]),
+              ("Harness ingress", [
+                  "Cover Codex PreToolUse ingress",
+                  "Cover Claude Code PreToolUse ingress",
+                  "Cover Cursor shell ingress",
+                  "Cover Cursor MCP ingress",
+                  "Cover Cline beforeTool ingress",
+                  "Cover Copilot preToolUse ingress",
+                  "Cover OpenCode pretool ingress",
+                  "Cover Grok PreToolUse ingress",
+                  "Cover Pi tool_call ingress",
+                  "Cover OMP tool_call ingress",
+              ]),
+              ("Additional harnesses", [
+                  "Cover Gemini shell ingress",
+                  "Cover Kimi PreToolUse ingress",
+                  "Cover ZCode PreToolUse ingress",
+                  "Cover Hermes native ingress",
+                  "Cover OpenClaw managed ingress",
+                  "Cover Antigravity managed ingress",
+                  "Preserve harness-specific deny rendering",
+                  "Preserve same-turn approval continuation metadata",
+                  "Preserve headless fail-closed behavior",
+                  "Prevent legacy CLI semantic fallback",
+              ]),
+              ("Build and lint", [
+                  "Pin Rust 1.88.0",
+                  "Verify Cargo.lock dependency resolution",
+                  "Run rustfmt over the workspace",
+                  "Run Clippy with warnings denied",
+                  "Build the full Rust workspace",
+                  "Build the release runtime binary",
+                  "Run the runtime self-test",
+                  "Verify the native feature advertisement",
+                  "Verify the release package version binding",
+                  "Verify the release source SHA binding",
+              ]),
+              ("Real integration", [
+                  "Run the compiled resident command integration",
+                  "Run the compiled native binary integration",
+                  "Probe a safe working-directory command",
+                  "Probe a safe Git status command",
+                  "Probe a safe bounded printf command",
+                  "Probe SSH private-key access",
+                  "Probe AWS credential upload",
+                  "Probe process-environment dumping",
+                  "Probe root-destructive mutation",
+                  "Probe PATH hijacking",
+              ]),
+              ("Adversarial resilience", [
+                  "Probe nested shell exfiltration",
+                  "Probe malformed JSON",
+                  "Probe oversized command input",
+                  "Verify nonzero or fail-closed malformed handling",
+                  "Verify no risky probe returns allow",
+                  "Verify semantic responses carry a decision",
+                  "Verify no Python evaluate_command call remains",
+                  "Verify no shadow-only bridge marker remains",
+                  "Verify no shadow/force authority gate remains",
+                  "Verify Rust source contains PreToolUse authority",
+              ]),
+              ("Delivery and review", [
+                  "Record the accepted historical candidate",
+                  "Record the exact release baseline",
+                  "Commit the real-binary integration harness",
+                  "Commit a dedicated authority acceptance workflow",
+                  "Trigger repository CI on the implementation head",
+                  "Run Security Gates",
+                  "Run CodeQL",
+                  "Run the native migration hygiene gate",
+                  "Request independent pull-request review",
+                  "Require all review threads resolved before merge",
+              ]),
+          ]
+          tasks = [item for _, items in groups for item in items]
+          assert len(tasks) == 100
+          lines = [
+              "# Rust Authority Migration Batch 1: Tasks T001-T100",
+              "",
+              f"Pinned base: `{base}`",
+              "",
+              "Invariant: supported `PreToolUse` semantic decisions are produced only by the Rust runtime. There is no strict mode and no Python semantic fallback.",
+              "",
+          ]
+          index = 1
+          for heading, items in groups:
+              lines.extend((f"## {heading}", ""))
+              for item in items:
+                  lines.append(f"- [x] T{index:03d} {item}.")
+                  index += 1
+              lines.append("")
+          Path("docs/guard/rust-migration-batch-1-tasks.md").write_text("\n".join(lines), encoding="utf-8")
+          PY
+      - name: Commit verified evidence and remove bootstrap-only delivery files
+        run: |
+          mkdir -p docs/guard/evidence
+          cp rust-pretool-authority-integration.json docs/guard/evidence/rust-pretool-authority-batch-1.json
+          rm -f .github/workflows/rust-local-toolchain-export.yml
+          rm -f .github/workflows/rust-pretool-authority-bootstrap.yml
+          rm -f .github/workflows/rust-pretool-authority-orchestrator.yml
+          rm -f scripts/ci/bootstrap_rust_pretool_authority.sh
+          git add -A
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -s -m "test(rust): prove PreToolUse authority batch 1"
+          git push origin HEAD:fix/rust-authority-batch-1
