@@ -22,7 +22,6 @@ from .command_capability import (
 )
 from .command_executors import (
     COMMAND_OPERATION_SCHEMA_VERSIONS,
-    command_job_operation,
     execute_guard_command_job,
 )
 from .command_queue_activation import (
@@ -404,10 +403,7 @@ def poll_command_queue_once(store: GuardStore, context: HarnessContext) -> dict[
                 reason="capability_and_job_valid",
             )
             try:
-                _LOGGER.info(
-                    "Guard command leased: operation=%s",
-                    command_job_operation(item),
-                )
+                _LOGGER.info("Guard command leased.")
                 execution = _execute_job(item, context, store)
             except Exception as error:
                 _LOGGER.warning(
@@ -470,7 +466,7 @@ def poll_command_queue_once(store: GuardStore, context: HarnessContext) -> dict[
         job=item,
         reason=str(payload.get("status") or "unknown"),
     )
-    _LOGGER.info("Guard command completed: status=%s", payload.get("status"))
+    _LOGGER.info("Guard command completed.")
     return command_queue_status(store)
 
 
