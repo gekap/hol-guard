@@ -1,0 +1,81 @@
+name: PR 2569 conflict audit
+
+on:
+  push:
+    branches:
+      - tmp/pr2569-conflict-audit-20260826
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: tmp/pr2569-conflict-audit-20260826
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build three-way conflict report
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin release/3.0 feat/everyday-mode-001-100
+          merge_base="$(git merge-base origin/release/3.0 origin/feat/everyday-mode-001-100)"
+          mkdir -p "$RUNNER_TEMP/pr2569-audit/stages"
+          printf '%s\n' "$merge_base" > "$RUNNER_TEMP/pr2569-audit/merge-base.txt"
+          printf '%s\n' "$(git rev-parse origin/release/3.0)" > "$RUNNER_TEMP/pr2569-audit/base-head.txt"
+          printf '%s\n' "$(git rev-parse origin/feat/everyday-mode-001-100)" > "$RUNNER_TEMP/pr2569-audit/pr-head.txt"
+
+          paths=(
+            ci/test-suite-ratchet-baseline.json
+            dashboard/package.json
+            dashboard/src/guard-types.ts
+            dashboard/src/main.tsx
+            dashboard/src/presentation-mode.test.ts
+            dashboard/src/presentation-mode.ts
+            dashboard/src/tailwind-root.css
+            docs/guard/adr/0012-everyday-and-technical-presentation.md
+            docs/guard/everyday-mode/copy-contract.md
+            docs/guard/everyday-mode/vocabulary.json
+            schemas/guard_action_explanation_v1.json
+            src/codex_plugin_scanner/guard/config.py
+            src/codex_plugin_scanner/guard/daemon/server.py
+            src/codex_plugin_scanner/guard/presentation_mode.py
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py
+            src/codex_plugin_scanner/guard/schemas/guard_action_explanation_v1.json
+            tests/test_guard_action_explanation_contract.py
+            tests/test_guard_presentation_mode.py
+          )
+
+          git diff --binary --full-index "$merge_base"..origin/feat/everyday-mode-001-100 -- "${paths[@]}" > "$RUNNER_TEMP/pr2569-audit/product.patch"
+          git checkout --detach origin/release/3.0
+          set +e
+          git apply --3way --index "$RUNNER_TEMP/pr2569-audit/product.patch" > "$RUNNER_TEMP/pr2569-audit/apply.stdout" 2> "$RUNNER_TEMP/pr2569-audit/apply.stderr"
+          apply_status=$?
+          set -e
+          printf '%s\n' "$apply_status" > "$RUNNER_TEMP/pr2569-audit/apply-status.txt"
+          git status --short > "$RUNNER_TEMP/pr2569-audit/status.txt"
+          git diff --name-only --diff-filter=U > "$RUNNER_TEMP/pr2569-audit/conflicts.txt"
+          git diff --check > "$RUNNER_TEMP/pr2569-audit/diff-check.txt" 2>&1 || true
+          git diff > "$RUNNER_TEMP/pr2569-audit/working-tree.diff" || true
+
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            safe="${path//\//__}"
+            git show ":1:$path" > "$RUNNER_TEMP/pr2569-audit/stages/${safe}.ancestor" 2>/dev/null || true
+            git show ":2:$path" > "$RUNNER_TEMP/pr2569-audit/stages/${safe}.base" 2>/dev/null || true
+            git show ":3:$path" > "$RUNNER_TEMP/pr2569-audit/stages/${safe}.pr" 2>/dev/null || true
+            cp "$path" "$RUNNER_TEMP/pr2569-audit/stages/${safe}.markers" 2>/dev/null || true
+          done < "$RUNNER_TEMP/pr2569-audit/conflicts.txt"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pr2569-conflict-audit-${{ github.sha }}
+          path: ${{ runner.temp }}/pr2569-audit
+          retention-days: 1
+          if-no-files-found: error
