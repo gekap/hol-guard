@@ -9,37 +9,19 @@ permissions:
   contents: read
 
 jobs:
-  package-gvisor-runtime:
+  package-build-tools:
     runs-on: ubuntu-24.04
     steps:
-      - name: Collect verified gVisor runtime and build backend
+      - name: Collect offline build and validation tools
         shell: bash
         run: |
           set -euo pipefail
-          arch="$(uname -m)"
-          case "$arch" in
-            x86_64|aarch64) ;;
-            *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
-          esac
-          base="https://storage.googleapis.com/gvisor/releases/release/latest/${arch}"
-          mkdir -p gvisor wheels
-          curl -fsSLo gvisor/runsc "$base/runsc"
-          curl -fsSLo gvisor/runsc.sha512 "$base/runsc.sha512"
-          (cd gvisor && sha512sum -c runsc.sha512)
-          chmod 0755 gvisor/runsc
-          gvisor/runsc --version > gvisor/version.txt
-          sha256sum gvisor/runsc > gvisor/runsc.sha256
-          python -m pip download --no-deps --dest wheels 'hatchling<1.31'
-          python -m pip download --no-deps --dest wheels hatch-vcs
+          mkdir -p wheels
+          python -m pip download --dest wheels 'hatchling<1.31' hatch-vcs ruff mypy
           sha256sum wheels/* > wheels/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: network-local-gvisor-build-tools
-          path: |
-            gvisor/runsc
-            gvisor/runsc.sha512
-            gvisor/runsc.sha256
-            gvisor/version.txt
-            wheels/
+          name: network-local-build-tools
+          path: wheels/
           if-no-files-found: error
           retention-days: 1
