@@ -7,6 +7,24 @@ assert.equal(resolvePresentationMode({ value: "advanced", explicit: true }).valu
 assert.equal(resolvePresentationMode({ value: "developer", explicit: true }).value, "technical");
 assert.equal(resolvePresentationMode({ value: "technical", explicit: true, cloudProfile: "everyday" }).source, "local-explicit");
 assert.equal(resolvePresentationMode({ value: "everyday", sessionPreview: "technical" }).source, "session-preview");
+assert.deepEqual(resolvePresentationMode({ value: "everyday", explicit: false }), {
+  value: "everyday",
+  source: "default",
+  explicit: false,
+  writable: true,
+  schemaVersion: 1,
+  revision: 0,
+  diagnostic: null,
+});
+assert.deepEqual(resolvePresentationMode({ value: "technical" }), {
+  value: "technical",
+  source: "default",
+  explicit: false,
+  writable: true,
+  schemaVersion: 1,
+  revision: 0,
+  diagnostic: null,
+});
 assert.equal(resolvePresentationMode({ value: "future", schemaVersion: 99 }).value, "everyday");
 assert.equal(resolvePresentationMode({ readError: true }).source, "read-error");
 assert.equal(defaultTechnicalDisclosure("everyday").open, false);
