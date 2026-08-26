@@ -1,0 +1,64 @@
+name: Rust authority batch 1 cleanup
+
+on:
+  workflow_run:
+    workflows: ["Rust authority batch 1 ingress follow-up"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-clean:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'fix/rust-authority-batch-1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: fix/rust-authority-batch-1
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: "0.9.26"
+          enable-cache: true
+      - run: uv sync --frozen --extra dev --python 3.12
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.88.0
+      - name: Re-run source and real-binary proof
+        env:
+          HOL_GUARD_BUILD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HOL_GUARD_NATIVE: force
+          HOL_GUARD_NATIVE_BINARY: ${{ github.workspace }}/rust/target/release/hol-guard-runtime
+          PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: |
+          uv run --no-sync python scripts/ci/check_rust_pretool_authority.py
+          VERSION=$(uv run --no-sync python scripts/sync_repo_version.py --check)
+          export HOL_GUARD_PACKAGE_VERSION="$VERSION"
+          cargo fmt --manifest-path rust/Cargo.toml --all --check
+          cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets -- -D warnings
+          cargo build --manifest-path rust/Cargo.toml --locked --release -p hol-guard-runtime
+          uv run --no-sync python scripts/integration/rust_pretool_authority.py
+      - name: Remove temporary delivery machinery
+        run: |
+          git rm -f \
+            .github/workflows/rust-authority-batch1-implementation.yml \
+            .github/workflows/rust-authority-batch1-retry.yml \
+            .github/workflows/rust-authority-batch1-followup.yml \
+            .github/workflows/rust-authority-batch1-cleanup.yml \
+            .github/workflows/rust-local-toolchain-export.yml \
+            scripts/ci/apply_rust_pretool_authority_batch1.py \
+            scripts/ci/apply_rust_pretool_authority_batch1_followup.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git diff --cached --check
+          git commit -m "chore(rust): remove batch-1 delivery machinery"
+          git push origin HEAD:fix/rust-authority-batch-1
