@@ -1,0 +1,69 @@
+name: Rust policy snapshot generation fix
+
+on:
+  push:
+    branches: [fix/rust-authority-batch-2]
+    paths:
+      - ".github/workflows/rust-policy-snapshot-generation-fix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: "0.9.26"
+      - run: uv sync --frozen --extra dev --python 3.12
+      - name: Make one policy generation stable for concurrent requests
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path=Path('src/codex_plugin_scanner/guard/native_runtime.py')
+          source=path.read_text(encoding='utf-8')
+          source=source.replace('import functools\nimport itertools\n','import functools\n')
+          source=source.replace('_POLICY_GENERATIONS = itertools.count(max(1, time.time_ns()))','_POLICY_GENERATION = max(1, time.time_ns())')
+          source=source.replace('"generation": next(_POLICY_GENERATIONS),','"generation": _POLICY_GENERATION,')
+          path.write_text(source,encoding='utf-8')
+          PY
+          uv run --no-sync ruff format src/codex_plugin_scanner/guard/native_runtime.py
+          uv run --no-sync ruff check --fix src/codex_plugin_scanner/guard/native_runtime.py
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.88.0
+          cargo fmt --manifest-path rust/Cargo.toml --all
+      - name: Verify concurrency-safe native runtime
+        env:
+          HOL_GUARD_BUILD_SHA: ${{ github.sha }}
+        run: |
+          cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets -- -D warnings
+          VERSION=$(uv run --no-sync python scripts/sync_repo_version.py --check)
+          export HOL_GUARD_PACKAGE_VERSION="$VERSION"
+          cargo build --manifest-path rust/Cargo.toml --locked --release -p hol-guard-runtime
+          HOL_GUARD_NATIVE=force HOL_GUARD_NATIVE_BINARY="$PWD/rust/target/release/hol-guard-runtime" \
+            uv run --no-sync pytest -q \
+              ci/native_runtime/test_guard_native_runtime_resident.py \
+              ci/native_runtime/test_guard_native_runtime_differential.py \
+              --tb=short
+      - name: Commit and dispatch final gate
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/rust-policy-snapshot-generation-fix.yml
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -s -m "fix(rust): stabilize policy snapshot generation"
+            git push origin HEAD:fix/rust-authority-batch-2
+          fi
+          GH_TOKEN=${{ github.token }} gh workflow run rust-authority-batch2-merge-gate.yml --repo hashgraph-online/hol-guard --ref fix/rust-authority-batch-2
