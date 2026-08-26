@@ -1,0 +1,166 @@
+name: Rust authority merged release watchdog
+
+on:
+  push:
+    branches: [fix/rust-authority-master]
+    paths:
+      - ".github/workflows/rust-authority-release-watchdog.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: rust-authority-merged-release-watchdog
+  cancel-in-progress: false
+
+jobs:
+  verify-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Wait for all three reviewed batches on release/3.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          deadline=$((SECONDS + 14400))
+          while true; do
+            git fetch origin release/3.0
+            if git show origin/release/3.0:docs/guard/evidence/rust-authority-ownership-final.json >/dev/null 2>&1 \
+              && git show origin/release/3.0:docs/guard/evidence/rust-pretool-authority-batch-1-final.json >/dev/null 2>&1 \
+              && git show origin/release/3.0:docs/guard/evidence/rust-posttool-authority-batch-2.json >/dev/null 2>&1; then
+              break
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "Rust authority batches did not converge before watchdog deadline" >&2
+              exit 1
+            fi
+            sleep 30
+          done
+          git reset --hard origin/release/3.0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: "0.9.26"
+          enable-cache: true
+      - run: uv sync --frozen --extra dev --python 3.12
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.88.0
+      - name: Run independent merged-release source and build pass
+        env:
+          HOL_GUARD_BUILD_SHA: ${{ github.sha }}
+        run: |
+          uv run --no-sync python scripts/ci/rust_authority_ownership_gate.py --root . --json merged-rust-authority-ownership.json
+          cargo metadata --manifest-path rust/Cargo.toml --locked --format-version 1 --no-deps >/dev/null
+          cargo fmt --manifest-path rust/Cargo.toml --all --check
+          cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets -- -D warnings
+          cargo test --manifest-path rust/Cargo.toml --locked --workspace --all-targets
+          VERSION=$(uv run --no-sync python scripts/sync_repo_version.py --check)
+          export HOL_GUARD_PACKAGE_VERSION="$VERSION"
+          export HOL_GUARD_BUILD_SHA=$(git rev-parse HEAD)
+          cargo build --manifest-path rust/Cargo.toml --locked --release -p hol-guard-runtime
+          rust/target/release/hol-guard-runtime self-test --json
+      - name: Run independent merged-release integration and adversarial pass
+        env:
+          HOL_GUARD_NATIVE: force
+          HOL_GUARD_NATIVE_BINARY: ${{ github.workspace }}/rust/target/release/hol-guard-runtime
+        run: |
+          uv run --no-sync python scripts/ci/rust_pretool_authority_integration.py \
+            --runtime rust/target/release/hol-guard-runtime \
+            --json merged-rust-pretool-authority.json
+          uv run --no-sync python scripts/ci/rust_posttool_failclosed_integration.py \
+            --runtime rust/target/release/hol-guard-runtime \
+            --json merged-rust-posttool-authority.json
+          uv run --no-sync pytest -q \
+            ci/native_runtime/test_command_model_resident.py \
+            ci/native_runtime/test_guard_native_runtime_binary.py \
+            ci/native_runtime/test_guard_native_runtime_differential.py \
+            ci/native_runtime/test_guard_native_runtime_mutation_differential.py \
+            --tb=short
+          uv run --no-sync python scripts/bench_guard_native_release_gate.py \
+            --runtime rust/target/release/hol-guard-runtime \
+            --warm-iterations 100 --cold-iterations 5 \
+            --json merged-rust-authority-performance.json --enforce
+          uv run --no-sync pytest -q ci/native_runtime/test_native_hol_guard_wheel.py --tb=short
+      - name: Dispatch merged-head CI/CD and permanent ownership gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run ci.yml --repo hashgraph-online/hol-guard --ref release/3.0
+          gh workflow run security-gates.yml --repo hashgraph-online/hol-guard --ref release/3.0
+          gh workflow run codeql.yml --repo hashgraph-online/hol-guard --ref release/3.0
+          gh workflow run rust-authority-ownership.yml --repo hashgraph-online/hol-guard --ref release/3.0
+      - name: Require all merged-head CI/CD gates to pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          deadline=$((SECONDS + 5400))
+          while true; do
+            gh api "repos/hashgraph-online/hol-guard/actions/runs?head_sha=$sha&per_page=100" > /tmp/release-runs.json
+            set +e
+            python - <<'PY'
+          import json
+          runs=json.load(open('/tmp/release-runs.json')).get('workflow_runs',[])
+          required={'CI','Security Gates','CodeQL Analysis','Rust authority ownership'}
+          bad=[]; success=set(); pending=set()
+          for run in runs:
+              name=run.get('name')
+              if name not in required: continue
+              if run.get('status')!='completed': pending.add(name)
+              elif run.get('conclusion')=='success': success.add(name)
+              elif run.get('conclusion') not in {'skipped','neutral','cancelled'}: bad.append((name,run.get('conclusion')))
+          if bad:
+              print(bad)
+              raise SystemExit(2)
+          if required<=success and not pending:
+              raise SystemExit(0)
+          raise SystemExit(1)
+          PY
+            code=$?
+            set -e
+            if [[ $code -eq 0 ]]; then break; fi
+            if [[ $code -eq 2 ]]; then cat /tmp/release-runs.json; exit 1; fi
+            if (( SECONDS >= deadline )); then echo "Timed out waiting for merged CI/CD" >&2; exit 1; fi
+            sleep 20
+          done
+      - name: Write merged release verification result
+        run: |
+          python - <<'PY'
+          import json, pathlib, subprocess, time
+          result={
+            'schema':'hol-guard-rust-authority-merged-release.v1',
+            'release_sha':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+            'tasks':{'T001-T100':'merged','T101-T200':'merged','T201-T220':'merged'},
+            'source_gate':'passed',
+            'compiled_integration':'passed',
+            'adversarial_integration':'passed',
+            'differential_and_mutation':'passed',
+            'performance':'passed',
+            'installed_native_wheel':'passed',
+            'ci_security_codeql_ownership':'passed',
+            'verified_at':int(time.time()),
+          }
+          pathlib.Path('merged-rust-authority-result.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: hol-guard-rust-authority-merged-release-proof
+          path: |
+            merged-rust-authority-result.json
+            merged-rust-authority-ownership.json
+            merged-rust-pretool-authority.json
+            merged-rust-posttool-authority.json
+            merged-rust-authority-performance.json
+          if-no-files-found: warn
+          retention-days: 90
