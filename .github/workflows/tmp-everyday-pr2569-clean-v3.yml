@@ -1,0 +1,761 @@
+name: Rebuild and verify Everyday foundation v3
+
+on:
+  push:
+    branches:
+      - tmp/everyday-pr2569-clean-v3-20260826
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: everyday-pr2569-clean-v3
+  cancel-in-progress: false
+
+jobs:
+  rebuild-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: tmp/everyday-pr2569-clean-v3-20260826
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Rebuild product-only diff on current release branch
+        id: rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin release/3.0 feat/everyday-mode-001-100
+
+          base_head="$(git rev-parse origin/release/3.0)"
+          old_pr_head="$(git rev-parse origin/feat/everyday-mode-001-100)"
+          merge_base="$(git merge-base origin/release/3.0 origin/feat/everyday-mode-001-100)"
+          echo "base_head=$base_head" >> "$GITHUB_OUTPUT"
+          echo "old_pr_head=$old_pr_head" >> "$GITHUB_OUTPUT"
+
+          paths=(
+            ci/test-suite-ratchet-baseline.json
+            dashboard/package.json
+            dashboard/src/guard-types.ts
+            dashboard/src/main.tsx
+            dashboard/src/presentation-mode.test.ts
+            dashboard/src/presentation-mode.ts
+            dashboard/src/tailwind-root.css
+            docs/guard/adr/0012-everyday-and-technical-presentation.md
+            docs/guard/everyday-mode/copy-contract.md
+            docs/guard/everyday-mode/vocabulary.json
+            schemas/guard_action_explanation_v1.json
+            src/codex_plugin_scanner/guard/config.py
+            src/codex_plugin_scanner/guard/daemon/server.py
+            src/codex_plugin_scanner/guard/presentation_mode.py
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py
+            src/codex_plugin_scanner/guard/schemas/guard_action_explanation_v1.json
+            tests/test_guard_action_explanation_contract.py
+            tests/test_guard_presentation_mode.py
+          )
+
+          git diff --binary --full-index "$merge_base"..origin/feat/everyday-mode-001-100 -- "${paths[@]}" > "$RUNNER_TEMP/everyday-foundation.patch"
+          git checkout -B everyday-foundation-clean origin/release/3.0
+
+          set +e
+          git apply --3way --index "$RUNNER_TEMP/everyday-foundation.patch"
+          apply_status=$?
+          set -e
+
+          mapfile -t conflicts < <(git diff --name-only --diff-filter=U | sort)
+          expected=(ci/test-suite-ratchet-baseline.json dashboard/package.json)
+          if ((${#conflicts[@]})); then
+            if [[ "${conflicts[*]}" != "${expected[*]}" ]]; then
+              printf 'Unexpected conflicts:\n%s\n' "${conflicts[*]}"
+              exit 1
+            fi
+          elif ((apply_status != 0)); then
+            echo 'Patch application failed without a resolvable conflict set.'
+            exit 1
+          fi
+
+          if ((${#conflicts[@]})); then
+            git checkout --ours -- ci/test-suite-ratchet-baseline.json dashboard/package.json
+            python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import subprocess
+          from pathlib import Path
+
+          merge_base = subprocess.check_output(
+              ["git", "merge-base", "origin/release/3.0", "origin/feat/everyday-mode-001-100"],
+              text=True,
+          ).strip()
+
+          def show_json(ref: str, path: str) -> dict[str, object]:
+              raw = subprocess.check_output(["git", "show", f"{ref}:{path}"], text=True)
+              return json.loads(raw)
+
+          ratchet_path = Path("ci/test-suite-ratchet-baseline.json")
+          current = json.loads(ratchet_path.read_text(encoding="utf-8"))
+          ancestor = show_json(merge_base, str(ratchet_path))
+          proposed = show_json("origin/feat/everyday-mode-001-100", str(ratchet_path))
+          for key in ("maximum_collected_cases", "maximum_test_source_lines"):
+              delta = max(0, int(proposed[key]) - int(ancestor[key]))
+              current[key] = int(current[key]) + delta
+          ratchet_path.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
+
+          package_path = Path("dashboard/package.json")
+          package = json.loads(package_path.read_text(encoding="utf-8"))
+          focused = "tsx src/presentation-mode.test.ts"
+          test_script = str(package["scripts"].get("test", ""))
+          parts = [part.strip() for part in test_script.split("&&") if part.strip()]
+          parts = [part for part in parts if part != focused]
+          package["scripts"]["test"] = " && ".join([focused, *parts])
+          package_path.write_text(json.dumps(package, indent=2) + "\n", encoding="utf-8")
+          PY
+            git add ci/test-suite-ratchet-baseline.json dashboard/package.json
+          fi
+
+          git add -A
+          if git diff --cached --name-only | grep -E '^\.github/(pr2569-|workflows/tmp-|.*snapshot)' ; then
+            echo 'Temporary orchestration files leaked into the product diff.'
+            exit 1
+          fi
+          git diff --cached --check
+
+      - name: Apply correctness and security review remediations
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import re
+          from pathlib import Path
+
+          def read(path: str) -> str:
+              return Path(path).read_text(encoding="utf-8")
+
+          def write(path: str, text: str) -> None:
+              Path(path).write_text(text, encoding="utf-8")
+
+          def replace_once(text: str, old: str, new: str, *, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, found {count}")
+              return text.replace(old, new, 1)
+
+          config_path = "src/codex_plugin_scanner/guard/config.py"
+          config = read(config_path)
+          config = replace_once(
+              config,
+              '        "presentation_schema_version",\n        "presentation_revision",\n',
+              "",
+              label="remove client-editable presentation preconditions",
+          )
+          config = replace_once(
+              config,
+              '        "mode",\n        "protection_posture",\n',
+              '        "mode",\n'
+              '        "presentation_mode",\n'
+              '        "presentation_mode_explicit",\n'
+              '        "presentation_schema_version",\n'
+              '        "presentation_revision",\n'
+              '        "presentation_density",\n'
+              '        "display_density",\n'
+              '        "density",\n'
+              '        "protection_posture",\n',
+              label="block workspace presentation authority",
+          )
+          legacy_pattern = re.compile(
+              r'    legacy_presentation_value = next\(\n'
+              r'        \(\n'
+              r'            merged\.get\(key\)\n'
+              r'            for key in \("presentation_mode", "presentation_density", "display_density", "density"\)\n'
+              r'            if merged\.get\(key\) is not None\n'
+              r'        \),\n'
+              r'        None,\n'
+              r'    \)\n'
+              r'    persisted_presentation = coerce_persisted_presentation_mode\(\n'
+              r'        legacy_presentation_value,\n'
+              r'        explicit=merged\.get\("presentation_mode_explicit", legacy_presentation_value is not None\),\n'
+              r'        schema_version=merged\.get\("presentation_schema_version", PRESENTATION_SCHEMA_VERSION\),\n'
+              r'    \)\n'
+              r'    presentation_revision = _coerce_loaded_non_negative_int\(merged\.get\("presentation_revision"\), 0\)\n'
+          )
+          replacement = '''    legacy_presentation_value = next(
+              (
+                  home_config.get(key)
+                  for key in ("presentation_mode", "presentation_density", "display_density", "density")
+                  if home_config.get(key) is not None
+              ),
+              None,
+          )
+          persisted_presentation = coerce_persisted_presentation_mode(
+              legacy_presentation_value,
+              explicit=home_config.get("presentation_mode_explicit", legacy_presentation_value is not None),
+              schema_version=home_config.get("presentation_schema_version", PRESENTATION_SCHEMA_VERSION),
+          )
+          presentation_revision = _coerce_loaded_non_negative_int(home_config.get("presentation_revision"), 0)
+          '''
+          config, count = legacy_pattern.subn(replacement, config, count=1)
+          if count != 1:
+              raise SystemExit(f"authoritative home presentation load: expected one match, found {count}")
+
+          helper = '''def _editable_presentation(config: GuardConfig) -> dict[str, object]:
+              """Project the already-resolved authoritative presentation state."""
+
+              payload = resolve_presentation_mode(
+                  local_value=config.presentation_mode,
+                  local_explicit=config.presentation_mode_explicit,
+                  local_schema_version=config.presentation_schema_version,
+                  revision=config.presentation_revision,
+              ).to_dict()
+              payload["source"] = config.presentation_source
+              payload["diagnostic"] = config.presentation_diagnostic
+              return payload
+
+
+          '''
+          config = replace_once(
+              config,
+              "def editable_guard_settings(config: GuardConfig) -> dict[str, object]:\n",
+              helper + "def editable_guard_settings(config: GuardConfig) -> dict[str, object]:\n",
+              label="insert authoritative presentation projection",
+          )
+          projection_pattern = re.compile(
+              r'        "presentation": resolve_presentation_mode\(\n'
+              r'            local_value=config\.presentation_mode,\n'
+              r'            local_explicit=config\.presentation_mode_explicit,\n'
+              r'            local_schema_version=config\.presentation_schema_version,\n'
+              r'            revision=config\.presentation_revision,\n'
+              r'        \)\.to_dict\(\),\n'
+          )
+          config, count = projection_pattern.subn(
+              '        "presentation": _editable_presentation(config),\n',
+              config,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit(f"preserve migration source: expected one match, found {count}")
+
+          precondition_old = '''    presentation_change = bool(
+              {"presentation_mode", "presentation_mode_explicit"} & payload.keys()
+          )
+          if presentation_change:
+              expected_revision = payload.get("presentation_revision")
+              if expected_revision is not None and expected_revision != current_config.presentation_revision:
+                  raise ValueError("Presentation preference changed on another surface. Reload settings and try again.")
+          '''
+          precondition_new = '''    presentation_change = bool(
+              {"presentation_mode", "presentation_mode_explicit"} & payload.keys()
+          )
+          presentation_preconditions = {
+              "presentation_revision",
+              "presentation_schema_version",
+          } & payload.keys()
+          if presentation_preconditions and not presentation_change:
+              raise ValueError("Presentation revision requires a presentation preference change.")
+          supplied_schema_version = payload.get("presentation_schema_version")
+          if supplied_schema_version is not None and supplied_schema_version != PRESENTATION_SCHEMA_VERSION:
+              raise ValueError("Presentation schema version is unsupported.")
+          if presentation_change:
+              expected_revision = payload.get("presentation_revision")
+              if expected_revision is not None and expected_revision != current_config.presentation_revision:
+                  raise ValueError("Presentation preference changed on another surface. Reload settings and try again.")
+          '''
+          config = replace_once(
+              config,
+              precondition_old,
+              precondition_new,
+              label="harden presentation compare-and-swap",
+          )
+          write(config_path, config)
+
+          server_path = "src/codex_plugin_scanner/guard/daemon/server.py"
+          server = read(server_path)
+          server = replace_once(
+              server,
+              '        presentation_only = gate_payload is None and bool(settings) and set(settings).issubset(presentation_only_keys)\n',
+              '        presentation_change_requested = bool(\n'
+              '            {"presentation_mode", "presentation_mode_explicit"} & settings.keys()\n'
+              '        )\n'
+              '        presentation_only = (\n'
+              '            gate_payload is None\n'
+              '            and presentation_change_requested\n'
+              '            and set(settings).issubset(presentation_only_keys)\n'
+              '        )\n',
+              label="prevent precondition-only approval bypass",
+          )
+          write(server_path, server)
+
+          contract_path = "src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py"
+          contract = read(contract_path)
+          contract = replace_once(
+              contract,
+              "from collections.abc import Mapping\nfrom dataclasses import asdict, dataclass\nfrom typing import Literal, cast\n",
+              "from collections.abc import Mapping\nfrom dataclasses import asdict, dataclass\nfrom functools import lru_cache\nimport json\nfrom pathlib import Path\nfrom typing import Literal, cast\n\nfrom jsonschema import Draft202012Validator\nfrom jsonschema.exceptions import SchemaError, ValidationError\n",
+              label="add strict schema dependencies",
+          )
+          start = contract.index("def parse_action_explanation(")
+          end = contract.index("def _optional_string(", start)
+          strict_parser = '''@lru_cache(maxsize=1)
+          def _action_explanation_validator() -> Draft202012Validator:
+              schema_path = Path(__file__).resolve().parents[1] / "schemas" / "guard_action_explanation_v1.json"
+              schema = json.loads(schema_path.read_text(encoding="utf-8"))
+              Draft202012Validator.check_schema(schema)
+              return Draft202012Validator(schema)
+
+
+          def _validated_action_explanation_payload(payload: Mapping[str, object]) -> dict[str, object]:
+              try:
+                  normalized = json.loads(json.dumps(dict(payload), ensure_ascii=False, allow_nan=False))
+                  if not isinstance(normalized, dict):
+                      raise TypeError("payload must be an object")
+                  _action_explanation_validator().validate(normalized)
+              except (OSError, TypeError, ValueError, SchemaError, ValidationError) as error:
+                  raise ValueError("Invalid Guard action explanation payload.") from error
+              return cast(dict[str, object], normalized)
+
+
+          def parse_action_explanation(payload: Mapping[str, object]) -> GuardActionExplanationV1:
+              """Validate the complete contract before constructing trusted immutable types."""
+
+              normalized = _validated_action_explanation_payload(payload)
+              everyday_raw = cast(dict[str, object], normalized["everyday"])
+              technical_raw = cast(dict[str, object], normalized["technical"])
+              redaction_raw = cast(dict[str, object], normalized["redaction"])
+
+              targets = tuple(
+                  EverydayTarget(
+                      kind=cast(str, item["kind"]),
+                      label=cast(str, item["label"]),
+                      scope=cast(str | None, item["scope"]),
+                      sensitivity=cast(str, item["sensitivity"]),
+                  )
+                  for item in cast(list[dict[str, object]], everyday_raw["targets"])
+              )
+              consequences = tuple(
+                  EverydayConsequence(
+                      message_id=cast(str, item["message_id"]),
+                      message=cast(str, item["message"]),
+                      severity=cast(str, item["severity"]),
+                      confirmed=cast(bool, item["confirmed"]),
+                  )
+                  for item in cast(list[dict[str, object]], everyday_raw["consequences"])
+              )
+              alternatives = tuple(
+                  EverydayAlternative(
+                      message_id=cast(str, item["message_id"]),
+                      message=cast(str, item["message"]),
+                      kind=cast(str, item["kind"]),
+                  )
+                  for item in cast(list[dict[str, object]], everyday_raw["safer_alternatives"])
+              )
+              everyday = EverydayExplanation(
+                  headline_message_id=cast(str, everyday_raw["headline_message_id"]),
+                  headline=cast(str, everyday_raw["headline"]),
+                  summary_message_id=cast(str, everyday_raw["summary_message_id"]),
+                  summary=cast(str, everyday_raw["summary"]),
+                  impact_message_id=cast(str | None, everyday_raw["impact_message_id"]),
+                  impact=cast(str | None, everyday_raw["impact"]),
+                  why_guard_intervened_message_id=cast(
+                      str | None,
+                      everyday_raw["why_guard_intervened_message_id"],
+                  ),
+                  why_guard_intervened=cast(str | None, everyday_raw["why_guard_intervened"]),
+                  recommendation_message_id=cast(
+                      str | None,
+                      everyday_raw["recommendation_message_id"],
+                  ),
+                  recommendation=cast(str | None, everyday_raw["recommendation"]),
+                  actor_label=cast(str, everyday_raw["actor_label"]),
+                  targets=targets,
+                  consequences=consequences,
+                  safer_alternatives=alternatives,
+              )
+
+              segments = tuple(
+                  TechnicalSegment(
+                      executable=cast(str | None, item["executable"]),
+                      arguments_display=tuple(cast(list[str], item["arguments_display"])),
+                      execution_context=cast(str, item["execution_context"]),
+                      pipeline_index=cast(int, item["pipeline_index"]),
+                  )
+                  for item in cast(list[dict[str, object]], technical_raw["segments"])
+              )
+              arguments_raw = technical_raw["arguments_display"]
+              technical = TechnicalExplanation(
+                  available=cast(bool, technical_raw["available"]),
+                  unavailable_reason=cast(str | None, technical_raw["unavailable_reason"]),
+                  action_type=cast(str, technical_raw["action_type"]),
+                  command_display=cast(str | None, technical_raw["command_display"]),
+                  normalized_command_display=cast(
+                      str | None,
+                      technical_raw["normalized_command_display"],
+                  ),
+                  executable=cast(str | None, technical_raw["executable"]),
+                  arguments_display=(
+                      None if arguments_raw is None else tuple(cast(list[str], arguments_raw))
+                  ),
+                  dialect=cast(str | None, technical_raw["dialect"]),
+                  transport=cast(str | None, technical_raw["transport"]),
+                  working_scope_display=cast(str | None, technical_raw["working_scope_display"]),
+                  wrappers=tuple(cast(list[str], technical_raw["wrappers"])),
+                  segments=segments,
+                  extension_ids=tuple(cast(list[str], technical_raw["extension_ids"])),
+                  rule_ids=tuple(cast(list[str], technical_raw["rule_ids"])),
+                  reason_codes=tuple(cast(list[str], technical_raw["reason_codes"])),
+                  policy_source=cast(str | None, technical_raw["policy_source"]),
+                  parse_confidence=cast(str | None, technical_raw["parse_confidence"]),
+                  proof_level=cast(str | None, technical_raw["proof_level"]),
+                  receipt_id=cast(str | None, technical_raw["receipt_id"]),
+                  action_id=cast(str | None, technical_raw["action_id"]),
+              )
+              redaction = ExplanationRedaction(
+                  level=cast(GuardExplanationRedactionLevel, redaction_raw["level"]),
+                  policy_version=cast(str, redaction_raw["policy_version"]),
+                  omitted_fields=tuple(cast(list[str], redaction_raw["omitted_fields"])),
+                  truncated_fields=tuple(cast(list[str], redaction_raw["truncated_fields"])),
+                  secret_like_values_removed=cast(bool, redaction_raw["secret_like_values_removed"]),
+              )
+              return GuardActionExplanationV1(
+                  action_identity=cast(str, normalized["action_identity"]),
+                  canonical_identity=cast(str | None, normalized["canonical_identity"]),
+                  catalog_digest=cast(str | None, normalized["catalog_digest"]),
+                  locale=cast(str, normalized["locale"]),
+                  kind=cast(GuardEverydayActionKind, normalized["kind"]),
+                  confidence=cast(GuardExplanationConfidence, normalized["confidence"]),
+                  uncertainty_reasons=tuple(cast(list[str], normalized["uncertainty_reasons"])),
+                  everyday=everyday,
+                  technical=technical,
+                  redaction=redaction,
+                  schema_version=cast(str, normalized["schema_version"]),
+                  explanation_version=cast(str, normalized["explanation_version"]),
+                  renderer_version=cast(str, normalized["renderer_version"]),
+              )
+
+
+          def explanation_identity_matches(
+              payload: GuardActionExplanationV1,
+              *,
+              action_identity: str,
+              canonical_identity: str | None = None,
+          ) -> bool:
+              if payload.action_identity != action_identity:
+                  return False
+              if canonical_identity is None:
+                  return True
+              return payload.canonical_identity == canonical_identity
+
+
+          '''
+          contract = contract[:start] + strict_parser + contract[end:]
+          write(contract_path, contract)
+
+          presentation_test_path = "tests/test_guard_presentation_mode.py"
+          presentation_tests = read(presentation_test_path)
+          presentation_tests = replace_once(
+              presentation_tests,
+              "    assert config.presentation_source == \"migrated\"\n",
+              '    assert config.presentation_source == "migrated"\n'
+              '    assert editable_guard_settings(config)["presentation"]["source"] == "migrated"\n',
+              label="test migrated source projection",
+          )
+          presentation_tests += '''
+
+          def test_workspace_cannot_override_authoritative_presentation_preference(tmp_path: Path) -> None:
+              guard_home = tmp_path / "guard"
+              workspace = tmp_path / "workspace"
+              guard_home.mkdir()
+              workspace.mkdir()
+              (guard_home / "config.toml").write_text(
+                  'presentation_mode = "technical"\n'
+                  'presentation_mode_explicit = true\n'
+                  'presentation_revision = 7\n',
+                  encoding="utf-8",
+              )
+              workspace_guard = workspace / ".hol" / "guard"
+              workspace_guard.mkdir(parents=True)
+              (workspace_guard / "config.toml").write_text(
+                  'presentation_mode = "everyday"\n'
+                  'presentation_mode_explicit = false\n'
+                  'presentation_revision = 999\n',
+                  encoding="utf-8",
+              )
+              config = load_guard_config(guard_home, workspace)
+              assert config.presentation_mode == "technical"
+              assert config.presentation_mode_explicit is True
+              assert config.presentation_revision == 7
+
+
+          @pytest.mark.parametrize(
+              "payload",
+              [
+                  {"presentation_revision": 5},
+                  {"presentation_schema_version": PRESENTATION_SCHEMA_VERSION},
+                  {
+                      "presentation_revision": 5,
+                      "presentation_schema_version": PRESENTATION_SCHEMA_VERSION,
+                  },
+              ],
+          )
+          def test_presentation_preconditions_cannot_be_written_without_a_change(
+              tmp_path: Path,
+              payload: dict[str, object],
+          ) -> None:
+              guard_home = tmp_path / "guard"
+              with pytest.raises(ValueError, match="requires a presentation preference change"):
+                  update_guard_settings(guard_home, payload, skip_approval_gate=True)
+              assert load_guard_config(guard_home).presentation_revision == 0
+
+
+          def test_caller_revision_is_never_persisted_directly(tmp_path: Path) -> None:
+              guard_home = tmp_path / "guard"
+              updated = update_guard_settings(
+                  guard_home,
+                  {
+                      "presentation_mode": "technical",
+                      "presentation_revision": 0,
+                      "presentation_schema_version": PRESENTATION_SCHEMA_VERSION,
+                  },
+                  skip_approval_gate=True,
+              )
+              assert updated.presentation_revision == 1
+          '''
+          write(presentation_test_path, presentation_tests)
+
+          contract_test_path = "tests/test_guard_action_explanation_contract.py"
+          contract_tests = read(contract_test_path)
+          contract_tests += '''
+
+          def test_expected_canonical_identity_rejects_missing_binding() -> None:
+              payload = _explanation().to_dict()
+              payload["canonical_identity"] = None
+              parsed = parse_action_explanation(payload)
+              assert not explanation_identity_matches(
+                  parsed,
+                  action_identity="action:1",
+                  canonical_identity="command:v1:abc",
+              )
+
+
+          @pytest.mark.parametrize(
+              "mutator",
+              [
+                  lambda payload: payload["everyday"].pop("headline"),
+                  lambda payload: payload["everyday"].update({"surprise": True}),
+                  lambda payload: payload["everyday"].update({"targets": ["not-an-object"]}),
+                  lambda payload: payload["technical"].update({"available": "yes"}),
+                  lambda payload: payload["redaction"].update({"omitted_fields": [7]}),
+                  lambda payload: payload["everyday"].update({"headline": "x" * 241}),
+              ],
+          )
+          def test_schema_invalid_nested_payloads_are_rejected(mutator) -> None:
+              payload = _explanation().to_dict()
+              mutator(payload)
+              with pytest.raises(ValueError, match="Invalid Guard action explanation payload"):
+                  parse_action_explanation(payload)
+
+
+          def test_json_segment_arguments_normalize_to_immutable_tuple() -> None:
+              payload = _explanation().to_dict()
+              payload["technical"]["segments"] = [
+                  {
+                      "executable": "echo",
+                      "arguments_display": ["hello"],
+                      "execution_context": "shell",
+                      "pipeline_index": 0,
+                  }
+              ]
+              parsed = parse_action_explanation(payload)
+              assert parsed.technical.segments[0].arguments_display == ("hello",)
+              assert isinstance(parsed.technical.segments[0].arguments_display, tuple)
+          '''
+          write(contract_test_path, contract_tests)
+          PY
+
+          git add \
+            src/codex_plugin_scanner/guard/config.py \
+            src/codex_plugin_scanner/guard/daemon/server.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py \
+            tests/test_guard_presentation_mode.py \
+            tests/test_guard_action_explanation_contract.py
+          git diff --cached --check
+
+      - name: Install Python verification dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check uv
+          uv sync --frozen --extra dev
+
+      - name: Format and lint changed Python files
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            src/codex_plugin_scanner/guard/config.py
+            src/codex_plugin_scanner/guard/daemon/server.py
+            src/codex_plugin_scanner/guard/presentation_mode.py
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py
+            tests/test_guard_presentation_mode.py
+            tests/test_guard_action_explanation_contract.py
+          )
+          uv run ruff format "${files[@]}"
+          uv run ruff check --fix "${files[@]}"
+          uv run ruff format "${files[@]}"
+          uv run ruff check "${files[@]}"
+          uv run ruff format --check "${files[@]}"
+          git add "${files[@]}"
+          git diff --cached --check
+
+      - name: Correctness review pass
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run pytest -q tests/test_guard_presentation_mode.py tests/test_guard_action_explanation_contract.py
+          uv run basedpyright \
+            src/codex_plugin_scanner/guard/presentation_mode.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py
+          uv run python -m compileall -q src/codex_plugin_scanner/guard
+
+      - name: Security and privacy adversarial review pass
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run python - <<'PY'
+          from __future__ import annotations
+
+          import ast
+          import json
+          from copy import deepcopy
+          from pathlib import Path
+
+          from codex_plugin_scanner.guard.runtime.action_explanation_contract import (
+              explanation_identity_matches,
+              parse_action_explanation,
+          )
+          from tests.test_guard_action_explanation_contract import _explanation
+
+          public_schema = json.loads(Path('schemas/guard_action_explanation_v1.json').read_text(encoding='utf-8'))
+          package_schema = json.loads(
+              Path('src/codex_plugin_scanner/guard/schemas/guard_action_explanation_v1.json').read_text(encoding='utf-8')
+          )
+          assert public_schema == package_schema
+
+          sources = [
+              Path('src/codex_plugin_scanner/guard/presentation_mode.py'),
+              Path('src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py'),
+          ]
+          forbidden = {'requests', 'httpx', 'urllib', 'openai', 'anthropic', 'subprocess', 'socket'}
+          for path in sources:
+              tree = ast.parse(path.read_text(encoding='utf-8'))
+              imported = {
+                  alias.name.split('.')[0]
+                  for node in ast.walk(tree)
+                  if isinstance(node, ast.Import)
+                  for alias in node.names
+              }
+              imported.update(
+                  (node.module or '').split('.')[0]
+                  for node in ast.walk(tree)
+                  if isinstance(node, ast.ImportFrom)
+              )
+              assert not (forbidden & imported), (path, forbidden & imported)
+
+          valid = _explanation().to_dict()
+          parsed = parse_action_explanation(valid)
+          assert explanation_identity_matches(
+              parsed,
+              action_identity='action:1',
+              canonical_identity='command:v1:abc',
+          )
+          missing_binding = deepcopy(valid)
+          missing_binding['canonical_identity'] = None
+          parsed_missing = parse_action_explanation(missing_binding)
+          assert not explanation_identity_matches(
+              parsed_missing,
+              action_identity='action:1',
+              canonical_identity='command:v1:abc',
+          )
+
+          for mutation in (
+              lambda payload: payload.pop('everyday'),
+              lambda payload: payload['technical'].update({'command_display': ['not', 'text']}),
+              lambda payload: payload['redaction'].update({'unknown': 'field'}),
+              lambda payload: payload['everyday'].update({'summary': 'x' * 801}),
+          ):
+              candidate = deepcopy(valid)
+              mutation(candidate)
+              try:
+                  parse_action_explanation(candidate)
+              except ValueError:
+                  pass
+              else:
+                  raise AssertionError('schema-invalid payload crossed the trust boundary')
+
+          config = Path('src/codex_plugin_scanner/guard/config.py').read_text(encoding='utf-8')
+          editable_block = config.split('EDITABLE_GUARD_SETTING_KEYS', 1)[1].split(')', 1)[0]
+          assert 'presentation_revision' not in editable_block
+          assert 'presentation_schema_version' not in editable_block
+          assert 'Presentation revision requires a presentation preference change.' in config
+          assert 'home_config.get("presentation_revision")' in config
+          PY
+
+      - name: Dashboard tests, typecheck, and production bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global bun@1.2.22
+          cd dashboard
+          bun install --frozen-lockfile
+          bun run test
+          bun x tsc --noEmit
+          bun run build
+          cd ..
+          git add dashboard/package.json dashboard/src src/codex_plugin_scanner/guard/daemon/static
+          git diff --cached --check
+
+      - name: Full repository test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run pytest -q
+
+      - name: Installed-wheel and packaged-schema verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist "$RUNNER_TEMP/everyday-wheel-venv"
+          uv build --wheel
+          uv venv "$RUNNER_TEMP/everyday-wheel-venv"
+          uv pip install --python "$RUNNER_TEMP/everyday-wheel-venv/bin/python" dist/*.whl
+          "$RUNNER_TEMP/everyday-wheel-venv/bin/python" - <<'PY'
+          from codex_plugin_scanner.guard.presentation_mode import resolve_presentation_mode
+          from codex_plugin_scanner.guard.runtime.action_explanation_contract import parse_action_explanation
+
+          resolved = resolve_presentation_mode()
+          assert resolved.value == 'everyday'
+          assert resolved.schema_version == 1
+          assert callable(parse_action_explanation)
+          PY
+
+      - name: Commit and push exact verified product branch
+        shell: bash
+        env:
+          EXPECTED_OLD_HEAD: ${{ steps.rebuild.outputs.old_pr_head }}
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --cached --name-only | grep -E '^\.github/(pr2569-|workflows/tmp-|.*snapshot)' ; then
+            echo 'Temporary orchestration files leaked into the final product commit.'
+            exit 1
+          fi
+          git diff --cached --check
+          git commit -s -m 'feat: Everyday Mode foundation (EVM-001-100)'
+          git push --force-with-lease="refs/heads/feat/everyday-mode-001-100:${EXPECTED_OLD_HEAD}" \
+            origin "HEAD:refs/heads/feat/everyday-mode-001-100"
