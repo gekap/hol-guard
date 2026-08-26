@@ -286,7 +286,7 @@ def _record_leased_job(store: GuardStore, state: dict[str, object], item: dict[s
     _save_state(store, state)
 
 
-def _lease_with_oauth_refresh(
+def _lease_job_with_401_retry(
     store: GuardStore,
     state: dict[str, object],
     auth_context: dict[str, object],
@@ -326,7 +326,7 @@ def poll_command_queue_once(store: GuardStore, context: HarnessContext) -> dict[
     _save_state(store, state)
     if _retry_pending_result(store, auth_context, state):
         return command_queue_status(store)
-    item = _lease_with_oauth_refresh(store, state, auth_context)
+    item = _lease_job_with_401_retry(store, state, auth_context)
     if item is None:
         empty_at = _now()
         state.update(
