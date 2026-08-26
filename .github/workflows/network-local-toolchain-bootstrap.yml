@@ -1,0 +1,46 @@
+name: Network local toolchain bootstrap
+
+on:
+  push:
+    branches:
+      - fix/network-isolation-remediation-rem121-139
+
+permissions:
+  contents: read
+
+jobs:
+  package-docker-toolchain:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Collect runner Docker toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p toolchain/bin toolchain/lib
+          for name in docker dockerd containerd runc docker-proxy containerd-shim-runc-v2; do
+            path="$(command -v "$name" || true)"
+            if [[ -n "$path" ]]; then
+              cp -L "$path" "toolchain/bin/$name"
+              ldd "$path" 2>/dev/null | awk '/=> \/|^\// { for (i=1; i<=NF; i++) if ($i ~ /^\//) print $i }' || true
+            fi
+          done | sort -u > toolchain/library-paths.txt
+          while IFS= read -r library; do
+            [[ -f "$library" ]] || continue
+            destination="toolchain/lib${library}"
+            mkdir -p "$(dirname "$destination")"
+            cp -L "$library" "$destination"
+          done < toolchain/library-paths.txt
+          test -x toolchain/bin/docker
+          test -x toolchain/bin/dockerd
+          test -x toolchain/bin/containerd
+          test -x toolchain/bin/runc
+          tar -C toolchain -czf docker-toolchain.tar.gz .
+          sha256sum docker-toolchain.tar.gz > docker-toolchain.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: network-local-docker-toolchain
+          path: |
+            docker-toolchain.tar.gz
+            docker-toolchain.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 1
