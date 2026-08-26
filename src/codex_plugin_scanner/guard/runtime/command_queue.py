@@ -405,15 +405,13 @@ def poll_command_queue_once(store: GuardStore, context: HarnessContext) -> dict[
             )
             try:
                 _LOGGER.info(
-                    "Guard command leased: job_id=%s operation=%s",
-                    _job_id(item),
+                    "Guard command leased: operation=%s",
                     command_job_operation(item),
                 )
                 execution = _execute_job(item, context, store)
             except Exception as error:
                 _LOGGER.warning(
-                    "Guard command execution failed: job_id=%s error=%s",
-                    _job_id(item),
+                    "Guard command execution failed: error=%s",
                     _redacted_error(error),
                 )
                 execution = {
@@ -426,7 +424,7 @@ def poll_command_queue_once(store: GuardStore, context: HarnessContext) -> dict[
         _post_result(auth_context, item, payload)
     except urllib.error.HTTPError as error:
         if error.code != 401:
-            _LOGGER.warning("Guard command result upload failed: job_id=%s", _job_id(item))
+            _LOGGER.warning("Guard command result upload failed.")
             state.update(
                 {
                     "state": "result_pending",
@@ -443,7 +441,7 @@ def poll_command_queue_once(store: GuardStore, context: HarnessContext) -> dict[
             _heartbeat(auth_context, item)
             _post_result(auth_context, item, payload)
         except Exception:
-            _LOGGER.warning("Guard command result upload failed: job_id=%s", _job_id(item))
+            _LOGGER.warning("Guard command result upload failed.")
             state.update(
                 {
                     "state": "result_pending",
@@ -453,7 +451,7 @@ def poll_command_queue_once(store: GuardStore, context: HarnessContext) -> dict[
             _save_state(store, state)
             raise
     except Exception:
-        _LOGGER.warning("Guard command result upload failed: job_id=%s", _job_id(item))
+        _LOGGER.warning("Guard command result upload failed.")
         state.update(
             {
                 "state": "result_pending",
@@ -472,7 +470,7 @@ def poll_command_queue_once(store: GuardStore, context: HarnessContext) -> dict[
         job=item,
         reason=str(payload.get("status") or "unknown"),
     )
-    _LOGGER.info("Guard command completed: job_id=%s status=%s", _job_id(item), payload.get("status"))
+    _LOGGER.info("Guard command completed: status=%s", payload.get("status"))
     return command_queue_status(store)
 
 

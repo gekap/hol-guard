@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 
 _STABLE_DIGEST_KEY = b"hol-guard-stable-digest.v3"
+
+
+def sha256_content_digest(payload: bytes) -> str:
+    """Hash public or canonical protocol content, never credentials."""
+
+    return hashlib.sha256(payload).hexdigest()  # codeql[py/weak-sensitive-data-hashing]
 
 
 def stable_digest_hex(payload: bytes, *, length: int | None = None) -> str:

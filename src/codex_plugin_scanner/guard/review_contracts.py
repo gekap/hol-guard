@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -37,6 +36,7 @@ from .review_oauth_binding import (
     GuardReviewOAuthMetadata,
     guard_review_oauth_metadata,  # noqa: F401 - compatibility re-export
 )
+from .stable_digest import sha256_content_digest
 from .stable_json import stable_json_serialize
 
 _LOCAL_REVIEW_REQUEST_CONTRACT_VERSION = "guard.local-review-request.v1"
@@ -62,7 +62,7 @@ _stable_serialize = stable_json_serialize
 
 
 def _sha256_hex(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return sha256_content_digest(value.encode("utf-8"))
 
 
 def _non_empty_string(value: object) -> str | None:

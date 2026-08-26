@@ -643,6 +643,9 @@ def test_default_worker_budget_stays_below_pi_hook_deadline() -> None:
 
     assert runner._timeout_seconds == 2.8  # pyright: ignore[reportPrivateUsage]
     assert runner._timeout_seconds < 3.1  # pyright: ignore[reportPrivateUsage]
+    assert hook_runner_module._HOOK_PROCESS_START_TIMEOUT_SECONDS > (  # pyright: ignore[reportPrivateUsage]
+        hook_runner_module._HOOK_PROCESS_READY_TIMEOUT_SECONDS  # pyright: ignore[reportPrivateUsage]
+    )
 
 
 def test_prewarmed_runner_scans_post_tool_output_in_isolated_worker(tmp_path: Path) -> None:
@@ -984,6 +987,7 @@ def test_persistent_spawn_failure_uses_one_bounded_backoff_supervisor(
         raise OSError("process table exhausted")
 
     monkeypatch.setattr(hook_runner_module, "_HOOK_PROCESS_READY_TIMEOUT_SECONDS", 0.3)
+    monkeypatch.setattr(hook_runner_module, "_HOOK_PROCESS_START_TIMEOUT_SECONDS", 0.3)
     monkeypatch.setattr(runner, "_start_slot", unavailable_start)
     runner.start()
     try:
@@ -1013,6 +1017,7 @@ def test_blocked_worker_spawn_does_not_block_supervisor_shutdown(
         return original_start(generation=generation)
 
     monkeypatch.setattr(hook_runner_module, "_HOOK_PROCESS_READY_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(hook_runner_module, "_HOOK_PROCESS_START_TIMEOUT_SECONDS", 0.1)
     monkeypatch.setattr(runner, "_start_slot", controlled_start)
     runner.start()
     assert spawn_started.wait(timeout=1)
@@ -1029,6 +1034,7 @@ def test_blocked_worker_spawn_does_not_block_supervisor_shutdown(
     with pytest.raises(RuntimeError, match="previous hook worker generation is not contained"):
         runner.start()
     monkeypatch.setattr(hook_runner_module, "_HOOK_PROCESS_READY_TIMEOUT_SECONDS", 5.0)
+    monkeypatch.setattr(hook_runner_module, "_HOOK_PROCESS_START_TIMEOUT_SECONDS", 10.0)
     with monkeypatch.context() as failed_stale_retirement:
         failed_stale_retirement.setattr(
             runner,
