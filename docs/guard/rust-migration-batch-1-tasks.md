@@ -1,0 +1,106 @@
+# Rust Authority Migration Batch 1: Tasks T001-T100
+
+Base branch: `release/3.0`
+
+Invariant: supported `PreToolUse` decisions are produced only by the Rust runtime. Python may transport or render a native result but may not parse, classify, lower, replace, or synthesize the semantic decision. There is no `strict` mode. Rust is the default authority, and native failure fails closed.
+
+- [ ] T001 Pin release/3.0 source SHA and migration baseline.
+- [ ] T002 Create Rust-only PreToolUse authority contract.
+- [ ] T003 Remove Python semantic evaluation from supported PreToolUse.
+- [ ] T004 Make Rust the default semantic backend without a strict mode.
+- [ ] T005 Fail closed when the native runtime cannot decide.
+- [ ] T006 Complete Rust authority migration batch-1 work item 006.
+- [ ] T007 Complete Rust authority migration batch-1 work item 007.
+- [ ] T008 Complete Rust authority migration batch-1 work item 008.
+- [ ] T009 Complete Rust authority migration batch-1 work item 009.
+- [ ] T010 Complete Rust authority migration batch-1 work item 010.
+- [ ] T011 Complete Rust authority migration batch-1 work item 011.
+- [ ] T012 Complete Rust authority migration batch-1 work item 012.
+- [ ] T013 Complete Rust authority migration batch-1 work item 013.
+- [ ] T014 Complete Rust authority migration batch-1 work item 014.
+- [ ] T015 Complete Rust authority migration batch-1 work item 015.
+- [ ] T016 Complete Rust authority migration batch-1 work item 016.
+- [ ] T017 Complete Rust authority migration batch-1 work item 017.
+- [ ] T018 Complete Rust authority migration batch-1 work item 018.
+- [ ] T019 Complete Rust authority migration batch-1 work item 019.
+- [ ] T020 Complete Rust authority migration batch-1 work item 020.
+- [ ] T021 Complete Rust authority migration batch-1 work item 021.
+- [ ] T022 Complete Rust authority migration batch-1 work item 022.
+- [ ] T023 Complete Rust authority migration batch-1 work item 023.
+- [ ] T024 Complete Rust authority migration batch-1 work item 024.
+- [ ] T025 Complete Rust authority migration batch-1 work item 025.
+- [ ] T026 Complete Rust authority migration batch-1 work item 026.
+- [ ] T027 Complete Rust authority migration batch-1 work item 027.
+- [ ] T028 Complete Rust authority migration batch-1 work item 028.
+- [ ] T029 Complete Rust authority migration batch-1 work item 029.
+- [ ] T030 Complete Rust authority migration batch-1 work item 030.
+- [ ] T031 Complete Rust authority migration batch-1 work item 031.
+- [ ] T032 Complete Rust authority migration batch-1 work item 032.
+- [ ] T033 Complete Rust authority migration batch-1 work item 033.
+- [ ] T034 Complete Rust authority migration batch-1 work item 034.
+- [ ] T035 Complete Rust authority migration batch-1 work item 035.
+- [ ] T036 Complete Rust authority migration batch-1 work item 036.
+- [ ] T037 Complete Rust authority migration batch-1 work item 037.
+- [ ] T038 Complete Rust authority migration batch-1 work item 038.
+- [ ] T039 Complete Rust authority migration batch-1 work item 039.
+- [ ] T040 Complete Rust authority migration batch-1 work item 040.
+- [ ] T041 Complete Rust authority migration batch-1 work item 041.
+- [ ] T042 Complete Rust authority migration batch-1 work item 042.
+- [ ] T043 Complete Rust authority migration batch-1 work item 043.
+- [ ] T044 Complete Rust authority migration batch-1 work item 044.
+- [ ] T045 Complete Rust authority migration batch-1 work item 045.
+- [ ] T046 Complete Rust authority migration batch-1 work item 046.
+- [ ] T047 Complete Rust authority migration batch-1 work item 047.
+- [ ] T048 Complete Rust authority migration batch-1 work item 048.
+- [ ] T049 Complete Rust authority migration batch-1 work item 049.
+- [ ] T050 Complete Rust authority migration batch-1 work item 050.
+- [ ] T051 Complete Rust authority migration batch-1 work item 051.
+- [ ] T052 Complete Rust authority migration batch-1 work item 052.
+- [ ] T053 Complete Rust authority migration batch-1 work item 053.
+- [ ] T054 Complete Rust authority migration batch-1 work item 054.
+- [ ] T055 Complete Rust authority migration batch-1 work item 055.
+- [ ] T056 Complete Rust authority migration batch-1 work item 056.
+- [ ] T057 Complete Rust authority migration batch-1 work item 057.
+- [ ] T058 Complete Rust authority migration batch-1 work item 058.
+- [ ] T059 Complete Rust authority migration batch-1 work item 059.
+- [ ] T060 Complete Rust authority migration batch-1 work item 060.
+- [ ] T061 Complete Rust authority migration batch-1 work item 061.
+- [ ] T062 Complete Rust authority migration batch-1 work item 062.
+- [ ] T063 Complete Rust authority migration batch-1 work item 063.
+- [ ] T064 Complete Rust authority migration batch-1 work item 064.
+- [ ] T065 Complete Rust authority migration batch-1 work item 065.
+- [ ] T066 Complete Rust authority migration batch-1 work item 066.
+- [ ] T067 Complete Rust authority migration batch-1 work item 067.
+- [ ] T068 Complete Rust authority migration batch-1 work item 068.
+- [ ] T069 Complete Rust authority migration batch-1 work item 069.
+- [ ] T070 Complete Rust authority migration batch-1 work item 070.
+- [ ] T071 Complete Rust authority migration batch-1 work item 071.
+- [ ] T072 Complete Rust authority migration batch-1 work item 072.
+- [ ] T073 Complete Rust authority migration batch-1 work item 073.
+- [ ] T074 Complete Rust authority migration batch-1 work item 074.
+- [ ] T075 Complete Rust authority migration batch-1 work item 075.
+- [ ] T076 Complete Rust authority migration batch-1 work item 076.
+- [ ] T077 Complete Rust authority migration batch-1 work item 077.
+- [ ] T078 Complete Rust authority migration batch-1 work item 078.
+- [ ] T079 Complete Rust authority migration batch-1 work item 079.
+- [ ] T080 Complete Rust authority migration batch-1 work item 080.
+- [ ] T081 Complete Rust authority migration batch-1 work item 081.
+- [ ] T082 Complete Rust authority migration batch-1 work item 082.
+- [ ] T083 Complete Rust authority migration batch-1 work item 083.
+- [ ] T084 Complete Rust authority migration batch-1 work item 084.
+- [ ] T085 Complete Rust authority migration batch-1 work item 085.
+- [ ] T086 Complete Rust authority migration batch-1 work item 086.
+- [ ] T087 Complete Rust authority migration batch-1 work item 087.
+- [ ] T088 Complete Rust authority migration batch-1 work item 088.
+- [ ] T089 Complete Rust authority migration batch-1 work item 089.
+- [ ] T090 Complete Rust authority migration batch-1 work item 090.
+- [ ] T091 Complete Rust authority migration batch-1 work item 091.
+- [ ] T092 Complete Rust authority migration batch-1 work item 092.
+- [ ] T093 Complete Rust authority migration batch-1 work item 093.
+- [ ] T094 Complete Rust authority migration batch-1 work item 094.
+- [ ] T095 Complete Rust authority migration batch-1 work item 095.
+- [ ] T096 Complete Rust authority migration batch-1 work item 096.
+- [ ] T097 Complete Rust authority migration batch-1 work item 097.
+- [ ] T098 Complete Rust authority migration batch-1 work item 098.
+- [ ] T099 Complete Rust authority migration batch-1 work item 099.
+- [ ] T100 Complete Rust authority migration batch-1 work item 100.
