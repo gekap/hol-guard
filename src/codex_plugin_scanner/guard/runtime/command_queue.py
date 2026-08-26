@@ -47,6 +47,7 @@ from .command_queue_activation import (
 from .command_queue_activation import (
     nonnegative_env_float as _env_float,
 )
+from .command_queue_auth import resolve_command_queue_auth_context
 from .command_queue_authority import authorize_transport_command_queue_job as authorize_command_queue_job
 from .command_queue_authority import command_queue_oauth_target
 from .command_queue_protocol import command_api_url as _command_api_url
@@ -67,6 +68,7 @@ from .exact_cloud_review_transport import (
     lease_next_job,
     uses_exact_transport,
 )
+from .oauth_request_retry import request_after_oauth_refresh
 from .runner import (
     GuardSyncAuthorizationExpiredError,
     GuardSyncNotConfiguredError,
@@ -285,31 +287,17 @@ def _cloud_review_sync_repair_status(store: GuardStore) -> dict[str, object] | N
         return None
 
 
-def _repair_guard_cloud_authorization(store: GuardStore) -> dict[str, bool]:
-    try:
-        result = repair_guard_cloud_connect_storage(store)
-    except Exception as exc:
-        _LOGGER.warning("Guard command authorization repair failed: %s", _redacted_error(exc))
-        return {
-            "cleared_stale_sign_in": False,
-            "existing_sign_in_valid": False,
-            "repaired_storage": False,
-        }
-    return {
-        "cleared_stale_sign_in": bool(result.get("cleared_stale_sign_in")),
-        "existing_sign_in_valid": bool(result.get("existing_sign_in_valid")),
-        "repaired_storage": bool(result.get("repaired_storage")),
-    }
-
-
-def _resolve_guard_sync_auth_context_with_repair(store: GuardStore) -> dict[str, object]:
-    try:
-        return _resolve_guard_sync_auth_context(store)
-    except (GuardSyncAuthorizationExpiredError, GuardSyncNotConfiguredError):
-        repair = _repair_guard_cloud_authorization(store)
-        if repair["existing_sign_in_valid"]:
-            return _resolve_guard_sync_auth_context(store)
-        raise
+def _resolve_command_queue_auth_context(
+    store: GuardStore,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, object]:
+    return resolve_command_queue_auth_context(
+        store,
+        force_refresh=force_refresh,
+        resolve_auth_context=_resolve_guard_sync_auth_context,
+        repair_authorization=repair_guard_cloud_connect_storage,
+    )
 
 
 def _execute_job(job: dict[str, object], context: HarnessContext, store: GuardStore) -> dict[str, object]:
@@ -425,24 +413,6 @@ def _retry_pending_result(
     return True
 
 
-def _resolve_command_queue_auth_context(
-    store: GuardStore,
-    *,
-    force_refresh: bool = False,
-) -> dict[str, object]:
-    try:
-        if force_refresh:
-            return _resolve_guard_sync_auth_context(store, force_refresh=True)
-        return _resolve_guard_sync_auth_context(store)
-    except (GuardSyncAuthorizationExpiredError, GuardSyncNotConfiguredError):
-        repair = _repair_guard_cloud_authorization(store)
-        if not repair["existing_sign_in_valid"] and not repair["repaired_storage"]:
-            raise
-        if force_refresh:
-            return _resolve_guard_sync_auth_context(store, force_refresh=True)
-        return _resolve_guard_sync_auth_context(store)
-
-
 def _record_exact_route_failure(state: dict[str, object], error: urllib.error.HTTPError) -> None:
     state["exact_review_route_error"] = _redacted_error(error)
     state["exact_review_route_error_at"] = _now()
@@ -464,6 +434,20 @@ def _record_leased_job(store: GuardStore, state: dict[str, object], item: dict[s
         }
     )
     _save_state(store, state)
+
+
+def _lease_with_oauth_refresh(
+    store: GuardStore,
+    state: dict[str, object],
+    auth_context: dict[str, object],
+) -> tuple[dict[str, object] | None, dict[str, object]]:
+    return request_after_oauth_refresh(
+        auth_context,
+        request=lambda current: _lease_next_job(store, current, state=state),
+        refresh=lambda: _resolve_command_queue_auth_context(store, force_refresh=True),
+        logger=_LOGGER,
+        operation="Guard command lease",
+    )
 
 
 def poll_command_queue_once(store: GuardStore, context: HarnessContext) -> dict[str, object]:
@@ -491,7 +475,7 @@ def poll_command_queue_once(store: GuardStore, context: HarnessContext) -> dict[
     _save_state(store, state)
     if _retry_pending_result(store, auth_context, state):
         return command_queue_status(store)
-    item = _lease_next_job(store, auth_context, state=state)
+    item, auth_context = _lease_with_oauth_refresh(store, state, auth_context)
     if item is None:
         empty_at = _now()
         state.update(

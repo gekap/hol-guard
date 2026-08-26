@@ -387,7 +387,8 @@ def validated_remote_approval_envelope(
 ) -> dict[str, object]:
     if envelope.get("contractVersion") != _REMOTE_APPROVAL_CONTRACT_VERSION:
         raise GuardReviewContractError("unsupported_remote_approval_contract")
-    if envelope.get("scope") not in _REMOTE_APPROVAL_ALLOWED_SCOPES:
+    scope = envelope.get("scope")
+    if not isinstance(scope, str) or scope not in _REMOTE_APPROVAL_ALLOWED_SCOPES:
         raise GuardReviewContractError("invalid_remote_approval_scope")
     if normalize_remote_approval_decision(envelope.get("decision")) is None:
         raise GuardReviewContractError("invalid_remote_approval_decision")
@@ -398,10 +399,7 @@ def validated_remote_approval_envelope(
     if expires_at <= _now():
         if admitted_at is None:
             raise GuardReviewContractError("remote_approval_expired")
-        queue_admitted_at = _parse_iso_timestamp(
-            admitted_at,
-            field_name="queue_admitted_at",
-        )
+        queue_admitted_at = _parse_iso_timestamp(admitted_at, field_name="queue_admitted_at")
         if queue_admitted_at > expires_at:
             raise GuardReviewContractError("remote_approval_expired")
     payload_hash = _non_empty_string(envelope.get("payloadHash"))
