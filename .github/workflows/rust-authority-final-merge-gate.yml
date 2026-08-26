@@ -1,0 +1,158 @@
+name: Rust authority final merge gate
+
+on:
+  push:
+    branches: [fix/rust-authority-batch-3]
+    paths:
+      - "rust/AUTHORITY_FINAL"
+      - ".github/workflows/rust-authority-final-merge-gate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+  checks: read
+  statuses: read
+
+concurrency:
+  group: rust-authority-final-merge-gate
+  cancel-in-progress: false
+
+jobs:
+  verify-review-merge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: "0.9.26"
+          enable-cache: true
+      - run: uv sync --frozen --extra dev --python 3.12
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.88.0
+      - name: Resolve PR and request independent review
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          number=$(gh pr list --repo hashgraph-online/hol-guard --head fix/rust-authority-batch-3 --state open --json number --jq '.[0].number')
+          test -n "$number"
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          gh pr edit "$number" --repo hashgraph-online/hol-guard --add-reviewer deep-purple-boots || true
+          gh pr comment "$number" --repo hashgraph-online/hol-guard --body "@coderabbitai review"
+      - name: Require final evidence and completed tasks
+        run: |
+          test "$(grep -c '^- \[x\] T' docs/guard/rust-migration-batch-3-tasks.md)" -eq 20
+          test -f docs/guard/evidence/rust-authority-ownership-final.json
+          test -f docs/guard/evidence/rust-pretool-authority-final.json
+          test -f docs/guard/evidence/rust-posttool-authority-final.json
+          test -f docs/guard/evidence/rust-authority-performance-final.json
+          test -f docs/guard/evidence/rust-authority-final-review.md
+      - name: Enforce permanent authority and repository hygiene
+        run: |
+          uv run --no-sync python scripts/ci/rust_authority_ownership_gate.py \
+            --root . --json /tmp/rust-authority-ownership.json
+      - name: Re-run complete compiled release integration
+        env:
+          HOL_GUARD_BUILD_SHA: ${{ github.sha }}
+        run: |
+          cargo metadata --manifest-path rust/Cargo.toml --locked --format-version 1 --no-deps >/dev/null
+          cargo fmt --manifest-path rust/Cargo.toml --all --check
+          cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets -- -D warnings
+          cargo test --manifest-path rust/Cargo.toml --locked --workspace --all-targets
+          VERSION=$(uv run --no-sync python scripts/sync_repo_version.py --check)
+          export HOL_GUARD_PACKAGE_VERSION="$VERSION"
+          cargo build --manifest-path rust/Cargo.toml --locked --release -p hol-guard-runtime
+          rust/target/release/hol-guard-runtime self-test --json
+          uv run --no-sync python scripts/ci/rust_pretool_authority_integration.py \
+            --runtime rust/target/release/hol-guard-runtime \
+            --json /tmp/rust-pretool-authority.json
+          uv run --no-sync python scripts/ci/rust_posttool_failclosed_integration.py \
+            --runtime rust/target/release/hol-guard-runtime \
+            --json /tmp/rust-posttool-authority.json
+          HOL_GUARD_NATIVE=force HOL_GUARD_NATIVE_BINARY="$PWD/rust/target/release/hol-guard-runtime" \
+            uv run --no-sync pytest -q \
+              ci/native_runtime/test_command_model_resident.py \
+              ci/native_runtime/test_guard_native_runtime_binary.py \
+              ci/native_runtime/test_guard_native_runtime_differential.py \
+              ci/native_runtime/test_guard_native_runtime_mutation_differential.py \
+              --tb=short
+          uv run --no-sync python scripts/bench_guard_native_release_gate.py \
+            --runtime rust/target/release/hol-guard-runtime \
+            --warm-iterations 30 --cold-iterations 2 \
+            --json /tmp/rust-authority-performance.json --enforce
+          HOL_GUARD_NATIVE=force HOL_GUARD_NATIVE_BINARY="$PWD/rust/target/release/hol-guard-runtime" \
+            uv run --no-sync pytest -q ci/native_runtime/test_native_hol_guard_wheel.py --tb=short
+      - name: Wait for exact-head CI/CD
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, time
+          current=int(os.environ['CURRENT_RUN_ID'])
+          sha=os.environ['HEAD_SHA']
+          deadline=time.monotonic()+3000
+          ignored={'R0 source snapshot','Rust authority final merge gate'}
+          required={'CI','Security Gates','CodeQL Analysis','Rust authority ownership'}
+          while True:
+              raw=subprocess.check_output(['gh','api',f'repos/hashgraph-online/hol-guard/actions/runs?head_sha={sha}&per_page=100'],text=True)
+              runs=json.loads(raw).get('workflow_runs',[])
+              peers=[r for r in runs if r.get('id')!=current and r.get('name') not in ignored]
+              bad=[r for r in peers if r.get('status')=='completed' and r.get('conclusion') not in {'success','skipped','neutral'}]
+              if bad:
+                  raise SystemExit('Peer CI failure: '+json.dumps([(r.get('name'),r.get('conclusion')) for r in bad]))
+              success={r.get('name') for r in peers if r.get('status')=='completed' and r.get('conclusion')=='success'}
+              pending=[r for r in peers if r.get('status')!='completed']
+              missing=required-success
+              if not pending and not missing:
+                  break
+              if time.monotonic()>=deadline:
+                  raise SystemExit(f'timed out: pending={[r.get("name") for r in pending]} missing={sorted(missing)}')
+              time.sleep(20)
+          PY
+      - name: Require clean review and status state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          sleep 90
+          gh api graphql -f query="query { repository(owner:\"hashgraph-online\", name:\"hol-guard\") { pullRequest(number:${PR_NUMBER}) { reviewThreads(first:100) { nodes { isResolved } } reviews(last:100) { nodes { state author { login } } } } } }" > /tmp/review.json
+          python - <<'PY'
+          import json
+          value=json.load(open('/tmp/review.json'))['data']['repository']['pullRequest']
+          unresolved=[node for node in value['reviewThreads']['nodes'] if not node['isResolved']]
+          if unresolved:
+              raise SystemExit(f'{len(unresolved)} unresolved review thread(s)')
+          changes=[node for node in value['reviews']['nodes'] if node['state']=='CHANGES_REQUESTED']
+          if changes:
+              raise SystemExit('Changes requested: '+', '.join(node['author']['login'] for node in changes))
+          PY
+          gh api repos/hashgraph-online/hol-guard/commits/${{ github.sha }}/status > /tmp/status.json
+          python - <<'PY'
+          import json
+          value=json.load(open('/tmp/status.json'))
+          bad=[item for item in value.get('statuses',[]) if item.get('state') in {'error','failure'}]
+          if bad:
+              raise SystemExit('Failed statuses: '+', '.join(item.get('context','unknown') for item in bad))
+          PY
+      - name: Merge final reviewed authority batch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo hashgraph-online/hol-guard --body-file docs/guard/evidence/rust-authority-final-review.md
+          gh pr merge "$PR_NUMBER" --repo hashgraph-online/hol-guard --squash --delete-branch \
+            --subject "ci(guard): permanently enforce Rust runtime authority" \
+            --body "The final batch makes Rust authority self-enforcing across source ownership, repository-wide CI, compiled PreToolUse and PostToolUse integration, resident differential and mutation testing, performance, installed native wheels, documentation, and migration hygiene."
