@@ -1,0 +1,4 @@
+HOL Guard release/3.0 Rust PreToolUse authority batch 1.
+
+Pinned baseline: 9bf7da1aa1dea9c18c10bfa26cbb4f23be540754
+Requirement: Rust is the default semantic authority; no strict mode and no Python PreToolUse evaluator fallback.
