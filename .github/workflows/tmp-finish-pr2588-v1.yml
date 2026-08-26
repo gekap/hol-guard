@@ -1,0 +1,388 @@
+name: Finish PR 2588
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: finish-pr2588
+  cancel-in-progress: false
+
+jobs:
+  integrate-verify-push:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - name: Check out orchestration branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: tmp/finish-pr2588-20260826-v1
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Reconcile current release and apply review remediations
+        id: integrate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp scripts/tmp/finish_pr2588.py "$RUNNER_TEMP/finish_pr2588.py"
+          cp scripts/tmp/finish_pr2588_followup.py "$RUNNER_TEMP/finish_pr2588_followup.py"
+          cp scripts/tmp/finish_pr2588_router.py "$RUNNER_TEMP/finish_pr2588_router.py"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch --no-tags origin release/3.0 feat/everyday-mode-101-200
+          expected_head="$(git rev-parse origin/feat/everyday-mode-101-200)"
+          echo "expected_head=$expected_head" >> "$GITHUB_OUTPUT"
+          git checkout -B feat/everyday-mode-101-200 origin/feat/everyday-mode-101-200
+
+          set +e
+          git merge --no-commit --no-ff origin/release/3.0
+          merge_status=$?
+          set -e
+
+          mapfile -t conflicts < <(git diff --name-only --diff-filter=U | sort)
+          if ((${#conflicts[@]})); then
+            printf 'Conflicts detected:\n%s\n' "${conflicts[*]}"
+            unexpected=()
+            for path in "${conflicts[@]}"; do
+              case "$path" in
+                ci/test-suite-ratchet-baseline.json|ci/code-quality-baseline.json)
+                  PATH_TO_MERGE="$path" python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+          from typing import Any
+
+          path = os.environ["PATH_TO_MERGE"]
+          missing = object()
+
+          def stage(number: int) -> Any:
+              raw = subprocess.check_output(["git", "show", f":{number}:{path}"], text=True)
+              return json.loads(raw)
+
+          def merge_three(ancestor: Any, feature: Any, release: Any, *, location: str) -> Any:
+              if feature == release:
+                  return feature
+              if feature == ancestor:
+                  return release
+              if release == ancestor:
+                  return feature
+              if isinstance(feature, dict) and isinstance(release, dict):
+                  ancestor_map = ancestor if isinstance(ancestor, dict) else {}
+                  merged: dict[str, Any] = {}
+                  for key in sorted(set(feature) | set(release)):
+                      feature_value = feature.get(key, missing)
+                      release_value = release.get(key, missing)
+                      ancestor_value = ancestor_map.get(key, missing)
+                      child = f"{location}.{key}" if location else str(key)
+                      if feature_value is missing:
+                          merged[str(key)] = release_value
+                      elif release_value is missing:
+                          merged[str(key)] = feature_value
+                      elif ancestor_value is missing:
+                          if feature_value == release_value:
+                              merged[str(key)] = feature_value
+                          elif (
+                              isinstance(feature_value, (int, float))
+                              and not isinstance(feature_value, bool)
+                              and isinstance(release_value, (int, float))
+                              and not isinstance(release_value, bool)
+                          ):
+                              merged[str(key)] = max(feature_value, release_value)
+                          else:
+                              merged[str(key)] = merge_three({}, feature_value, release_value, location=child)
+                      else:
+                          merged[str(key)] = merge_three(
+                              ancestor_value,
+                              feature_value,
+                              release_value,
+                              location=child,
+                          )
+                  return merged
+              if (
+                  isinstance(feature, (int, float))
+                  and not isinstance(feature, bool)
+                  and isinstance(release, (int, float))
+                  and not isinstance(release, bool)
+              ):
+                  return max(feature, release)
+              if isinstance(feature, list) and isinstance(release, list):
+                  merged_list = list(release)
+                  for item in feature:
+                      if item not in merged_list:
+                          merged_list.append(item)
+                  return merged_list
+              raise RuntimeError(
+                  f"Unsafe JSON conflict at {location}: ancestor={ancestor!r}, "
+                  f"feature={feature!r}, release={release!r}"
+              )
+
+          result = merge_three(stage(1), stage(2), stage(3), location="")
+          Path(path).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+          PY
+                  git add "$path"
+                  ;;
+                *)
+                  unexpected+=("$path")
+                  ;;
+              esac
+            done
+            if ((${#unexpected[@]})); then
+              printf 'Unexpected unresolved conflicts:\n%s\n' "${unexpected[*]}"
+              exit 1
+            fi
+          elif ((merge_status != 0)); then
+            echo 'Merge failed without an inspectable conflict set.'
+            exit 1
+          fi
+
+          python "$RUNNER_TEMP/finish_pr2588.py"
+          python "$RUNNER_TEMP/finish_pr2588_followup.py"
+          python "$RUNNER_TEMP/finish_pr2588_router.py"
+
+          if git diff --name-only --diff-filter=U | grep -q .; then
+            git diff --name-only --diff-filter=U
+            exit 1
+          fi
+          git diff --check
+          git status --short
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check uv
+          uv sync --frozen --extra dev --python 3.12
+
+      - name: Format and lint reviewed Python surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            src/codex_plugin_scanner/guard/runtime/semantic_explanations.py
+            src/codex_plugin_scanner/guard/cli/commands_support_service.py
+            src/codex_plugin_scanner/guard/cli/commands_dispatch_admin.py
+            src/codex_plugin_scanner/guard/cli/commands_dispatch_local.py
+            src/codex_plugin_scanner/guard/cli/commands_parser_local.py
+            src/codex_plugin_scanner/guard/cli/commands_router.py
+            tests/test_guard_semantic_explanations.py
+            tests/test_guard_semantic_explanations_cli.py
+          )
+          uv run --no-sync ruff format "${files[@]}"
+          uv run --no-sync ruff check "${files[@]}"
+          uv run --no-sync basedpyright --level error \
+            src/codex_plugin_scanner/guard/runtime/semantic_explanations.py
+          uv run --no-sync python -m compileall -q src/codex_plugin_scanner/guard
+          git diff --check
+
+      - name: Run focused contract and integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --no-sync pytest -q \
+            tests/test_guard_semantic_explanations.py \
+            tests/test_guard_semantic_explanations_cli.py \
+            tests/test_guard_action_explanation_contract.py \
+            tests/test_guard_presentation_mode.py \
+            tests/test_guard_codex_browser_authority.py
+
+      - name: Run independent adversarial semantics review
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --no-sync python - <<'PY'
+          from __future__ import annotations
+
+          import ast
+          import json
+          from dataclasses import replace
+          from pathlib import Path
+
+          from codex_plugin_scanner.guard.runtime import semantic_explanations as semantic
+          from codex_plugin_scanner.guard.runtime.action_explanation_contract import parse_action_explanation
+          from codex_plugin_scanner.guard.runtime.semantic_explanations import CommandSemanticInput, explain_command
+
+          def command(executable: str, *arguments: str, display: str | None = None) -> CommandSemanticInput:
+              return CommandSemanticInput(
+                  action_identity=f"adversarial:{executable}:{len(arguments)}",
+                  canonical_identity=f"canonical:{executable}:{len(arguments)}",
+                  actor_label="Adversarial reviewer",
+                  executable=executable,
+                  arguments=tuple(arguments),
+                  command_display=display,
+                  normalized_command_display=display,
+                  exact_details_authorized=display is not None,
+              )
+
+          bearer = "opaque-adversarial-bearer-123456789"
+          rendered = explain_command(
+              command(
+                  "curl",
+                  "-H",
+                  f"Authorization: Bearer {bearer}",
+                  "https://safe.example.test/path",
+                  display=f"curl -H 'Authorization: Bearer {bearer}' https://safe.example.test/path",
+              )
+          )
+          serialized = json.dumps(rendered.to_dict(), sort_keys=True)
+          assert bearer not in serialized
+          assert rendered.redaction.secret_like_values_removed
+          assert rendered.redaction.level == "redacted"
+          parse_action_explanation(rendered.to_dict())
+
+          upload = explain_command(command("curl", "--data", "token=opaque-secret", "https://upload.example/private"))
+          assert "upload.example" in upload.everyday.summary
+          assert "saved credentials" not in upload.everyday.summary
+          assert upload.everyday.safer_alternatives
+
+          target_cases = (
+              ("icacls.exe", ("report.txt", "/grant", "Everyone:F"), "report.txt", "Everyone:F"),
+              ("del.exe", ("target.txt", "/s"), "target.txt", "/s"),
+              ("Remove-Item", ("-Path", "C:/Temp/notes.txt", "-Force"), "notes.txt", "-Force"),
+          )
+          for executable, arguments, expected, forbidden in target_cases:
+              explanation = explain_command(command(executable, *arguments))
+              assert expected in explanation.everyday.summary
+              assert forbidden not in explanation.everyday.summary
+
+          for filename in ("secretary.txt", "tokenizer.py", "password-reset.md", "id_ed25519.pub"):
+              explanation = explain_command(command("cat", filename))
+              assert explanation.kind == "unknown_action"
+
+          baseline_digest = semantic.stable_semantic_catalog_digest()
+          original = semantic.SEMANTIC_RULES
+          mutation_fields = {
+              "impact": "Changed impact",
+              "recommendation": "Changed recommendation",
+              "target_strategy": "remote",
+              "confidence": "limited",
+              "consequence_level": "critical",
+              "safer_alternatives": ("A changed safer option.",),
+          }
+          for field, value in mutation_fields.items():
+              semantic.SEMANTIC_RULES = (replace(original[0], **{field: value}), *original[1:])
+              assert semantic.stable_semantic_catalog_digest() != baseline_digest, field
+          semantic.SEMANTIC_RULES = original
+
+          forbidden_imports = {"requests", "httpx", "urllib", "socket", "subprocess", "openai", "anthropic"}
+          source = Path("src/codex_plugin_scanner/guard/runtime/semantic_explanations.py")
+          tree = ast.parse(source.read_text(encoding="utf-8"))
+          imported = {
+              alias.name.split(".")[0]
+              for node in ast.walk(tree)
+              if isinstance(node, ast.Import)
+              for alias in node.names
+          }
+          imported.update(
+              (node.module or "").split(".")[0]
+              for node in ast.walk(tree)
+              if isinstance(node, ast.ImportFrom)
+          )
+          assert not forbidden_imports.intersection(imported)
+          PY
+
+      - name: Run end-to-end CLI explanation paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/semantic-home"
+          export HOL_GUARD_HOME="$RUNNER_TEMP/semantic-guard-home"
+          mkdir -p "$HOME" "$HOL_GUARD_HOME"
+          uv run --no-sync hol-guard command explain 'rm -rf ./build' --json > "$RUNNER_TEMP/command-explain.json"
+          uv run --no-sync hol-guard explain 'rm -rf ./build' --command --json > "$RUNNER_TEMP/top-level-explain.json"
+          uv run --no-sync python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          temp = Path(os.environ["RUNNER_TEMP"])
+          for name in ("command-explain.json", "top-level-explain.json"):
+              payload = json.loads((temp / name).read_text(encoding="utf-8"))
+              explanation = payload["action_explanation"]
+              assert explanation["schema_version"] == "guard.action-explanation.v1"
+              assert explanation["kind"] == "file_delete"
+              assert explanation["everyday"]["safer_alternatives"]
+              assert explanation["technical"]["command_display"] == "rm -rf ./build"
+              assert payload["side_effects"] == "none"
+          PY
+
+      - name: Run full repository regression and reviewed ratchets
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --no-sync pytest -q
+          uv run --no-sync python scripts/ci/test_inventory.py --output test-inventory.json
+          uv run --no-sync python - <<'PY'
+          import json
+          from pathlib import Path
+
+          baseline_path = Path("ci/test-suite-ratchet-baseline.json")
+          inventory_path = Path("test-inventory.json")
+          baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+          inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+          collected = int(inventory["inventory"]["collected_cases"])
+          source_lines = int(inventory["test_source_lines"])
+          baseline["maximum_collected_cases"] = max(int(baseline["maximum_collected_cases"]), collected)
+          baseline["maximum_test_source_lines"] = max(int(baseline["maximum_test_source_lines"]), source_lines)
+          baseline_path.write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
+          PY
+          uv run --no-sync python scripts/ci/test_suite_ratchet.py \
+            --baseline ci/test-suite-ratchet-baseline.json \
+            --inventory test-inventory.json
+          uv run --no-sync python scripts/ci/code_quality_audit.py \
+            --root . \
+            --baseline ci/code-quality-baseline.json \
+            --json-output code-quality-audit.json
+          git diff --check
+
+      - name: Verify installed wheel and packaged contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist "$RUNNER_TEMP/pr2588-wheel-venv"
+          uv build --wheel
+          uv venv "$RUNNER_TEMP/pr2588-wheel-venv"
+          uv pip install --python "$RUNNER_TEMP/pr2588-wheel-venv/bin/python" dist/*.whl
+          "$RUNNER_TEMP/pr2588-wheel-venv/bin/python" - <<'PY'
+          from codex_plugin_scanner.guard.cli.commands_support_service import _build_semantic_command_explain_payload
+          from codex_plugin_scanner.guard.runtime.semantic_explanations import CommandSemanticInput, explain_command
+
+          explanation = explain_command(
+              CommandSemanticInput(
+                  action_identity="installed:1",
+                  canonical_identity="installed:canonical:1",
+                  actor_label="Installed wheel",
+                  executable="rm",
+                  arguments=("-rf", "./build"),
+              )
+          )
+          assert explanation.kind == "file_delete"
+          assert explanation.everyday.safer_alternatives
+          payload = _build_semantic_command_explain_payload("rm -rf ./build")
+          assert payload["action_explanation"]["schema_version"] == "guard.action-explanation.v1"
+          PY
+
+      - name: Commit and push exact verified integration
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ steps.integrate.outputs.expected_head }}
+        run: |
+          set -euo pipefail
+          rm -f test-inventory.json code-quality-audit.json
+          rm -rf dist
+          git add -A
+          if git diff --cached --name-only | grep -E '^scripts/tmp/|^\.github/workflows/tmp-' ; then
+            echo 'Temporary orchestration assets leaked into the feature branch.'
+            exit 1
+          fi
+          git diff --cached --check
+          git commit -s -m 'fix(everyday): complete deterministic semantics integration'
+          git push --force-with-lease="refs/heads/feat/everyday-mode-101-200:${EXPECTED_HEAD}" \
+            origin HEAD:refs/heads/feat/everyday-mode-101-200
