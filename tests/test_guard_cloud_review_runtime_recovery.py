@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 
 from codex_plugin_scanner.guard.runtime import cloud_review_sync, command_queue
+from codex_plugin_scanner.guard.runtime.command_capability import issue_command_capability
+from codex_plugin_scanner.guard.runtime.command_executors import SUPPORTED_COMMAND_OPERATIONS
 from codex_plugin_scanner.guard.store import GuardStore
 from tests.guard_cloud_review_hardening_support import exact_job_store, harness_context, sync_auth
 
@@ -64,6 +66,11 @@ def test_command_lease_refreshes_oauth_once_and_uses_new_token_for_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, job = exact_job_store(tmp_path, request_id="oauth-command-lease")
+    issue_command_capability(
+        store,
+        operations=("guard.packageShims.status",),
+        supported_operations=SUPPORTED_COMMAND_OPERATIONS,
+    )
     calls: list[tuple[str, str]] = []
     refreshes: list[bool] = []
 
@@ -91,6 +98,11 @@ def test_command_lease_refreshes_oauth_once_and_uses_new_token_for_job(
         }
 
     monkeypatch.setattr(command_queue, "_exact_json_request", request)
+    monkeypatch.setattr(
+        command_queue,
+        "_json_request",
+        lambda *_args, **_kwargs: pytest.fail("an exact-route 401 must refresh before generic fallback"),
+    )
     monkeypatch.setattr(command_queue, "_resolve_command_queue_auth_context", resolve)
 
     status = command_queue.poll_command_queue_once(store, harness_context(tmp_path))
