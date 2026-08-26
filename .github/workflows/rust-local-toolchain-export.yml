@@ -1,0 +1,33 @@
+name: Rust local toolchain export
+
+on:
+  pull_request:
+    branches: [release/3.0]
+    paths:
+      - ".github/workflows/rust-local-toolchain-export.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.88.0
+          rustc --version
+          cargo --version
+      - name: Package Linux toolchain
+        run: |
+          TOOLCHAIN=$(rustup which rustc | sed 's#/bin/rustc$##')
+          tar -C "$(dirname "$TOOLCHAIN")" -czf /tmp/rust-1.88.0-x86_64-unknown-linux-gnu.tar.gz "$(basename "$TOOLCHAIN")"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rust-1.88.0-linux-toolchain
+          path: /tmp/rust-1.88.0-x86_64-unknown-linux-gnu.tar.gz
+          if-no-files-found: error
+          retention-days: 1
