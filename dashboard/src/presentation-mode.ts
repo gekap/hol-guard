@@ -55,15 +55,18 @@ export function resolvePresentationMode(input: {
   }
   if (input.value === "everyday" || input.value === "technical") {
     if (input.explicit === true) return resolved(input.value, "local-explicit", true);
-  } else if (typeof input.value === "string" && LEGACY[input.value]) {
+    return resolved(input.value, "default", false);
+  }
+  if (typeof input.value === "string" && LEGACY[input.value]) {
     return resolved(LEGACY[input.value], "migrated", true, `migrated_legacy_${input.value}_presentation_mode`);
-  } else if (input.value !== undefined && input.value !== null && input.value !== "") {
+  }
+  if (input.value !== undefined && input.value !== null && input.value !== "") {
     return resolved("everyday", "default", false, "unknown_presentation_mode_fell_back_to_everyday");
   }
   if (input.cloudProfile === "everyday" || input.cloudProfile === "technical") {
     return resolved(input.cloudProfile, "cloud-profile", false);
   }
-  return resolved(input.value === "technical" ? "technical" : "everyday", "default", false);
+  return resolved("everyday", "default", false);
 }
 
 export type TechnicalDisclosureState = { open: boolean; source: "mode-default" | "user" | "required" };
