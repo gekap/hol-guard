@@ -1,6 +1,7 @@
 # Rust Authority Migration Batch 1: Tasks T001-T100
 
 Base branch: `release/3.0`
+Pinned source base: `9bf7da1aa1dea9c18c10bfa26cbb4f23be540754`
 
 Invariant: supported `PreToolUse` decisions are produced only by the Rust runtime. Python may transport or render a native result but may not parse, classify, lower, replace, or synthesize the semantic decision. There is no `strict` mode. Rust is the default authority, and native failure fails closed.
 
