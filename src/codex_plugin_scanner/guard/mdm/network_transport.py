@@ -290,10 +290,22 @@ def managed_urlopen(
 
 
 class _ManagedHTTPAdapter(HTTPAdapter):
-    def __init__(self, context: ssl.SSLContext | None, proxy_authorization: str | None) -> None:
+    def __init__(
+        self,
+        context: ssl.SSLContext | None,
+        proxy_authorization: str | None,
+        policy: ManagedNetworkPolicy,
+    ) -> None:
         self._managed_context = context
         self._proxy_authorization = proxy_authorization
+        self._managed_policy = policy
         super().__init__()
+
+    def add_headers(self, request: requests.PreparedRequest, **kwargs: object) -> None:
+        del kwargs
+        if request.url is None:
+            raise ManagedNetworkError("managed_destination_missing")
+        validate_destination(request.url, self._managed_policy)
 
     def init_poolmanager(
         self,
@@ -336,9 +348,8 @@ def managed_requests_session(policy: ManagedNetworkPolicy | None = None) -> requ
             credentials = load_proxy_credentials(selected)
             if credentials is not None:
                 proxy_authorization = basic_proxy_authorization(credentials)
-    if context is not None or proxy_authorization is not None:
-        session.mount("http://", _ManagedHTTPAdapter(context, proxy_authorization))
-        session.mount("https://", _ManagedHTTPAdapter(context, proxy_authorization))
+    session.mount("http://", _ManagedHTTPAdapter(context, proxy_authorization, resolved))
+    session.mount("https://", _ManagedHTTPAdapter(context, proxy_authorization, resolved))
     session.verify = True
     return session
 

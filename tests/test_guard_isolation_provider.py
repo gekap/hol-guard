@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
+from codex_plugin_scanner.guard.runtime import isolation_provider as isolation_provider_module
 from codex_plugin_scanner.guard.runtime.execution_assurance_contract import (
     AtomicGuarantee,
     AtomicGuaranteeKind,
@@ -71,6 +74,14 @@ class _FakeProvider:
         return None
 
 
+def _registry(*, artifact_digest: str = _SHA) -> ProviderRegistry:
+    return ProviderRegistry(artifact_digest_resolver=lambda _path: artifact_digest)
+
+
+def _register(registry: ProviderRegistry, provider: _FakeProvider, path: str) -> ProviderIdentity:
+    return registry.register(provider, configured_path=path, trust_anchor=provider.identity())
+
+
 class TestProtocolConformance:
     def test_fake_provider_satisfies_protocol(self) -> None:
         assert isinstance(_FakeProvider(), IsolationProvider)
@@ -117,38 +128,54 @@ class TestPlanInputValidation:
 
 class TestProviderRegistry:
     def test_registers_guard_owned_path(self) -> None:
-        registry = ProviderRegistry()
-        identity = registry.register(_FakeProvider(), configured_path="/usr/libexec/hol-guard/providers/seatbelt")
+        registry = _registry()
+        identity = _register(registry, _FakeProvider(), "/usr/libexec/hol-guard/providers/seatbelt")
         assert identity.provider_kind == "local-seatbelt"
 
     def test_rejects_workspace_path(self) -> None:
-        registry = ProviderRegistry()
+        registry = _registry()
         with pytest.raises(ValueError, match="outside the Guard-owned provider root"):
-            registry.register(_FakeProvider(), configured_path="/home/user/project/.guard/provider")
+            _register(registry, _FakeProvider(), "/home/user/project/.guard/provider")
 
     def test_rejects_relative_path(self) -> None:
-        registry = ProviderRegistry()
+        registry = _registry()
         with pytest.raises(ValueError, match="outside the Guard-owned provider root"):
-            registry.register(_FakeProvider(), configured_path="providers/seatbelt")
+            _register(registry, _FakeProvider(), "providers/seatbelt")
 
     def test_rejects_non_guard_root(self) -> None:
         with pytest.raises(ValueError, match="Guard-owned system path"):
             ProviderRegistry(provider_root="/home/user/providers")
 
     def test_identity_thumbprint_lookup(self) -> None:
-        registry = ProviderRegistry()
+        registry = _registry()
         provider = _FakeProvider()
-        identity = registry.register(provider, configured_path="/usr/libexec/hol-guard/providers/seatbelt")
+        identity = _register(registry, provider, "/usr/libexec/hol-guard/providers/seatbelt")
         assert registry.get(identity.thumbprint()) is provider
 
     def test_rejects_thumbprint_collision_with_distinct_provider(self) -> None:
-        registry = ProviderRegistry()
+        registry = _registry()
         first = _FakeProvider()
-        identity = registry.register(first, configured_path="/usr/libexec/hol-guard/providers/seatbelt")
+        identity = _register(registry, first, "/usr/libexec/hol-guard/providers/seatbelt")
         other = _FakeProvider()
         with pytest.raises(ValueError, match="thumbprint collision"):
-            registry.register(other, configured_path="/usr/libexec/hol-guard/providers/seatbelt")
+            _register(registry, other, "/usr/libexec/hol-guard/providers/seatbelt")
         assert registry.get(identity.thumbprint()) is first
+
+    def test_rejects_untrusted_identity(self) -> None:
+        provider = _FakeProvider()
+        registry = _registry()
+        untrusted = _FakeProvider(kind="other-provider").identity()
+        with pytest.raises(ValueError, match="configured trust anchor"):
+            registry.register(
+                provider,
+                configured_path="/usr/libexec/hol-guard/providers/seatbelt",
+                trust_anchor=untrusted,
+            )
+
+    def test_rejects_artifact_digest_mismatch(self) -> None:
+        provider = _FakeProvider()
+        with pytest.raises(ValueError, match="artifact digest"):
+            _register(_registry(artifact_digest=_OTHER), provider, "/usr/libexec/hol-guard/providers/seatbelt")
 
 
 class TestProviderHealth:
@@ -158,9 +185,21 @@ class TestProviderHealth:
 
 
 def test_registry_rejects_traversal_escape() -> None:
-    registry = ProviderRegistry()
+    registry = _registry()
     with __import__("pytest").raises(ValueError, match="outside the Guard-owned provider root"):
-        registry.register(_FakeProvider(), configured_path="/usr/libexec/hol-guard/providers/../evil/bin")
+        _register(registry, _FakeProvider(), "/usr/libexec/hol-guard/providers/../evil/bin")
+
+
+def test_artifact_digest_reader_rejects_symlinks(tmp_path) -> None:
+    artifact = tmp_path / "provider"
+    artifact.write_bytes(b"trusted-provider")
+    expected = hashlib.sha256(b"trusted-provider").hexdigest()
+    assert isolation_provider_module._sha256_regular_file(artifact) == expected
+
+    link = tmp_path / "provider-link"
+    link.symlink_to(artifact)
+    with pytest.raises(ValueError, match="missing or unreadable"):
+        isolation_provider_module._sha256_regular_file(link)
 
 
 def test_plan_rejects_additional_vcs_names() -> None:

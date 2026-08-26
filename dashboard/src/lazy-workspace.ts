@@ -80,11 +80,14 @@ export async function loadWorkspaceModule<T>(
       throw error;
     }
     const storage = options.storage;
-    if (!storage || storageGet(storage, CHUNK_RELOAD_STORAGE_KEY) === "1") {
+    const failureFingerprint = error instanceof Error ? error.message : String(error);
+    if (!storage || storageGet(storage, CHUNK_RELOAD_STORAGE_KEY) === failureFingerprint) {
       throw error;
     }
-    // Keep this flag for the tab so a nested child chunk cannot reload forever after a parent load succeeds.
-    if (!storageSet(storage, CHUNK_RELOAD_STORAGE_KEY, "1")) {
+    // Scope the marker to this exact stale chunk failure. The same document and
+    // chunk set cannot loop, while a later deployment with a different failed
+    // chunk retains its one recovery attempt in the same tab.
+    if (!storageSet(storage, CHUNK_RELOAD_STORAGE_KEY, failureFingerprint)) {
       throw error;
     }
     const wait = options.wait ?? defaultWait;

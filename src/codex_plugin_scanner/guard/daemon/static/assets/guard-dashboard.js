@@ -30272,10 +30272,11 @@ async function loadWorkspaceModule(loader, options = {}) {
       throw error;
     }
     const storage = options.storage;
-    if (!storage || storageGet(storage, CHUNK_RELOAD_STORAGE_KEY) === "1") {
+    const failureFingerprint = error instanceof Error ? error.message : String(error);
+    if (!storage || storageGet(storage, CHUNK_RELOAD_STORAGE_KEY) === failureFingerprint) {
       throw error;
     }
-    if (!storageSet(storage, CHUNK_RELOAD_STORAGE_KEY, "1")) {
+    if (!storageSet(storage, CHUNK_RELOAD_STORAGE_KEY, failureFingerprint)) {
       throw error;
     }
     const wait = options.wait ?? defaultWait;

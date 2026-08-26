@@ -152,7 +152,7 @@ class WebhookBackend(NotificationBackend):
 
 
 def _managed_post(url: str, *, payload: Mapping[str, object], timeout: int) -> requests.Response:
-    return managed_requests_session().post(url, json=payload, timeout=timeout)
+    return managed_requests_session().post(url, json=json.loads(json.dumps(payload)), timeout=timeout)
 
 
 def _parse_pending_request(data: dict[str, Any]) -> PendingRequest | None:

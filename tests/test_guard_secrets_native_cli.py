@@ -203,6 +203,26 @@ def test_precommit_install_refuses_custom_hooks_path(tmp_path: Path) -> None:
         install_precommit_hook(tmp_path)
 
 
+def test_precommit_install_rejects_symlinked_hooks_directory(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    hooks = tmp_path / ".git" / "hooks"
+    preserved_hooks = tmp_path / ".git" / "hooks-original"
+    hooks.rename(preserved_hooks)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        hooks.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    with pytest.raises(ValueError, match="real trusted directory"):
+        install_precommit_hook(tmp_path)
+    with pytest.raises(ValueError, match="real trusted directory"):
+        uninstall_precommit_hook(tmp_path)
+
+    assert list(outside.iterdir()) == []
+
+
 def test_precommit_uninstall_does_not_remove_foreign_hook(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     hook = tmp_path / ".git" / "hooks" / "pre-commit"

@@ -12,6 +12,11 @@ is one fenced attempt returning a :class:`TerminalStatement`.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import os
+import stat
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol, runtime_checkable
@@ -141,23 +146,45 @@ class ProviderRegistry:
 
     _provider_root: str
     _providers: dict[str, IsolationProvider]
+    _artifact_digest_resolver: Callable[[Path], str]
 
-    def __init__(self, *, provider_root: str = _PROVIDER_PATH_ROOT) -> None:
-        if not provider_root.startswith("/usr/") and not provider_root.startswith("/opt/hol-guard/"):
+    def __init__(
+        self,
+        *,
+        provider_root: str = _PROVIDER_PATH_ROOT,
+        artifact_digest_resolver: Callable[[Path], str] | None = None,
+    ) -> None:
+        resolved_root = str(Path(provider_root).expanduser().resolve(strict=False))
+        if not resolved_root.startswith("/usr/") and not resolved_root.startswith("/opt/hol-guard/"):
             raise ValueError("provider root must be a Guard-owned system path")
-        self._provider_root = provider_root
+        self._provider_root = resolved_root
         self._providers = {}
+        self._artifact_digest_resolver = artifact_digest_resolver or _sha256_regular_file
 
-    def register(self, provider: IsolationProvider, *, configured_path: str) -> ProviderIdentity:
+    def register(
+        self,
+        provider: IsolationProvider,
+        *,
+        configured_path: str,
+        trust_anchor: ProviderIdentity,
+    ) -> ProviderIdentity:
         """Register a provider only if its path and digest are pinned and trusted."""
 
         # Normalize so a `..` or `.` traversal cannot escape the provider root
         # while still lexically starting with it.
         root = str(Path(self._provider_root).expanduser().resolve(strict=False))
-        normalized = str(Path(configured_path).expanduser().resolve(strict=False))
+        configured = Path(configured_path).expanduser()
+        normalized = str(configured.resolve(strict=False))
         if normalized != root and not normalized.startswith(root + "/"):
             raise ValueError("provider path is outside the Guard-owned provider root")
+        if _path_has_symlink_below_root(configured, Path(root)):
+            raise ValueError("provider artifact path must not contain symlinks")
         identity = provider.identity()
+        if identity != trust_anchor:
+            raise ValueError("provider identity does not match the configured trust anchor")
+        actual_digest = self._artifact_digest_resolver(Path(normalized))
+        if not hmac.compare_digest(actual_digest, trust_anchor.binary_or_image_digest):
+            raise ValueError("provider artifact digest does not match the configured trust anchor")
         key = identity.thumbprint()
         existing = self._providers.get(key)
         if existing is not None and existing is not provider:
@@ -170,6 +197,39 @@ class ProviderRegistry:
 
     def providers(self) -> tuple[IsolationProvider, ...]:
         return tuple(self._providers.values())
+
+
+def _sha256_regular_file(path: Path) -> str:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as error:
+        raise ValueError("provider artifact is missing or unreadable") from error
+    try:
+        with os.fdopen(descriptor, "rb") as artifact:
+            metadata = os.fstat(artifact.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("provider artifact must be a regular non-symlink file")
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as error:
+        raise ValueError("provider artifact is missing or unreadable") from error
+    return digest.hexdigest()
+
+
+def _path_has_symlink_below_root(path: Path, root: Path) -> bool:
+    lexical = path.absolute()
+    while lexical != root:
+        try:
+            if lexical.is_symlink():
+                return True
+        except OSError:
+            return True
+        parent = lexical.parent
+        if parent == lexical:
+            break
+        lexical = parent
+    return False
 
 
 __all__ = [
