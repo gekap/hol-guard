@@ -1,0 +1,206 @@
+name: Rust authority candidate recovery
+
+on:
+  push:
+    branches: [fix/rust-authority-batch-1]
+    paths:
+      - ".github/workflows/rust-authority-candidate-recovery.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: rust-authority-end-to-end-rescue
+  cancel-in-progress: true
+
+jobs:
+  select-proven-native-foundation:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: fix/rust-authority-batch-1
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: fix/rust-authority-batch-1
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: "0.9.26"
+          enable-cache: true
+      - run: uv sync --frozen --extra dev --python 3.12
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.88.0
+      - name: Evaluate prior Rust migration candidates in isolated worktrees
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin release/3.0 \
+            feat/rust-safety-kernel-integration-final \
+            feat/rust-safety-kernel-pretool-completion-v2 \
+            feat/rust-safety-kernel-pretool-completion \
+            automation/rust-p1-p2-end-to-end \
+            feat/rust-p1-p2-native-core \
+            feat/rust-p0-native-core-final-v5 || true
+          candidates=(
+            152cddf4c07db198772a8df792bc2aaa54430895
+            8f902c06dc57cb7d2973c1a06b6d2483fb5d499c
+            02f31dd99d4ffd2091f17bac971bddcd8ecd7b35
+            97a5180646158ec9a7c00d889556f5da01e94a07
+            92d0767cbea98e9fbce14f8eaacc3d32131b9864
+          )
+          base=origin/release/3.0
+          selected=""
+          selected_dir=""
+          report=/tmp/native-candidate-report.txt
+          : > "$report"
+          for candidate in "${candidates[@]}"; do
+            if ! git cat-file -e "$candidate^{commit}" 2>/dev/null; then
+              echo "$candidate unavailable" >> "$report"
+              continue
+            fi
+            work=/tmp/native-candidate-${candidate:0:8}
+            rm -rf "$work"
+            git worktree add --detach "$work" "$base" >/dev/null
+            merge_base=$(git merge-base "$base" "$candidate")
+            mapfile -t files < <(git diff --name-only "$merge_base" "$candidate" -- \
+              rust \
+              src/codex_plugin_scanner/guard/native_runtime.py \
+              src/codex_plugin_scanner/guard/native_runtime_resident.py \
+              src/codex_plugin_scanner/guard/native_runtime_resilience.py \
+              src/codex_plugin_scanner/guard/native_runtime_admission.py \
+              src/codex_plugin_scanner/guard/native_command_model.py \
+              src/codex_plugin_scanner/guard/daemon/hook_worker.py \
+              src/codex_plugin_scanner/guard/codex_hook_launch_runtime.py \
+              ci/native_runtime \
+              scripts/bench_guard_native_full_path.py \
+              scripts/bench_guard_native_release_gate.py \
+              .github/workflows/rust-runtime.yml \
+              .github/workflows/rust-runtime-differential.yml \
+              .github/workflows/rust-runtime-performance.yml)
+            for file in "${files[@]}"; do
+              if git cat-file -e "$candidate:$file" 2>/dev/null; then
+                mkdir -p "$work/$(dirname "$file")"
+                git show "$candidate:$file" > "$work/$file"
+              else
+                rm -f "$work/$file"
+              fi
+            done
+            (
+              set -e
+              cd "$work"
+              if ! grep -R -E "pre.?tool.*(authority|decision)|PreToolDecision|pretool --stdin" rust src/codex_plugin_scanner/guard 2>/dev/null | head -1 >/dev/null; then
+                exit 10
+              fi
+              cargo fmt --manifest-path rust/Cargo.toml --all
+              cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets -- -D warnings
+              VERSION=$("$GITHUB_WORKSPACE/.venv/bin/python" "$work/scripts/sync_repo_version.py" --check)
+              export HOL_GUARD_PACKAGE_VERSION="$VERSION"
+              export HOL_GUARD_BUILD_SHA="$candidate"
+              cargo build --manifest-path rust/Cargo.toml --locked --release -p hol-guard-runtime
+              runtime=rust/target/release/hol-guard-runtime
+              "$runtime" self-test --json
+              mapfile -t native_tests < <(find ci/native_runtime tests -type f \( -iname '*pretool*.py' -o -iname '*pre_tool*.py' -o -iname '*native_runtime_binary*.py' -o -iname '*native_runtime_resident*.py' \) 2>/dev/null | sort -u)
+              if test "${#native_tests[@]}" -eq 0; then
+                exit 11
+              fi
+              HOL_GUARD_NATIVE=force HOL_GUARD_NATIVE_BINARY="$work/$runtime" \
+                "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest "${native_tests[@]}" --tb=short
+              if grep -R -n -E "PreToolUse" src/codex_plugin_scanner/guard/native*.py src/codex_plugin_scanner/guard/daemon/hook_worker.py 2>/dev/null \
+                | grep -E "evaluate_command|HookReviewEngine|self\.engine\.review"; then
+                exit 12
+              fi
+            ) >> "$report" 2>&1 && {
+              selected="$candidate"
+              selected_dir="$work"
+              echo "SELECTED $candidate" >> "$report"
+              break
+            }
+            echo "REJECTED $candidate" >> "$report"
+          done
+          cat "$report"
+          if test -n "$selected"; then
+            echo "$selected" > /tmp/selected-native-candidate
+            echo "$selected_dir" > /tmp/selected-native-dir
+          else
+            echo "No prior candidate passed the current compiler, real-process, and no-Python-fallback gates." >> "$report"
+          fi
+      - name: Adopt a selected candidate only when all gates passed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! test -s /tmp/selected-native-candidate; then
+            exit 0
+          fi
+          candidate=$(cat /tmp/selected-native-candidate)
+          work=$(cat /tmp/selected-native-dir)
+          git fetch origin "$BRANCH" release/3.0
+          git checkout -B "$BRANCH" origin/release/3.0
+          for prefix in \
+            rust \
+            src/codex_plugin_scanner/guard/native_runtime.py \
+            src/codex_plugin_scanner/guard/native_runtime_resident.py \
+            src/codex_plugin_scanner/guard/native_runtime_resilience.py \
+            src/codex_plugin_scanner/guard/native_runtime_admission.py \
+            src/codex_plugin_scanner/guard/native_command_model.py \
+            src/codex_plugin_scanner/guard/daemon/hook_worker.py \
+            src/codex_plugin_scanner/guard/codex_hook_launch_runtime.py \
+            ci/native_runtime \
+            .github/workflows/rust-runtime.yml \
+            .github/workflows/rust-runtime-differential.yml \
+            .github/workflows/rust-runtime-performance.yml; do
+            if test -e "$work/$prefix"; then
+              rm -rf "$prefix"
+              mkdir -p "$(dirname "$prefix")"
+              cp -a "$work/$prefix" "$prefix"
+            fi
+          done
+          mkdir -p docs/guard
+          cat > docs/guard/rust-native-candidate-foundation.md <<EOF
+          # Selected Native Authority Foundation
+
+          The migration recovery gate selected commit \`$candidate\` only after
+          compiling it against the current release/3.0 tree and passing its
+          available real-process native PreToolUse and resident integration tests.
+          This selection is a foundation, not a waiver of the T001-T220 source,
+          adversarial, cross-platform, review, and release gates.
+          EOF
+          sed -i 's/^          //' docs/guard/rust-native-candidate-foundation.md
+          git add -A
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(rust): adopt proven native authority foundation"
+          git push --force-with-lease origin HEAD:"$BRANCH"
+      - name: Restart the reviewed end-to-end rescue from the selected or current foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+          commit=$(git rev-list -1 HEAD -- .github/workflows/rust-authority-end-to-end-rescue.yml)
+          if test -n "$commit" && git cat-file -e "$commit:.github/workflows/rust-authority-end-to-end-rescue.yml" 2>/dev/null; then
+            mkdir -p .github/workflows
+            git show "$commit:.github/workflows/rust-authority-end-to-end-rescue.yml" > .github/workflows/rust-authority-end-to-end-rescue.yml
+          else
+            echo "End-to-end rescue workflow is unavailable" >&2
+            exit 1
+          fi
+          printf '\n# recovery-trigger: %s\n' "$(date -u +%s)" >> .github/workflows/rust-authority-end-to-end-rescue.yml
+          git add .github/workflows/rust-authority-end-to-end-rescue.yml
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "ci(rust): resume end-to-end authority migration"
+          git push origin HEAD:"$BRANCH"
