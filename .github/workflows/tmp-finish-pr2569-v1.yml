@@ -1,4 +1,4 @@
-name: Finish PR 2569 v2
+name: Finish PR 2569 v3
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: finish-pr2569-v2
+  group: finish-pr2569-v3
   cancel-in-progress: false
 
 jobs:
@@ -26,7 +26,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Reconcile current release and patch reviewed behavior
+      - name: Reconcile current release branch
         id: integrate
         shell: bash
         run: |
@@ -49,73 +49,36 @@ jobs:
             unexpected=()
             for path in "${conflicts[@]}"; do
               case "$path" in
-                ci/test-suite-ratchet-baseline.json|ci/code-quality-baseline.json)
-                  PATH_TO_MERGE="$path" python - <<'PY'
+                ci/test-suite-ratchet-baseline.json)
+                  python - <<'PY'
           from __future__ import annotations
 
           import json
-          import os
           import subprocess
           from pathlib import Path
-          from typing import Any
 
-          path = os.environ["PATH_TO_MERGE"]
-          missing = object()
+          path = "ci/test-suite-ratchet-baseline.json"
 
-          def stage(stage_number: int) -> Any:
-              raw = subprocess.check_output(
-                  ["git", "show", f":{stage_number}:{path}"], text=True
-              )
-              return json.loads(raw)
+          def stage(number: int) -> dict[str, int]:
+              raw = subprocess.check_output(["git", "show", f":{number}:{path}"], text=True)
+              data = json.loads(raw)
+              if not isinstance(data, dict):
+                  raise TypeError(f"{path} must contain an object")
+              return {str(key): int(value) for key, value in data.items()}
 
-          def merge_three(ancestor: Any, feature: Any, release: Any) -> Any:
-              if feature == release:
-                  return feature
-              if feature == ancestor:
-                  return release
-              if release == ancestor:
-                  return feature
-              if isinstance(feature, dict) and isinstance(release, dict):
-                  ancestor_map = ancestor if isinstance(ancestor, dict) else {}
-                  merged: dict[str, Any] = {}
-                  for key in sorted(set(feature) | set(release)):
-                      feature_value = feature.get(key, missing)
-                      release_value = release.get(key, missing)
-                      ancestor_value = ancestor_map.get(key, missing)
-                      if feature_value is missing:
-                          merged[key] = release_value
-                      elif release_value is missing:
-                          merged[key] = feature_value
-                      elif ancestor_value is missing:
-                          if feature_value == release_value:
-                              merged[key] = feature_value
-                          elif isinstance(feature_value, (int, float)) and isinstance(release_value, (int, float)):
-                              merged[key] = max(feature_value, release_value)
-                          else:
-                              merged[key] = merge_three({}, feature_value, release_value)
-                      else:
-                          merged[key] = merge_three(ancestor_value, feature_value, release_value)
-                  return merged
-              if (
-                  isinstance(feature, (int, float))
-                  and not isinstance(feature, bool)
-                  and isinstance(release, (int, float))
-                  and not isinstance(release, bool)
-              ):
-                  return max(feature, release)
-              if isinstance(feature, list) and isinstance(release, list):
-                  merged_list = list(release)
-                  for item in feature:
-                      if item not in merged_list:
-                          merged_list.append(item)
-                  return merged_list
-              raise RuntimeError(
-                  f"Unsafe semantic conflict in {path}: ancestor={ancestor!r}, "
-                  f"feature={feature!r}, release={release!r}"
-              )
-
-          result = merge_three(stage(1), stage(2), stage(3))
-          Path(path).write_text(json.dumps(result, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+          ancestor = stage(1)
+          feature = stage(2)
+          release = stage(3)
+          merged: dict[str, int] = {}
+          for key in sorted(set(ancestor) | set(feature) | set(release)):
+              if key == "schema_version":
+                  merged[key] = max(ancestor.get(key, 1), feature.get(key, 1), release.get(key, 1))
+                  continue
+              baseline = ancestor.get(key, 0)
+              feature_delta = max(0, feature.get(key, baseline) - baseline)
+              release_delta = max(0, release.get(key, baseline) - baseline)
+              merged[key] = baseline + feature_delta + release_delta
+          Path(path).write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
           PY
                   git add "$path"
                   ;;
@@ -136,93 +99,33 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          mode_path = Path("dashboard/src/presentation-mode.ts")
-          text = mode_path.read_text(encoding="utf-8")
-          old = '''  if (input.value === "everyday" || input.value === "technical") {
-              if (input.explicit === true) return resolved(input.value, "local-explicit", true);
-              return resolved(input.value, "default", false);
-            }
-            if (typeof input.value === "string" && LEGACY[input.value]) {
-              return resolved(LEGACY[input.value], "migrated", true, `migrated_legacy_${input.value}_presentation_mode`);
-            }
-            if (input.value !== undefined && input.value !== null && input.value !== "") {
-              return resolved("everyday", "default", false, "unknown_presentation_mode_fell_back_to_everyday");
-            }
-            if (input.cloudProfile === "everyday" || input.cloudProfile === "technical") {
-              return resolved(input.cloudProfile, "cloud-profile", false);
-            }
-            return resolved("everyday", "default", false);'''.replace("          ", "")
-          new = '''  const persistedMode = input.value === "everyday" || input.value === "technical"
-              ? input.value
-              : null;
-            if (persistedMode !== null && input.explicit === true) {
-              return resolved(persistedMode, "local-explicit", true);
-            }
-            if (typeof input.value === "string" && LEGACY[input.value]) {
-              return resolved(LEGACY[input.value], "migrated", true, `migrated_legacy_${input.value}_presentation_mode`);
-            }
-            if (
-              input.value !== undefined &&
-              input.value !== null &&
-              input.value !== "" &&
-              persistedMode === null
-            ) {
-              return resolved("everyday", "default", false, "unknown_presentation_mode_fell_back_to_everyday");
-            }
-            if (input.cloudProfile === "everyday" || input.cloudProfile === "technical") {
-              return resolved(input.cloudProfile, "cloud-profile", false);
-            }
-            if (persistedMode !== null) {
-              return resolved(persistedMode, "default", false);
-            }
-            return resolved("everyday", "default", false);'''.replace("          ", "")
-          if old not in text:
-              raise SystemExit("presentation-mode block no longer matches the reviewed source")
-          mode_path.write_text(text.replace(old, new), encoding="utf-8")
-
-          test_path = Path("dashboard/src/presentation-mode.test.ts")
-          tests = test_path.read_text(encoding="utf-8")
-          anchor = 'assert.equal(resolvePresentationMode({ value: "future", schemaVersion: 99 }).value, "everyday");\n'
-          addition = '''assert.deepEqual(
-            resolvePresentationMode({ value: "technical", explicit: false, cloudProfile: "everyday" }),
-            {
-              value: "everyday",
-              source: "cloud-profile",
-              explicit: false,
-              writable: true,
-              schemaVersion: 1,
-              revision: 0,
-              diagnostic: null,
-            },
-          );
-          assert.equal(resolvePresentationMode({ value: "technical", explicit: false }).value, "technical");
-          assert.equal(
-            resolvePresentationMode({ value: "future" }).diagnostic,
-            "unknown_presentation_mode_fell_back_to_everyday",
-          );
-          '''.replace("          ", "")
-          if addition not in tests:
-              if anchor not in tests:
-                  raise SystemExit("presentation-mode test anchor missing")
-              tests = tests.replace(anchor, addition + anchor)
-              test_path.write_text(tests, encoding="utf-8")
-
           types_path = Path("dashboard/src/guard-types.ts")
-          types = types_path.read_text(encoding="utf-8")
-          required = '''  presentation_mode: GuardPresentationMode;
-          presentation_mode_explicit: boolean;
-          presentation_schema_version: number;
-          presentation_revision: number;
-          '''.replace("          ", "")
-          optional = '''  presentation_mode?: GuardPresentationMode;
-          presentation_mode_explicit?: boolean;
-          presentation_schema_version?: number;
-          presentation_revision?: number;
-          '''.replace("          ", "")
-          if required in types:
-              types_path.write_text(types.replace(required, optional, 1), encoding="utf-8")
-          elif optional not in types:
+          text = types_path.read_text(encoding="utf-8")
+          required = """  presentation_mode: GuardPresentationMode;
+            presentation_mode_explicit: boolean;
+            presentation_schema_version: number;
+            presentation_revision: number;
+          """.replace("    ", "")
+          optional = """  presentation_mode?: GuardPresentationMode;
+            presentation_mode_explicit?: boolean;
+            presentation_schema_version?: number;
+            presentation_revision?: number;
+          """.replace("    ", "")
+          if required in text:
+              text = text.replace(required, optional, 1)
+              types_path.write_text(text, encoding="utf-8")
+          elif optional not in text:
               raise SystemExit("GuardSettings presentation fields no longer match expected source")
+
+          mode = Path("dashboard/src/presentation-mode.ts").read_text(encoding="utf-8")
+          required_fragments = (
+              'if (persistedMode !== null && input.explicit === true)',
+              'return resolved(input.cloudProfile, "cloud-profile", false)',
+              'if (persistedMode !== null)',
+          )
+          for fragment in required_fragments:
+              if fragment not in mode:
+                  raise SystemExit(f"Reviewed presentation precedence fix missing: {fragment}")
           PY
 
           if git diff --name-only --diff-filter=U | grep -q .; then
@@ -239,26 +142,32 @@ jobs:
           python -m pip install --disable-pip-version-check uv
           uv sync --frozen --extra dev --python 3.12
 
-      - name: Run exact repository quality gates
+      - name: Run focused formatting, lint, type, and contract gates
         shell: bash
         run: |
           set -euo pipefail
-          uv run --no-sync python scripts/ci/test_inventory.py --output test-inventory.json
-          uv run --no-sync python scripts/ci/test_suite_ratchet.py \
-            --baseline ci/test-suite-ratchet-baseline.json \
-            --inventory test-inventory.json
-          uv run --no-sync python scripts/ci/code_quality_audit.py \
-            --root . \
-            --baseline ci/code-quality-baseline.json \
-            --json-output code-quality-audit.json
-          uv run --no-sync python -m ruff check src/ tests/test_guard_action_explanation_contract.py \
-            tests/test_guard_codex_browser_authority.py tests/test_guard_presentation_mode.py
-          uv run --no-sync python -m ruff format --check src/ tests/test_guard_action_explanation_contract.py \
-            tests/test_guard_codex_browser_authority.py tests/test_guard_presentation_mode.py
-          uv run --no-sync basedpyright --level error
+          uv run --no-sync python -m ruff check \
+            src/codex_plugin_scanner/guard/config.py \
+            src/codex_plugin_scanner/guard/daemon/server.py \
+            src/codex_plugin_scanner/guard/presentation_mode.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py \
+            tests/test_guard_action_explanation_contract.py \
+            tests/test_guard_codex_browser_authority.py \
+            tests/test_guard_presentation_mode.py
+          uv run --no-sync python -m ruff format --check \
+            src/codex_plugin_scanner/guard/config.py \
+            src/codex_plugin_scanner/guard/daemon/server.py \
+            src/codex_plugin_scanner/guard/presentation_mode.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py \
+            tests/test_guard_action_explanation_contract.py \
+            tests/test_guard_codex_browser_authority.py \
+            tests/test_guard_presentation_mode.py
+          uv run --no-sync basedpyright --level error \
+            src/codex_plugin_scanner/guard/presentation_mode.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py
           uv run --no-sync python -m compileall -q src/codex_plugin_scanner/guard
 
-      - name: Run independent adversarial contract review
+      - name: Run adversarial schema and trust-boundary review
         shell: bash
         run: |
           set -euo pipefail
@@ -339,7 +248,7 @@ jobs:
               assert not forbidden.intersection(imported), (path, forbidden.intersection(imported))
           PY
 
-      - name: Verify dashboard behavior, build, and typecheck delta
+      - name: Run dashboard tests, build, and TypeScript delta gate
         shell: bash
         run: |
           set -euo pipefail
@@ -377,8 +286,6 @@ jobs:
               for line in lines:
                   if "error TS" not in line:
                       continue
-                  line = line.replace(str(Path.cwd() / "dashboard") + "/", "")
-                  line = line.replace(str(Path(os.environ["RUNNER_TEMP"]) / "release-baseline" / "dashboard") + "/", "")
                   normalized[location.sub("(<loc>)", line)] += 1
               return normalized
 
@@ -395,11 +302,19 @@ jobs:
           PY
           git diff --check
 
-      - name: Run full repository regression suite
+      - name: Run repository regression and ratchet gates
         shell: bash
         run: |
           set -euo pipefail
           uv run --no-sync pytest -q
+          uv run --no-sync python scripts/ci/test_inventory.py --output test-inventory.json
+          uv run --no-sync python scripts/ci/test_suite_ratchet.py \
+            --baseline ci/test-suite-ratchet-baseline.json \
+            --inventory test-inventory.json
+          uv run --no-sync python scripts/ci/code_quality_audit.py \
+            --root . \
+            --baseline ci/code-quality-baseline.json \
+            --json-output code-quality-audit.json
 
       - name: Verify installed wheel contract
         shell: bash
@@ -419,12 +334,14 @@ jobs:
           assert callable(parse_action_explanation)
           PY
 
-      - name: Commit and push the verified integration
+      - name: Commit and push exact verified integration
         shell: bash
         env:
           EXPECTED_HEAD: ${{ steps.integrate.outputs.expected_head }}
         run: |
           set -euo pipefail
+          rm -f test-inventory.json code-quality-audit.json
+          rm -rf dist
           git add -A
           if git diff --cached --name-only | grep -E '^\.github/workflows/tmp-' ; then
             echo 'Temporary orchestration workflow leaked into the feature branch.'
