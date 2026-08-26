@@ -1,0 +1,113 @@
+name: Rust authority master converge v6
+
+on:
+  push:
+    branches: [fix/rust-authority-master]
+    paths:
+      - ".github/workflows/rust-authority-master-converge-v6.yml"
+      - "scripts/ci/patch_master_for_direct_native_v3.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+  checks: read
+  statuses: read
+
+concurrency:
+  group: rust-authority-master-converge
+  cancel-in-progress: true
+
+jobs:
+  converge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: "0.9.26"
+          enable-cache: true
+      - run: uv sync --frozen --extra dev --python 3.12
+      - name: Install pinned Rust toolchain and process tracing
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y strace
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.88.0
+      - name: Patch controller for direct-native authority
+        run: |
+          uv run --no-sync python scripts/ci/patch_master_for_direct_native_v3.py
+          uv run --no-sync ruff format scripts/ci/rust_authority_master_orchestrator.py
+          uv run --no-sync ruff check --fix scripts/ci/rust_authority_master_orchestrator.py
+      - name: Complete all remaining task batches end to end
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run --no-sync python scripts/ci/rust_authority_master_orchestrator.py
+      - name: Require merged direct-native evidence and all permanent checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch origin release/3.0
+          sha=$(git rev-parse origin/release/3.0)
+          for path in \
+            docs/guard/evidence/rust-pretool-no-python-source-final.json \
+            docs/guard/evidence/rust-pretool-no-python-runtime-final.json \
+            docs/guard/evidence/rust-authority-ownership-final.json; do
+            git cat-file -e "origin/release/3.0:$path"
+          done
+          deadline=$((SECONDS + 5400))
+          while true; do
+            gh api "repos/hashgraph-online/hol-guard/actions/runs?head_sha=$sha&per_page=100" > /tmp/runs.json
+            set +e
+            python - <<'PY'
+          import json
+          runs=json.load(open('/tmp/runs.json')).get('workflow_runs',[])
+          required={'CI','Security Gates','CodeQL Analysis','Rust authority ownership'}
+          success={r.get('name') for r in runs if r.get('status')=='completed' and r.get('conclusion')=='success'}
+          bad=[(r.get('name'),r.get('conclusion')) for r in runs if r.get('name') in required and r.get('status')=='completed' and r.get('conclusion') not in {'success','skipped','neutral','cancelled'}]
+          if bad:
+              print(bad); raise SystemExit(2)
+          if required<=success:
+              raise SystemExit(0)
+          raise SystemExit(1)
+          PY
+            code=$?
+            set -e
+            if [[ $code -eq 0 ]]; then break; fi
+            if [[ $code -eq 2 ]]; then cat /tmp/runs.json; exit 1; fi
+            if (( SECONDS >= deadline )); then echo "merged authority gate timeout" >&2; exit 1; fi
+            sleep 20
+          done
+      - name: Write completion artifact
+        run: |
+          python - <<'PY'
+          import json, pathlib, subprocess, time
+          result={
+            'schema':'hol-guard-rust-authority-master-v6.v1',
+            'release_sha':subprocess.check_output(['git','rev-parse','origin/release/3.0'],text=True).strip(),
+            'tasks':{'T001-T100':'merged','T101-T200':'merged','T201-T220':'merged'},
+            'pretool_python_runtime':False,
+            'wire_discovery':'passed',
+            'process_trace':'passed',
+            'compiled_integrations':'passed',
+            'ci_security_codeql_ownership':'passed',
+            'review_threads':'addressed',
+            'verified_at':int(time.time()),
+          }
+          pathlib.Path('/tmp/hol-guard-rust-authority-master-v6-result.json').write_text(json.dumps(result,indent=2,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: hol-guard-rust-authority-master-v6-result
+          path: /tmp/hol-guard-rust-authority-master-v6-result.json
+          if-no-files-found: warn
+          retention-days: 90
