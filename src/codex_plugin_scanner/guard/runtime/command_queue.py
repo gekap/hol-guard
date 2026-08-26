@@ -85,7 +85,6 @@ from .exact_cloud_review_transport import (
     lease_next_job,
     uses_exact_transport,
 )
-from .oauth_request_retry import request_after_oauth_refresh
 from .runner import _resolve_guard_sync_auth_context, repair_guard_cloud_connect_storage
 
 _LOGGER = logging.getLogger(__name__)
@@ -291,14 +290,15 @@ def _lease_with_oauth_refresh(
     store: GuardStore,
     state: dict[str, object],
     auth_context: dict[str, object],
-) -> tuple[dict[str, object] | None, dict[str, object]]:
-    return request_after_oauth_refresh(
-        auth_context,
-        request=lambda current: _lease_next_job(store, current, state=state),
-        refresh=lambda: _resolve_command_queue_auth_context(store, force_refresh=True),
-        logger=_LOGGER,
-        operation="Guard command lease",
-    )
+) -> dict[str, object] | None:
+    try:
+        return _lease_next_job(store, auth_context, state=state)
+    except urllib.error.HTTPError as error:
+        if error.code != 401:
+            raise
+    _LOGGER.warning("Guard command lease 401, attempting OAuth refresh retry.")
+    refreshed_auth_context = _resolve_command_queue_auth_context(store, force_refresh=True)
+    return _lease_next_job(store, refreshed_auth_context, state=state)
 
 
 def poll_command_queue_once(store: GuardStore, context: HarnessContext) -> dict[str, object]:
@@ -326,7 +326,7 @@ def poll_command_queue_once(store: GuardStore, context: HarnessContext) -> dict[
     _save_state(store, state)
     if _retry_pending_result(store, auth_context, state):
         return command_queue_status(store)
-    item, auth_context = _lease_with_oauth_refresh(store, state, auth_context)
+    item = _lease_with_oauth_refresh(store, state, auth_context)
     if item is None:
         empty_at = _now()
         state.update(
@@ -340,6 +340,7 @@ def poll_command_queue_once(store: GuardStore, context: HarnessContext) -> dict[
         _save_state(store, state)
         maybe_auto_update(store, context)
         return command_queue_status(store)
+    auth_context = _resolve_command_queue_auth_context(store)
     _record_leased_job(store, state, item)
     try:
         _heartbeat(auth_context, item)

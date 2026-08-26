@@ -13,6 +13,7 @@ import pytest
 from codex_plugin_scanner.guard.runtime import cloud_review_sync, command_queue
 from codex_plugin_scanner.guard.runtime.command_capability import issue_command_capability
 from codex_plugin_scanner.guard.runtime.command_executors import SUPPORTED_COMMAND_OPERATIONS
+from codex_plugin_scanner.guard.runtime.exact_cloud_review import authorize_exact_cloud_review_job
 from codex_plugin_scanner.guard.store import GuardStore
 from tests.guard_cloud_review_hardening_support import exact_job_store, harness_context, sync_auth
 
@@ -67,9 +68,7 @@ def test_command_lease_refreshes_oauth_once_and_uses_new_token_for_job(
 ) -> None:
     store, job = exact_job_store(tmp_path, request_id="oauth-command-lease")
     issue_command_capability(
-        store,
-        operations=("guard.packageShims.status",),
-        supported_operations=SUPPORTED_COMMAND_OPERATIONS,
+        store, operations=("guard.packageShims.status",), supported_operations=SUPPORTED_COMMAND_OPERATIONS
     )
     calls: list[tuple[str, str]] = []
     refreshes: list[bool] = []
@@ -93,7 +92,7 @@ def test_command_lease_refreshes_oauth_once_and_uses_new_token_for_job(
     def resolve(_store: GuardStore, *, force_refresh: bool = False) -> dict[str, object]:
         refreshes.append(force_refresh)
         return {
-            "access_token": "refreshed-token" if force_refresh else "expired-token",
+            "access_token": "refreshed-token" if any(refreshes) else "expired-token",
             "sync_url": "https://guard.example/api/guard/receipts/sync",
         }
 
@@ -105,12 +104,14 @@ def test_command_lease_refreshes_oauth_once_and_uses_new_token_for_job(
     )
     monkeypatch.setattr(command_queue, "_resolve_command_queue_auth_context", resolve)
 
+    identity = authorize_exact_cloud_review_job(store, job).identity
     status = command_queue.poll_command_queue_once(store, harness_context(tmp_path))
 
     assert status["state"] == "idle"
-    assert refreshes == [False, True]
+    assert refreshes == [False, True, False]
     assert calls[0:2] == [("expired-token", "/lease"), ("refreshed-token", "/lease")]
     assert all(token == "refreshed-token" for token, _path in calls[1:])
+    assert all(token not in repr(identity) for token in ("expired-token", "refreshed-token"))
     resolved = store.get_approval_request("oauth-command-lease")
     assert resolved is not None and resolved["status"] == "resolved"
 
