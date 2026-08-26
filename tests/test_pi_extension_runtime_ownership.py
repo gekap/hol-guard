@@ -52,8 +52,25 @@ def test_managed_extension_uses_official_user_install_not_appimage_mount(
     assert f"const GUARD_CLI_WRAPPER_COMMAND = {json.dumps(str(official_cli))};" in source
     assert f"const GUARD_DAEMON_RECOVERY_COMMAND = {json.dumps(str(official_cli))};" in source
     assert "const GUARD_CLI_WRAPPER_ACCEPTS_JSON_ARGS = false;" in source
-    assert "const GUARD_DAEMON_RECOVERY_ACCEPTS_FAILURE_KIND = false;" in source
+    assert "const GUARD_DAEMON_RECOVERY_ACCEPTS_FAILURE_KIND = true;" in source
+    assert 'const GUARD_DAEMON_RECOVERY_ARGS = ["daemon", "recover"' in source
     assert ".mount_HOL-Guard123" not in source
+
+
+@pytest.mark.skipif(pi_extension_runtime_ownership.os.name == "nt", reason="POSIX runtime ownership contract")
+def test_managed_extension_prefers_persistent_desktop_runtime_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    desktop_owner = tmp_path / "desktop-core" / "hol-guard"
+    desktop_owner.parent.mkdir(parents=True)
+    desktop_owner.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    desktop_owner.chmod(0o755)
+    monkeypatch.setenv("HOL_GUARD_DESKTOP_RUNTIME_OWNER", str(desktop_owner))
+
+    source = _source(tmp_path)
+
+    assert f"const GUARD_CLI_WRAPPER_COMMAND = {json.dumps(str(desktop_owner))};" in source
+    assert f"const GUARD_DAEMON_RECOVERY_COMMAND = {json.dumps(str(desktop_owner))};" in source
 
 
 @pytest.mark.skipif(pi_extension_runtime_ownership.os.name == "nt", reason="POSIX runtime ownership contract")

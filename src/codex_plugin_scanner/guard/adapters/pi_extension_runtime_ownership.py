@@ -8,6 +8,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+_DESKTOP_RUNTIME_OWNER_ENV = "HOL_GUARD_DESKTOP_RUNTIME_OWNER"
+
 
 @dataclass(frozen=True)
 class PiExtensionRuntimeOwnership:
@@ -28,7 +30,7 @@ def resolve_pi_extension_runtime_ownership(
         guard_args.extend(["--home", str(home_dir)])
     if os.name != "nt":
         cli_command = _stable_guard_cli_command(home_dir)
-        recovery_args = ["daemon", "repair", "--json", "--guard-home", str(guard_home)]
+        recovery_args = ["daemon", "recover", "--guard-home", str(guard_home)]
         if home_dir.resolve() != Path.home().resolve():
             recovery_args.extend(["--home", str(home_dir)])
         return PiExtensionRuntimeOwnership(
@@ -38,7 +40,7 @@ def resolve_pi_extension_runtime_ownership(
             False,
             cli_command,
             tuple(recovery_args),
-            False,
+            True,
         )
     package_root = package_source.resolve().parents[3]
     python = str(Path(sys.executable).expanduser().absolute())
@@ -56,7 +58,11 @@ def resolve_pi_extension_runtime_ownership(
 def _stable_guard_cli_command(home_dir: Path) -> str:
     # AppImages prepend a transient mount to PATH. The official user install is
     # durable and must own hooks after the desktop process exits.
-    candidates = (str(home_dir / ".local" / "bin" / "hol-guard"), shutil.which("hol-guard"))
+    candidates = (
+        os.environ.get(_DESKTOP_RUNTIME_OWNER_ENV),
+        str(home_dir / ".local" / "bin" / "hol-guard"),
+        shutil.which("hol-guard"),
+    )
     for candidate in candidates:
         if not candidate:
             continue
