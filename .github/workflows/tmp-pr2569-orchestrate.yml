@@ -1,0 +1,299 @@
+name: Rebuild and verify PR 2569
+
+on:
+  push:
+    branches:
+      - tmp/pr2569-orchestrate-20260826
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
+
+concurrency:
+  group: pr2569-orchestrate-20260826
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: tmp/pr2569-orchestrate-20260826
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Rebuild the product diff on the current release branch
+        id: rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin release/3.0 feat/everyday-mode-001-100
+          base_head="$(git rev-parse origin/release/3.0)"
+          old_pr_head="$(git rev-parse origin/feat/everyday-mode-001-100)"
+          merge_base="$(git merge-base origin/release/3.0 origin/feat/everyday-mode-001-100)"
+          echo "base_head=$base_head" >> "$GITHUB_OUTPUT"
+          echo "old_pr_head=$old_pr_head" >> "$GITHUB_OUTPUT"
+
+          paths=(
+            ci/test-suite-ratchet-baseline.json
+            dashboard/package.json
+            dashboard/src/guard-types.ts
+            dashboard/src/main.tsx
+            dashboard/src/presentation-mode.test.ts
+            dashboard/src/presentation-mode.ts
+            dashboard/src/tailwind-root.css
+            docs/guard/adr/0012-everyday-and-technical-presentation.md
+            docs/guard/everyday-mode/copy-contract.md
+            docs/guard/everyday-mode/vocabulary.json
+            schemas/guard_action_explanation_v1.json
+            src/codex_plugin_scanner/guard/config.py
+            src/codex_plugin_scanner/guard/daemon/server.py
+            src/codex_plugin_scanner/guard/presentation_mode.py
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py
+            src/codex_plugin_scanner/guard/schemas/guard_action_explanation_v1.json
+            tests/test_guard_action_explanation_contract.py
+            tests/test_guard_presentation_mode.py
+          )
+
+          git diff --binary --full-index "$merge_base"..origin/feat/everyday-mode-001-100 -- "${paths[@]}" > "$RUNNER_TEMP/pr2569-product.patch"
+          git checkout -B pr2569-clean origin/release/3.0
+          set +e
+          git apply --3way --index "$RUNNER_TEMP/pr2569-product.patch"
+          apply_status=$?
+          set -e
+
+          mapfile -t conflicts < <(git diff --name-only --diff-filter=U | sort)
+          expected=(ci/test-suite-ratchet-baseline.json dashboard/package.json)
+          if ((${#conflicts[@]})); then
+            if [[ "${conflicts[*]}" != "${expected[*]}" ]]; then
+              printf 'Unexpected conflicts:\n%s\n' "${conflicts[*]}"
+              exit 1
+            fi
+          elif ((apply_status != 0)); then
+            echo 'Patch application failed without a resolvable conflict set.'
+            exit 1
+          fi
+
+          if ((${#conflicts[@]})); then
+            git checkout --ours -- ci/test-suite-ratchet-baseline.json dashboard/package.json
+            python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import subprocess
+          from pathlib import Path
+
+          merge_base = subprocess.check_output(
+              ["git", "merge-base", "origin/release/3.0", "origin/feat/everyday-mode-001-100"],
+              text=True,
+          ).strip()
+
+          def show_json(ref: str, path: str) -> dict[str, object]:
+              raw = subprocess.check_output(["git", "show", f"{ref}:{path}"], text=True)
+              return json.loads(raw)
+
+          ratchet_path = Path("ci/test-suite-ratchet-baseline.json")
+          current = json.loads(ratchet_path.read_text(encoding="utf-8"))
+          ancestor = show_json(merge_base, str(ratchet_path))
+          proposed = show_json("origin/feat/everyday-mode-001-100", str(ratchet_path))
+          for key in ("maximum_collected_cases", "maximum_test_source_lines"):
+              delta = max(0, int(proposed[key]) - int(ancestor[key]))
+              current[key] = int(current[key]) + delta
+          ratchet_path.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
+
+          package_path = Path("dashboard/package.json")
+          package = json.loads(package_path.read_text(encoding="utf-8"))
+          focused = "tsx src/presentation-mode.test.ts"
+          test_script = str(package["scripts"].get("test", ""))
+          parts = [part.strip() for part in test_script.split("&&") if part.strip()]
+          parts = [part for part in parts if part != focused]
+          package["scripts"]["test"] = " && ".join([focused, *parts])
+          package_path.write_text(json.dumps(package, indent=2) + "\n", encoding="utf-8")
+          PY
+            git add ci/test-suite-ratchet-baseline.json dashboard/package.json
+          fi
+
+          git add -A
+          if git diff --cached --name-only | grep -E '^\.github/(pr2569-|workflows/tmp-.*2569)' ; then
+            echo 'Temporary orchestration files leaked into the product diff.'
+            exit 1
+          fi
+          git diff --cached --check
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check uv
+          uv sync --frozen
+
+      - name: Core focused and adversarial verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run pytest -q tests/test_guard_presentation_mode.py tests/test_guard_action_explanation_contract.py
+          uv run ruff check \
+            src/codex_plugin_scanner/guard/config.py \
+            src/codex_plugin_scanner/guard/daemon/server.py \
+            src/codex_plugin_scanner/guard/presentation_mode.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py \
+            tests/test_guard_presentation_mode.py \
+            tests/test_guard_action_explanation_contract.py
+          uv run basedpyright \
+            src/codex_plugin_scanner/guard/presentation_mode.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py
+          uv run python -m compileall -q src/codex_plugin_scanner/guard
+          uv run python - <<'PY'
+          from __future__ import annotations
+
+          import ast
+          import json
+          from pathlib import Path
+
+          public_schema = json.loads(Path('schemas/guard_action_explanation_v1.json').read_text(encoding='utf-8'))
+          package_schema = json.loads(Path('src/codex_plugin_scanner/guard/schemas/guard_action_explanation_v1.json').read_text(encoding='utf-8'))
+          assert public_schema == package_schema
+
+          presentation_source = Path('src/codex_plugin_scanner/guard/presentation_mode.py').read_text(encoding='utf-8')
+          explanation_source = Path('src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py').read_text(encoding='utf-8')
+          for source in (presentation_source, explanation_source):
+              tree = ast.parse(source)
+              imported = {
+                  alias.name.split('.')[0]
+                  for node in ast.walk(tree)
+                  if isinstance(node, ast.Import)
+                  for alias in node.names
+              }
+              imported.update(
+                  (node.module or '').split('.')[0]
+                  for node in ast.walk(tree)
+                  if isinstance(node, ast.ImportFrom)
+              )
+              assert not ({'requests', 'httpx', 'urllib', 'openai', 'anthropic', 'subprocess'} & imported)
+
+          config = Path('src/codex_plugin_scanner/guard/config.py').read_text(encoding='utf-8')
+          for key in ('presentation_mode', 'presentation_mode_explicit', 'presentation_revision'):
+              assert key in config
+          assert 'presentation_revision requires a presentation preference change' in config
+          assert 'payload.canonical_identity == canonical_identity' in explanation_source
+          assert '_validate_action_explanation_payload(payload)' in explanation_source
+          PY
+          git diff --check
+
+      - name: Dashboard tests, typecheck, and production bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global bun@1.2.22
+          cd dashboard
+          bun install --frozen-lockfile
+          bun run test
+          bun x tsc --noEmit
+          bun run build
+          cd ..
+          git add src/codex_plugin_scanner/guard/daemon/static
+          git diff --cached --check
+
+      - name: Commit and push the exact verified tree
+        id: push
+        shell: bash
+        env:
+          EXPECTED_OLD_HEAD: ${{ steps.rebuild.outputs.old_pr_head }}
+          EXPECTED_BASE_HEAD: ${{ steps.rebuild.outputs.base_head }}
+        run: |
+          set -euo pipefail
+          git fetch origin release/3.0
+          if [[ "$(git rev-parse origin/release/3.0)" != "$EXPECTED_BASE_HEAD" ]]; then
+            echo 'release/3.0 advanced during verification; refusing a stale push.'
+            exit 1
+          fi
+          git add -A
+          git diff --cached --check
+          git commit -s -m 'feat: Everyday Mode foundation (EVM-001-100)'
+          verified_head="$(git rev-parse HEAD)"
+          git push --force-with-lease="refs/heads/feat/everyday-mode-001-100:${EXPECTED_OLD_HEAD}" origin "HEAD:refs/heads/feat/everyday-mode-001-100"
+          echo "verified_head=$verified_head" >> "$GITHUB_OUTPUT"
+
+      - name: Verify clean PR integration and exact-head checks
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFIED_HEAD: ${{ steps.push.outputs.verified_head }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import subprocess
+          import time
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          sha = os.environ['VERIFIED_HEAD']
+          deadline = time.time() + 3600
+          stable_clean = 0
+          seen_substantive = False
+          ignored = {
+              'PR 2569 conflict audit',
+              'Rebuild and verify PR 2569',
+          }
+
+          while time.time() < deadline:
+              pr = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/pulls/2569'], text=True))
+              if pr.get('head', {}).get('sha') != sha:
+                  raise SystemExit('PR head moved after the verified push')
+              if pr.get('mergeable_state') == 'dirty':
+                  raise SystemExit('PR remains conflicted after rebuilding on the current base')
+
+              checks = json.loads(subprocess.check_output([
+                  'gh', 'api', f'repos/{repo}/commits/{sha}/check-runs',
+                  '-H', 'Accept: application/vnd.github+json', '-f', 'per_page=100'
+              ], text=True)).get('check_runs', [])
+              substantive = [run for run in checks if run.get('name') not in ignored]
+              if substantive:
+                  seen_substantive = True
+              pending = [run for run in substantive if run.get('status') != 'completed']
+              bad = [
+                  run for run in substantive
+                  if run.get('status') == 'completed'
+                  and run.get('conclusion') not in {'success', 'neutral', 'skipped'}
+              ]
+              status = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/commits/{sha}/status'], text=True))
+              bad_status = [item for item in status.get('statuses', []) if item.get('state') in {'failure', 'error'}]
+              pending_status = [item for item in status.get('statuses', []) if item.get('state') == 'pending']
+              if bad or bad_status:
+                  print(json.dumps({'bad_checks': bad, 'bad_statuses': bad_status}, indent=2))
+                  raise SystemExit('An exact-head check failed')
+
+              if seen_substantive and not pending and not pending_status and pr.get('mergeable') is True:
+                  stable_clean += 1
+                  if stable_clean >= 3:
+                      break
+              else:
+                  stable_clean = 0
+              time.sleep(20)
+          else:
+              raise SystemExit('Timed out waiting for a clean, fully checked PR head')
+
+          query = '''query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved}} reviews(first:100){nodes{state author{login}}}}}}'''
+          review = json.loads(subprocess.check_output([
+              'gh','api','graphql','-f',f'query={query}',
+              '-F','owner=hashgraph-online','-F','name=hol-guard','-F','number=2569'
+          ], text=True))['data']['repository']['pullRequest']
+          unresolved = [thread for thread in review['reviewThreads']['nodes'] if not thread['isResolved']]
+          changes_requested = [
+              item for item in review['reviews']['nodes']
+              if item.get('state') == 'CHANGES_REQUESTED'
+          ]
+          if unresolved or changes_requested:
+              print(json.dumps({'unresolved': unresolved, 'changes_requested': changes_requested}, indent=2))
+              raise SystemExit('Review state is not clean')
+          PY
