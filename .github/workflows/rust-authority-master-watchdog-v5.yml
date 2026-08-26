@@ -1,0 +1,92 @@
+name: Rust authority master watchdog v5
+
+on:
+  push:
+    branches: [fix/rust-authority-master]
+    paths:
+      - ".github/workflows/rust-authority-master-watchdog-v5.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+  pull-requests: read
+
+concurrency:
+  group: rust-authority-master-watchdog-v5
+  cancel-in-progress: false
+
+jobs:
+  shepherd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Re-dispatch convergence until literal direct-native evidence is merged
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          deadline=$((SECONDS + 19800))
+          next_dispatch=0
+          while true; do
+            git fetch origin release/3.0
+            complete=true
+            for path in \
+              docs/guard/evidence/rust-pretool-no-python-source-final.json \
+              docs/guard/evidence/rust-pretool-no-python-runtime-final.json \
+              docs/guard/evidence/rust-authority-ownership-final.json; do
+              git cat-file -e "origin/release/3.0:$path" 2>/dev/null || complete=false
+            done
+            if [[ "$complete" == true ]]; then
+              break
+            fi
+            if (( SECONDS >= next_dispatch )); then
+              gh workflow run rust-authority-master-converge-v4.yml \
+                --repo hashgraph-online/hol-guard --ref fix/rust-authority-master || true
+              next_dispatch=$((SECONDS + 1200))
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "direct-native authority did not converge before watchdog deadline" >&2
+              exit 1
+            fi
+            sleep 60
+          done
+      - name: Re-run all permanent gates on the merged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for workflow in \
+            rust-authority-ownership.yml \
+            ci.yml \
+            security-gates.yml \
+            codeql.yml; do
+            gh workflow run "$workflow" --repo hashgraph-online/hol-guard --ref release/3.0
+          done
+          git fetch origin release/3.0
+          sha=$(git rev-parse origin/release/3.0)
+          deadline=$((SECONDS + 5400))
+          while true; do
+            gh api "repos/hashgraph-online/hol-guard/actions/runs?head_sha=$sha&per_page=100" > /tmp/runs.json
+            set +e
+            python - <<'PY'
+          import json
+          runs=json.load(open('/tmp/runs.json')).get('workflow_runs',[])
+          required={'CI','Security Gates','CodeQL Analysis','Rust authority ownership'}
+          success={r.get('name') for r in runs if r.get('status')=='completed' and r.get('conclusion')=='success'}
+          bad=[(r.get('name'),r.get('conclusion')) for r in runs if r.get('name') in required and r.get('status')=='completed' and r.get('conclusion') not in {'success','skipped','neutral','cancelled'}]
+          if bad:
+              print(bad); raise SystemExit(2)
+          if required<=success:
+              raise SystemExit(0)
+          raise SystemExit(1)
+          PY
+            code=$?
+            set -e
+            if [[ $code -eq 0 ]]; then break; fi
+            if [[ $code -eq 2 ]]; then cat /tmp/runs.json; exit 1; fi
+            if (( SECONDS >= deadline )); then echo "permanent gate timeout" >&2; exit 1; fi
+            sleep 20
+          done
