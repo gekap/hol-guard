@@ -1,0 +1,141 @@
+name: Diagnose PR 2569 rebuild
+
+on:
+  push:
+    branches:
+      - tmp/pr2569-orchestrate-20260826
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: tmp/pr2569-orchestrate-20260826
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Rebuild and record every phase
+        shell: bash
+        run: |
+          set +e
+          out="$RUNNER_TEMP/pr2569-diagnostic"
+          mkdir -p "$out"
+          exec > >(tee -a "$out/full.log") 2>&1
+
+          record() {
+            local name="$1"
+            shift
+            echo "===== $name ====="
+            "$@"
+            local rc=$?
+            echo "$rc" > "$out/${name}.status"
+            echo "===== $name rc=$rc ====="
+            return 0
+          }
+
+          record fetch git fetch origin release/3.0 feat/everyday-mode-001-100
+          base_head="$(git rev-parse origin/release/3.0 2>/dev/null)"
+          pr_head="$(git rev-parse origin/feat/everyday-mode-001-100 2>/dev/null)"
+          merge_base="$(git merge-base origin/release/3.0 origin/feat/everyday-mode-001-100 2>/dev/null)"
+          printf '%s\n' "$base_head" > "$out/base-head.txt"
+          printf '%s\n' "$pr_head" > "$out/pr-head.txt"
+          printf '%s\n' "$merge_base" > "$out/merge-base.txt"
+
+          paths=(
+            ci/test-suite-ratchet-baseline.json
+            dashboard/package.json
+            dashboard/src/guard-types.ts
+            dashboard/src/main.tsx
+            dashboard/src/presentation-mode.test.ts
+            dashboard/src/presentation-mode.ts
+            dashboard/src/tailwind-root.css
+            docs/guard/adr/0012-everyday-and-technical-presentation.md
+            docs/guard/everyday-mode/copy-contract.md
+            docs/guard/everyday-mode/vocabulary.json
+            schemas/guard_action_explanation_v1.json
+            src/codex_plugin_scanner/guard/config.py
+            src/codex_plugin_scanner/guard/daemon/server.py
+            src/codex_plugin_scanner/guard/presentation_mode.py
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py
+            src/codex_plugin_scanner/guard/schemas/guard_action_explanation_v1.json
+            tests/test_guard_action_explanation_contract.py
+            tests/test_guard_presentation_mode.py
+          )
+
+          record make_patch git diff --binary --full-index "$merge_base"..origin/feat/everyday-mode-001-100 -- "${paths[@]}"
+          git diff --binary --full-index "$merge_base"..origin/feat/everyday-mode-001-100 -- "${paths[@]}" > "$RUNNER_TEMP/pr2569-product.patch"
+          record checkout_base git checkout -B diagnostic-base origin/release/3.0
+          record apply_patch git apply --3way --index "$RUNNER_TEMP/pr2569-product.patch"
+          git status --short > "$out/status-after-apply.txt"
+          git diff --name-only --diff-filter=U > "$out/conflicts.txt"
+          cat "$out/conflicts.txt"
+
+          if grep -qx 'ci/test-suite-ratchet-baseline.json' "$out/conflicts.txt" && grep -qx 'dashboard/package.json' "$out/conflicts.txt"; then
+            git checkout --ours -- ci/test-suite-ratchet-baseline.json dashboard/package.json
+            python - <<'PY'
+          from __future__ import annotations
+          import json
+          import subprocess
+          from pathlib import Path
+
+          merge_base = subprocess.check_output(
+              ["git", "merge-base", "origin/release/3.0", "origin/feat/everyday-mode-001-100"], text=True
+          ).strip()
+
+          def load(ref: str, path: str) -> dict:
+              return json.loads(subprocess.check_output(["git", "show", f"{ref}:{path}"], text=True))
+
+          ratchet = Path("ci/test-suite-ratchet-baseline.json")
+          current = json.loads(ratchet.read_text())
+          ancestor = load(merge_base, str(ratchet))
+          proposed = load("origin/feat/everyday-mode-001-100", str(ratchet))
+          for key in ("maximum_collected_cases", "maximum_test_source_lines"):
+              current[key] = int(current[key]) + max(0, int(proposed[key]) - int(ancestor[key]))
+          ratchet.write_text(json.dumps(current, indent=2) + "\n")
+
+          package_path = Path("dashboard/package.json")
+          package = json.loads(package_path.read_text())
+          focused = "tsx src/presentation-mode.test.ts"
+          parts = [p.strip() for p in str(package["scripts"]["test"]).split("&&") if p.strip() and p.strip() != focused]
+          package["scripts"]["test"] = " && ".join([focused, *parts])
+          package_path.write_text(json.dumps(package, indent=2) + "\n")
+          PY
+            echo "$?" > "$out/resolve.status"
+            git add ci/test-suite-ratchet-baseline.json dashboard/package.json
+          else
+            echo 99 > "$out/resolve.status"
+          fi
+
+          git diff --name-only --diff-filter=U > "$out/conflicts-after-resolve.txt"
+          git status --short > "$out/status-after-resolve.txt"
+          record diff_check git diff --check
+          record install_uv python -m pip install --disable-pip-version-check uv
+          record uv_sync uv sync --frozen
+          record pytest uv run pytest -q tests/test_guard_presentation_mode.py tests/test_guard_action_explanation_contract.py
+          record ruff uv run ruff check src/codex_plugin_scanner/guard/config.py src/codex_plugin_scanner/guard/daemon/server.py src/codex_plugin_scanner/guard/presentation_mode.py src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py tests/test_guard_presentation_mode.py tests/test_guard_action_explanation_contract.py
+          record pyright uv run basedpyright src/codex_plugin_scanner/guard/presentation_mode.py src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py
+          record compileall uv run python -m compileall -q src/codex_plugin_scanner/guard
+          record install_bun npm install --global bun@1.2.22
+          record bun_install bash -lc 'cd dashboard && bun install --frozen-lockfile'
+          record dashboard_focused bash -lc 'cd dashboard && bun x tsx src/presentation-mode.test.ts'
+          record dashboard_test bash -lc 'cd dashboard && bun run test'
+          record dashboard_tsc bash -lc 'cd dashboard && bun x tsc --noEmit'
+          record dashboard_build bash -lc 'cd dashboard && bun run build'
+          git status --short > "$out/final-status.txt"
+          git diff --stat > "$out/final-stat.txt"
+          cp "$RUNNER_TEMP/pr2569-product.patch" "$out/product.patch"
+          exit 0
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: pr2569-diagnostic-${{ github.sha }}
+          path: ${{ runner.temp }}/pr2569-diagnostic
+          retention-days: 1
+          if-no-files-found: error
