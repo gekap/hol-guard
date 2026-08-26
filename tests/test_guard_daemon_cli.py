@@ -169,6 +169,35 @@ def test_daemon_recover_dispatches_failure_aware_recovery(tmp_path: Path, monkey
     assert calls == [(tmp_path, "transport-failure")]
 
 
+def test_daemon_recover_returns_structured_error_without_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from codex_plugin_scanner.guard import daemon
+    from codex_plugin_scanner.guard.cli.commands_dispatch_cloud import _run_guard_daemon_command
+
+    def recover(guard_home: Path, *, home_dir: Path | None, failure_kind: str) -> str:
+        del guard_home, home_dir, failure_kind
+        raise RuntimeError("recovery unavailable")
+
+    monkeypatch.setattr(daemon, "recover_guard_daemon_after_hook_failure", recover)
+
+    code = _run_guard_daemon_command(
+        Namespace(daemon_command="recover", failure_kind="transport-failure"),
+        guard_home=tmp_path,
+    )
+
+    payload = cast(dict[str, object], json.loads(capsys.readouterr().out))
+    assert code == 1
+    assert payload["recovered"] is False
+    assert payload["running"] is False
+    assert payload["error"] == {
+        "code": "daemon_recovery_failed",
+        "message": "recovery unavailable",
+    }
+
+
 class TestDaemonStopCommand:
     """L313: hol-guard daemon stop."""
 

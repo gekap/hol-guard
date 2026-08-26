@@ -289,11 +289,26 @@ def _handle_daemon_recover(
 ) -> int:
     from codex_plugin_scanner.guard.daemon import recover_guard_daemon_after_hook_failure
 
-    recover_guard_daemon_after_hook_failure(
-        guard_home,
-        home_dir=home_dir,
-        failure_kind=failure_kind,
-    )
+    try:
+        _ = recover_guard_daemon_after_hook_failure(
+            guard_home,
+            home_dir=home_dir,
+            failure_kind=failure_kind,
+        )
+    except Exception as error:  # pragma: no cover - recovery adapters can raise platform errors.
+        _emit(
+            "daemon",
+            {
+                "recovered": False,
+                "running": False,
+                "error": {
+                    "code": "daemon_recovery_failed",
+                    "message": str(error),
+                },
+            },
+            True,
+        )
+        return 1
     return 0
 
 
