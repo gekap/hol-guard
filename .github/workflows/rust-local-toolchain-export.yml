@@ -13,21 +13,47 @@ permissions:
 jobs:
   export:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
           rustup default 1.88.0
           rustc --version
           cargo --version
+      - name: Fetch locked dependencies and build native runtime
+        env:
+          HOL_GUARD_BUILD_SHA: ${{ github.sha }}
+          HOL_GUARD_PACKAGE_VERSION: 3.0.0a0
+        run: |
+          cargo fetch --manifest-path rust/Cargo.toml --locked
+          cargo build --manifest-path rust/Cargo.toml --locked --release -p hol-guard-runtime
+          rust/target/release/hol-guard-runtime self-test --json
       - name: Package Linux toolchain
         run: |
           TOOLCHAIN=$(rustup which rustc | sed 's#/bin/rustc$##')
           tar -C "$(dirname "$TOOLCHAIN")" -czf /tmp/rust-1.88.0-x86_64-unknown-linux-gnu.tar.gz "$(basename "$TOOLCHAIN")"
+      - name: Package Cargo dependency cache
+        run: |
+          tar -C "$HOME" -czf /tmp/cargo-home-rust-1.88.0.tar.gz .cargo
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: rust-1.88.0-linux-toolchain
           path: /tmp/rust-1.88.0-x86_64-unknown-linux-gnu.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rust-1.88.0-linux-cargo-home
+          path: /tmp/cargo-home-rust-1.88.0.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rust-1.88.0-linux-runtime-baseline
+          path: rust/target/release/hol-guard-runtime
           if-no-files-found: error
           retention-days: 1
