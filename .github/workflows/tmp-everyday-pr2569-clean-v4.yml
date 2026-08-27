@@ -188,9 +188,11 @@ jobs:
           uv run --no-sync python scripts/ci/test_inventory.py --output "$RUNNER_TEMP/test-inventory.json"
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
 
-          inventory = json.loads(Path("$RUNNER_TEMP/test-inventory.json").read_text(encoding="utf-8"))
+          inventory_path = Path(os.environ["RUNNER_TEMP"]) / "test-inventory.json"
+          inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
           baseline_path = Path("ci/test-suite-ratchet-baseline.json")
           baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
           baseline["maximum_collected_cases"] = inventory["inventory"]["collected_cases"]
