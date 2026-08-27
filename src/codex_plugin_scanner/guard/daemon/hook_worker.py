@@ -126,6 +126,8 @@ class HookWorker:
                     raise HookWorkerUnsupported("native PreToolUse review uses CLI approval coordination")
                 return _harness_json_from_native_pre_tool(harness, native)
             status = native_runtime_status()
+            if status.mode == "off":
+                raise HookWorkerUnsupported("native PreToolUse runtime is off")
             if status.available or native_mode() == "force":
                 return post_tool_fail_safe_response(
                     harness,

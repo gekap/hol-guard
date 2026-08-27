@@ -169,6 +169,8 @@ def native_pre_tool_policy_floor(
         action = native.get("minimum_action")
         return action if action in {"allow", "review", "block"} else "block"
     status = native_runtime_status()
+    if status.mode == "off":
+        return None
     if status.available or native_mode() == "force":
         return "block"
     return None

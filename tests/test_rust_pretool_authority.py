@@ -12,6 +12,7 @@ from codex_plugin_scanner.guard.native_pretool import (
     _decode_pre_tool,
     native_pre_tool_policy_floor,
 )
+from codex_plugin_scanner.guard.native_runtime import NativeRuntimeStatus
 from codex_plugin_scanner.guard.store import GuardStore
 
 
@@ -89,6 +90,29 @@ def test_policy_floor_fails_closed_when_native_is_forced_unavailable(
     )
 
 
+def test_policy_floor_skips_when_native_mode_is_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "codex_plugin_scanner.guard.native_pretool.review_pre_tool_native",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "codex_plugin_scanner.guard.native_pretool.native_runtime_status",
+        lambda: NativeRuntimeStatus(mode="off", available=True, compatible=True, reason="off"),
+    )
+    assert (
+        native_pre_tool_policy_floor(
+            "pwd",
+            guard_home=tmp_path,
+            cwd=tmp_path,
+            home_dir=tmp_path,
+        )
+        is None
+    )
+
+
 def test_hook_worker_returns_native_allow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -133,6 +157,30 @@ def test_hook_worker_fails_closed_when_forced_native_is_missing(
     )
     assert result["decision"] == "deny"
     assert result["reason_code"] == "native_pre_tool_unavailable"
+
+
+def test_hook_worker_falls_back_when_native_mode_is_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "codex_plugin_scanner.guard.daemon.hook_worker.review_pre_tool_native",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "codex_plugin_scanner.guard.daemon.hook_worker.native_runtime_status",
+        lambda: NativeRuntimeStatus(mode="off", available=True, compatible=True, reason="off"),
+    )
+    worker = HookWorker(store=GuardStore(tmp_path / "guard-home"))
+    with pytest.raises(HookWorkerUnsupported, match="native PreToolUse runtime is off"):
+        worker.review_http_payload(
+            payload={"hook_event_name": "PreToolUse", "tool_input": {"command": "pwd"}},
+            params={},
+            default_harness="pi",
+            home_dir=tmp_path / "home",
+            guard_home=tmp_path / "guard-home",
+            workspace=tmp_path / "workspace",
+        )
 
 
 def test_hook_worker_leaves_non_command_pretool_to_cli(tmp_path: Path) -> None:
