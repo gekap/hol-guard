@@ -115,7 +115,8 @@ def native_mode() -> NativeMode:
 
     Explicit ``off`` remains the emergency rollback. Invalid or empty values do
     not silently disable the native safety path; they resolve to the product
-    default and still retain Python fallback when native is unavailable.
+    default. Supported PreToolUse and PostToolUse then fail closed when native
+    is unavailable.
     """
 
     raw_value = os.environ.get(_NATIVE_MODE_ENV)

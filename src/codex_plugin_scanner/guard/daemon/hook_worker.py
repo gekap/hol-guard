@@ -106,8 +106,9 @@ class HookWorker:
 
         ``off`` keeps the Python engine authoritative. ``shadow`` evaluates
         Python first and exercises native only as non-authoritative evidence.
-        ``auto`` and ``force`` try the native runtime first. When native is
-        present or forced and returns no result, PostToolUse fails closed.
+        ``auto`` and ``force`` require the native runtime. When native is
+        unavailable or returns no result, supported PreToolUse and PostToolUse
+        fail closed.
         """
         harness = self._runtime_harness(params) or default_harness
         event_name = self._hook_event_name(payload)
@@ -129,13 +130,13 @@ class HookWorker:
             status = native_runtime_status()
             if status.mode == "off":
                 raise HookWorkerUnsupported("native PreToolUse runtime is off")
-            if status.available or native_mode() == "force":
-                return post_tool_fail_safe_response(
-                    harness,
-                    reason="HOL Guard could not complete the native PreToolUse decision safely.",
-                    reason_code="native_pre_tool_unavailable",
-                )
-            raise HookWorkerUnsupported("native PreToolUse runtime is unavailable")
+            if status.mode == "shadow":
+                raise HookWorkerUnsupported("native PreToolUse runtime is unavailable")
+            return post_tool_fail_safe_response(
+                harness,
+                reason="HOL Guard could not complete the native PreToolUse decision safely.",
+                reason_code="native_pre_tool_unavailable",
+            )
         if event_name != "PostToolUse":
             raise HookWorkerUnsupported(f"fast path supports PreToolUse and PostToolUse, got event={event_name}")
         return self._review_post_tool_http(
@@ -170,7 +171,7 @@ class HookWorker:
             deadline=deadline,
         )
         mode = native_mode()
-        native_required = mode == "force" or (mode == "auto" and native_runtime_status().available)
+        native_required = mode in {"auto", "force"}
         if native_required:
             config = self._load_config(guard_home, workspace)
             response = review_post_tool_native(

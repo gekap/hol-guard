@@ -79,7 +79,7 @@ def test_hook_worker_fails_closed_when_available_native_posttool_returns_none(
     assert result["reason_code"] == "native_post_tool_unavailable"
 
 
-def test_hook_worker_uses_python_when_auto_native_is_unavailable(
+def test_hook_worker_fails_closed_when_auto_native_is_unavailable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -115,8 +115,9 @@ def test_hook_worker_uses_python_when_auto_native_is_unavailable(
         guard_home=tmp_path / "guard-home",
         workspace=tmp_path / "workspace",
     )
-    assert called["native"] == 0
-    assert result["reason_code"] != "native_post_tool_unavailable"
+    assert called["native"] == 1
+    assert result["decision"] == "deny"
+    assert result["reason_code"] == "native_post_tool_unavailable"
 
 
 def test_native_policy_snapshot_generation_is_stable_for_same_policy() -> None:

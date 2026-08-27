@@ -91,6 +91,8 @@ def _pretool_gate() -> None:
         raise RuntimeError("native PreToolUse transport imports the Python command evaluator")
     if "evaluate_command(" in _read(pretool):
         raise RuntimeError("native PreToolUse transport calls the Python command evaluator")
+    if 'if status.available or native_mode() == "force":' in _read(pretool):
+        raise RuntimeError("PreToolUse policy floor still availability-gates native authority")
 
     hook = _read(Path("src/codex_plugin_scanner/guard/daemon/hook_worker.py"))
     if "review_pre_tool_native" not in hook:
@@ -105,6 +107,15 @@ def _pretool_gate() -> None:
         raise RuntimeError("PreToolUse can reach the Python HookReviewEngine")
     if "native_pre_tool_unavailable" not in region.group(0):
         raise RuntimeError("PreToolUse does not fail closed when native is unavailable")
+    if 'status.mode == "shadow"' not in region.group(0):
+        raise RuntimeError("PreToolUse does not isolate shadow Python rollback")
+    if 'raise HookWorkerUnsupported("native PreToolUse runtime is unavailable")' in region.group(0):
+        shadow_only = re.search(
+            r'if status\.mode == "shadow":\s*raise HookWorkerUnsupported\("native PreToolUse runtime is unavailable"\)',
+            region.group(0),
+        )
+        if shadow_only is None:
+            raise RuntimeError("PreToolUse unavailable path still falls through to Python")
 
     command_model = Path("src/codex_plugin_scanner/guard/native_command_model.py")
     if command_model.exists():
@@ -128,6 +139,10 @@ def _posttool_gate() -> None:
         hook,
     ):
         raise RuntimeError("supported PostToolUse still spills into Python semantic evaluation")
+    if "native_required = mode in {\"auto\", \"force\"}" not in hook:
+        raise RuntimeError("PostToolUse auto path is not native-required")
+    if re.search(r'mode == "auto" and native_runtime_status\(\)\.available', hook):
+        raise RuntimeError("PostToolUse still availability-gates native authority")
 
     native = _read(Path("src/codex_plugin_scanner/guard/native_runtime.py"))
     if "currently supported Python reference backend remains authoritative" in native:
