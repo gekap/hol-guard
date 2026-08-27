@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_REF=${BASE_REF:-origin/release/3.0}
+BASE_REF=${BASE_REF:-origin/main}
 SEED_ROOT=${SEED_ROOT:-/tmp/batch2-seed}
 REPORT=docs/guard/rust-posttool-authority-bootstrap-report.md
 

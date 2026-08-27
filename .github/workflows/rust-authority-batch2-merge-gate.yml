@@ -145,7 +145,7 @@ jobs:
           if bad:
               raise SystemExit('Failed statuses: '+', '.join(item.get('context','unknown') for item in bad))
           PY
-      - name: Merge reviewed batch into release/3.0
+      - name: Merge reviewed batch into main
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}

@@ -32,8 +32,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           deadline=$((SECONDS + 2400))
           while true; do
-            git fetch origin release/3.0
-            if git show origin/release/3.0:rust/AUTHORITY_BATCH_1_FINAL >/dev/null 2>&1; then
+            git fetch origin main
+            if git show origin/main:src/codex_plugin_scanner/guard/native_pretool.py >/dev/null 2>&1; then
               break
             fi
             if (( SECONDS >= deadline )); then
@@ -42,7 +42,7 @@ jobs:
             fi
             sleep 30
           done
-          git rebase origin/release/3.0
+          git rebase origin/main
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: "3.12"
@@ -57,7 +57,7 @@ jobs:
           rustup default 1.88.0
       - name: Use verified candidate or deterministic migration
         env:
-          BASE_REF: origin/release/3.0
+          BASE_REF: origin/main
         run: |
           if ! grep -q "Accepted candidate" docs/guard/rust-posttool-authority-bootstrap-report.md 2>/dev/null; then
             if ! bash scripts/ci/bootstrap_rust_posttool_authority.sh; then
@@ -66,7 +66,7 @@ jobs:
               cat > docs/guard/rust-posttool-authority-bootstrap-report.md <<'EOF'
           # Rust PostToolUse Authority Bootstrap Evidence
 
-          No historical candidate passed every current release gate, so the deterministic release/3.0 migration was applied.
+          No historical candidate passed every current release gate, so the deterministic main-branch migration was applied.
 
           ## Accepted implementation
 

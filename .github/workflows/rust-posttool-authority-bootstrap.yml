@@ -25,23 +25,23 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: true
-      - name: Wait for batch 1 on release/3.0 and rebase
+      - name: Wait for batch 1 on main and rebase
         run: |
           deadline=$((SECONDS + 2400))
           while true; do
-            git fetch origin release/3.0
-            if git show origin/release/3.0:rust/AUTHORITY_BATCH_1_FINAL >/dev/null 2>&1; then
+            git fetch origin main
+            if git show origin/main:src/codex_plugin_scanner/guard/native_pretool.py >/dev/null 2>&1; then
               break
             fi
             if (( SECONDS >= deadline )); then
-              echo "Batch 1 is not merged into release/3.0" >&2
+              echo "Batch 1 is not merged into main" >&2
               exit 1
             fi
             sleep 30
           done
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rebase origin/release/3.0
+          git rebase origin/main
           git push --force-with-lease origin HEAD:fix/rust-authority-batch-2
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
@@ -57,7 +57,7 @@ jobs:
           rustup default 1.88.0
       - name: Import and verify strongest batch 2 candidate
         env:
-          BASE_REF: origin/release/3.0
+          BASE_REF: origin/main
         run: bash scripts/ci/bootstrap_rust_posttool_authority.sh
       - name: Commit verified implementation
         run: |

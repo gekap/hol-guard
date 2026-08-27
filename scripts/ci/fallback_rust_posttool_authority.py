@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply the release/3.0 PostToolUse authority hardening when no historical candidate passes.
+"""Apply the main-branch PostToolUse authority hardening when no historical candidate passes.
 
 The migration is intentionally narrow: Rust remains the semantic authority,
 Python becomes transport/configuration only, native failure is rendered as a

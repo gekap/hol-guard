@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_REF=${BASE_REF:-origin/release/3.0}
+BASE_REF=${BASE_REF:-origin/main}
 ORIGINAL_HEAD=$(git rev-parse HEAD)
 REPORT=docs/guard/rust-posttool-authority-bootstrap-report.md
 mkdir -p "$(dirname "$REPORT")"

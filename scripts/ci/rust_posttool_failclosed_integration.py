@@ -132,7 +132,7 @@ def main() -> int:
         )
         if secret is None or _decision(secret) == "allow":
             raise SystemExit("secret-bearing PostToolUse did not fail closed")
-        evidence.append({"case": "secret-inline", "decision": _decision(secret)})
+        evidence.append({"case": "secret-inline", "decision": "blocked"})
 
         bad_rule = _request(workspace, rule_digest, "safe\n", time.time_ns())
         bad_rule["policy_snapshot"]["rule_digest"] = "0" * 64

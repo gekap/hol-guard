@@ -1,6 +1,6 @@
 # Rust Authority Migration Batch 2: Tasks T101-T200
 
-Base branch: `release/3.0`
+Base branch: `main`
 
 Invariant: supported `PostToolUse` decisions and their security-critical I/O remain Rust-authoritative. Python may coordinate non-authoritative control-plane work but may not become the semantic fallback after native failure, overload, timeout, incompatibility, or malformed output.
 

@@ -38,17 +38,17 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           deadline=$((SECONDS + 5400))
           while true; do
-            git fetch origin release/3.0
-            if git show origin/release/3.0:docs/guard/evidence/rust-pretool-authority-batch-1-final.json >/dev/null 2>&1; then
+            git fetch origin main
+            if git show origin/main:src/codex_plugin_scanner/guard/native_pretool.py >/dev/null 2>&1; then
               break
             fi
             if (( SECONDS >= deadline )); then
-              echo "Batch 1 did not reach release/3.0" >&2
+              echo "Batch 1 did not reach main" >&2
               exit 1
             fi
             sleep 30
           done
-          git reset --hard origin/release/3.0
+          git reset --hard origin/main
           mkdir -p scripts/ci docs/guard
           cp /tmp/batch2-seed/scripts/ci/converge_rust_posttool_authority_v2.py scripts/ci/
           cp /tmp/batch2-seed/scripts/ci/rust_posttool_failclosed_integration_v2.py scripts/ci/rust_posttool_failclosed_integration.py
@@ -192,7 +192,7 @@ jobs:
         run: |
           number=$(gh pr list --repo hashgraph-online/hol-guard --head fix/rust-authority-batch-2 --state open --json number --jq '.[0].number')
           if [[ -z "$number" ]]; then
-            url=$(gh pr create --repo hashgraph-online/hol-guard --base release/3.0 --head fix/rust-authority-batch-2 --title "feat(guard): complete Rust runtime authority batch 2" --body "Completes T101-T200 with fail-closed Rust PostToolUse authority, native policy snapshots, compiled differential and mutation integration, and performance gates.")
+            url=$(gh pr create --repo hashgraph-online/hol-guard --base main --head fix/rust-authority-batch-2 --title "feat(guard): complete Rust runtime authority batch 2" --body "Completes T101-T200 with fail-closed Rust PostToolUse authority, native policy snapshots, compiled differential and mutation integration, and performance gates.")
             number=${url##*/}
           fi
           echo "number=$number" >> "$GITHUB_OUTPUT"

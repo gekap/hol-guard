@@ -34,17 +34,17 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           deadline=$((SECONDS + 5400))
           while true; do
-            git fetch origin release/3.0
-            if git show origin/release/3.0:docs/guard/evidence/rust-pretool-authority-batch-1-final.json >/dev/null 2>&1; then
+            git fetch origin main
+            if git show origin/main:src/codex_plugin_scanner/guard/native_pretool.py >/dev/null 2>&1; then
               break
             fi
             if (( SECONDS >= deadline )); then
-              echo "Batch 1 did not reach release/3.0" >&2
+              echo "Batch 1 did not reach main" >&2
               exit 1
             fi
             sleep 30
           done
-          git rebase origin/release/3.0
+          git rebase origin/main
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: "3.12"
@@ -58,7 +58,7 @@ jobs:
           rustup default 1.88.0
       - name: Complete PostToolUse implementation when evidence is absent
         env:
-          BASE_REF: origin/release/3.0
+          BASE_REF: origin/main
         run: |
           if [[ ! -f docs/guard/evidence/rust-posttool-authority-batch-2.json ]]; then
             applied=false

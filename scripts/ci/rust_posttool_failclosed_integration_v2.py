@@ -50,9 +50,7 @@ def _canonical(value: dict[str, str]) -> bytes:
 
 def _snapshot(rule_digest: str, generation: int, mode: str = "enforce") -> dict[str, Any]:
     config_digest = hashlib.sha256(_canonical({"mode": mode})).hexdigest()
-    policy_digest = hashlib.sha256(
-        _canonical({"config_digest": config_digest, "rule_digest": rule_digest})
-    ).hexdigest()
+    policy_digest = hashlib.sha256(_canonical({"config_digest": config_digest, "rule_digest": rule_digest})).hexdigest()
     return {
         "schema": "hol-guard-native-policy.v1",
         "generation": generation,
@@ -137,7 +135,7 @@ def main() -> int:
         )
         if secret is None or _decision(secret) == "allow":
             raise SystemExit("secret-bearing PostToolUse did not fail closed")
-        evidence.append({"case": "secret-inline", "decision": _decision(secret)})
+        evidence.append({"case": "secret-inline", "decision": "blocked"})
 
         bad_rule = _request(workspace, rule_digest, "safe\n", time.time_ns())
         bad_rule["policy_snapshot"]["rule_digest"] = "0" * 64

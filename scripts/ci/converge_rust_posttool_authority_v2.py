@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Converge release/3.0 onto fail-closed Rust PostToolUse authority."""
+"""Converge main onto fail-closed Rust PostToolUse authority."""
 
 from __future__ import annotations
 
