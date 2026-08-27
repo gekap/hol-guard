@@ -8,6 +8,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish.yml"
+PUBLISH_MCP_REGISTRY_WORKFLOW = ROOT / ".github" / "workflows" / "publish-mcp-registry.yml"
+PUBLISH_MCPB_WORKFLOW = ROOT / ".github" / "workflows" / "publish-mcpb.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 CODEOWNERS = ROOT / ".github" / "CODEOWNERS"
 CI_BRANCHES = ["main", "release/3.0", "release/3.1"]
@@ -76,6 +78,14 @@ def test_release_branch_pushes_publish_alpha_while_main_pushes_publish_stable() 
     workflow_text = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
     assert "startsWith(github.ref, 'refs/tags/')" not in workflow_text
     assert "github.ref == 'refs/heads/main'" in workflow_text
+
+
+def test_release_3_0_consumers_follow_the_patch_prerelease_train() -> None:
+    assert 'alpha/v${TRAIN}.1a*' in PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+    for workflow_path in (PUBLISH_MCP_REGISTRY_WORKFLOW, PUBLISH_MCPB_WORKFLOW):
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        assert "alpha/v3.0.1a*" in workflow_text
+        assert "alpha/v3.0.0a*" not in workflow_text
 
 
 def test_main_push_build_computes_a_registry_derived_stable_version() -> None:
