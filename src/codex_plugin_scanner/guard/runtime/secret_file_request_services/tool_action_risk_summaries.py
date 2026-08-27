@@ -6,8 +6,15 @@ from typing import Protocol
 class ToolActionRisk(Protocol):
     """Fields required to explain a native tool-action risk."""
 
-    action_class: str
-    reason: str
+    @property
+    def action_class(self) -> str:
+        """Return the stable native action class."""
+        ...
+
+    @property
+    def reason(self) -> str:
+        """Return the detector's specific review reason."""
+        ...
 
 
 def tool_action_risk_summary(request: ToolActionRisk) -> str:
