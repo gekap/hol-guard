@@ -526,7 +526,6 @@ def _identity_key(status: NativeRuntimeStatus) -> str:
     return status.identity.sha256 if status.identity is not None else _UNAVAILABLE_IDENTITY
 
 
-
 def native_resident_operation(
     *,
     operation: str,
@@ -564,6 +563,7 @@ def native_resident_operation(
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
 
 def native_runtime_health(guard_home: Path) -> NativeRuntimeHealthSnapshot:
     status = native_runtime_status()
