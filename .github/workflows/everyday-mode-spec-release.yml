@@ -1,0 +1,25 @@
+name: Stage Everyday Mode specifications as internal release assets
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  stage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: feat/everyday-mode-001-100-v32
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prd=docs/everyday-mode/HOL_GUARD_EVERYDAY_MODE_PRD.md
+          todo=docs/everyday-mode/HOL_GUARD_EVERYDAY_MODE_TODO.md
+          test "$(wc -c < "$prd")" -gt 1000
+          test "$(wc -c < "$todo")" -gt 10000
+          grep -q 'EVM-740' "$todo"
+          tag=internal-everyday-mode-specs-20260827
+          gh release delete "$tag" --yes --cleanup-tag || true
+          gh release create "$tag" "$prd" "$todo" --draft --prerelease --title 'Internal Everyday Mode specification staging' --notes 'Temporary transfer asset for the release/3.2 implementation workflow.'
