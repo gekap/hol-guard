@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -37,6 +36,8 @@ from .review_oauth_binding import (
     GuardReviewOAuthMetadata,
     guard_review_oauth_metadata,  # noqa: F401 - compatibility re-export
 )
+from .review_verification_keyring import REVIEW_VERIFICATION_KEYRING_SYNC_KEY
+from .stable_digest import sha256_content_digest
 from .stable_json import stable_json_serialize
 
 _LOCAL_REVIEW_REQUEST_CONTRACT_VERSION = "guard.local-review-request.v1"
@@ -49,7 +50,6 @@ _REMOTE_APPROVAL_SIGNATURE_ALGORITHM = "rsa-pss-sha256"
 _DECISION_MEMORY_SIGNATURE_ALGORITHM = "rsa-pss-sha256"
 _CLAIM_HASH_EXCLUDED_KEYS = ("claimHash", "exactReviewCapability", "recommendedScope")
 _SIGNED_PAYLOAD_STRIP_KEYS = ("payloadHash", "signature", "signatureAlgorithm", "verificationKeys", "bundleHash")
-_GUARD_REVIEW_VERIFICATION_KEYRING_SYNC_KEY = "guard_review_verification_keyring"
 
 RemoteApprovalDecision = Literal["allow", "block"]
 
@@ -62,7 +62,7 @@ _stable_serialize = stable_json_serialize
 
 
 def _sha256_hex(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return sha256_content_digest(value.encode("utf-8"))
 
 
 def _non_empty_string(value: object) -> str | None:
@@ -121,7 +121,7 @@ def _anchored_review_verification_keys(store) -> tuple[PolicyBundleVerificationK
     return merge_policy_bundle_trusted_keys(
         policy_bundle_keys_from_supply_chain_keyring(store.get_sync_payload("supply_chain_bundle_keyring")),
         safe_load_policy_bundle_verification_keys(store.get_sync_payload("policy_bundle_keyring")),
-        safe_load_policy_bundle_verification_keys(store.get_sync_payload(_GUARD_REVIEW_VERIFICATION_KEYRING_SYNC_KEY)),
+        safe_load_policy_bundle_verification_keys(store.get_sync_payload(REVIEW_VERIFICATION_KEYRING_SYNC_KEY)),
     )
 
 
@@ -387,7 +387,8 @@ def validated_remote_approval_envelope(
 ) -> dict[str, object]:
     if envelope.get("contractVersion") != _REMOTE_APPROVAL_CONTRACT_VERSION:
         raise GuardReviewContractError("unsupported_remote_approval_contract")
-    if envelope.get("scope") not in _REMOTE_APPROVAL_ALLOWED_SCOPES:
+    scope = envelope.get("scope")
+    if not isinstance(scope, str) or scope not in _REMOTE_APPROVAL_ALLOWED_SCOPES:
         raise GuardReviewContractError("invalid_remote_approval_scope")
     if normalize_remote_approval_decision(envelope.get("decision")) is None:
         raise GuardReviewContractError("invalid_remote_approval_decision")
@@ -398,10 +399,7 @@ def validated_remote_approval_envelope(
     if expires_at <= _now():
         if admitted_at is None:
             raise GuardReviewContractError("remote_approval_expired")
-        queue_admitted_at = _parse_iso_timestamp(
-            admitted_at,
-            field_name="queue_admitted_at",
-        )
+        queue_admitted_at = _parse_iso_timestamp(admitted_at, field_name="queue_admitted_at")
         if queue_admitted_at > expires_at:
             raise GuardReviewContractError("remote_approval_expired")
     payload_hash = _non_empty_string(envelope.get("payloadHash"))

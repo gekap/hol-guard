@@ -3,12 +3,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from codex_plugin_scanner.guard.adapters.base import HarnessContext
 from codex_plugin_scanner.guard.cli.oauth_client import generate_dpop_key_pair
 from codex_plugin_scanner.guard.review_contracts import payload_hash_for_decision_memory_bundle
 from codex_plugin_scanner.guard.runtime.command_executors import execute_guard_command_job
 from codex_plugin_scanner.guard.runtime.review_policy_memory_executor import REVIEW_POLICY_MEMORY_OPERATION
 from codex_plugin_scanner.guard.store import GuardStore
+from codex_plugin_scanner.guard.store_policy import StorePolicyMixin
 from tests.guard_review_signing_helpers import REVIEW_SIGNING_KEY_ID, review_verification_keys, sign_review_payload
 
 
@@ -39,8 +42,7 @@ def _store(tmp_path: Path) -> GuardStore:
 
 
 def _bundle(store: GuardStore, *, rule_scope: str = "workspace") -> dict[str, object]:
-    credentials = store.get_oauth_local_credentials(allow_primary=False)
-    assert isinstance(credentials, dict)
+    workspace_id = (store.get_cloud_sync_profile() or {})["workspace_id"]
     issued_at = datetime.now(timezone.utc).replace(microsecond=0)
     expires_at = issued_at + timedelta(days=30)
     bundle: dict[str, object] = {
@@ -68,7 +70,7 @@ def _bundle(store: GuardStore, *, rule_scope: str = "workspace") -> dict[str, ob
                 "sourceReceiptIds": ["receipt-1"],
                 "target": {
                     "machineIds": [str(store.get_device_metadata()["installation_id"])],
-                    "workspaceIds": [credentials["workspace_id"]],
+                    "workspaceIds": [workspace_id],
                 },
             }
         ],
@@ -82,7 +84,7 @@ def _bundle(store: GuardStore, *, rule_scope: str = "workspace") -> dict[str, ob
         },
         "verificationKeys": review_verification_keys(workspace_id=None, purpose="unscoped"),
         "signatureAlgorithm": "rsa-pss-sha256",
-        "workspaceId": credentials["workspace_id"],
+        "workspaceId": workspace_id,
     }
     return _resign_bundle(bundle)
 
@@ -164,4 +166,33 @@ def test_rejected_memory_bundle_keeps_existing_policies_registry_version_and_rev
     assert result["data"]["status"] == "rejected"
     assert store.get_sync_payload("guard_review_memory_registry") == before_registry
     assert store.get_sync_payload("guard_review_memory_policy_version") == before_version
+    assert store.list_policy_decisions() == before_policies
+
+
+def test_accepted_memory_bundle_rolls_back_rows_and_state_on_transaction_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = _store(tmp_path)
+    assert _execute(store, {"decisionMemoryBundle": _bundle(store)})["data"]["status"] == "accepted"
+    before_registry = store.get_sync_payload("guard_review_memory_registry")
+    before_version = store.get_sync_payload("guard_review_memory_policy_version")
+    before_ack = store.get_sync_payload("guard_review_memory_last_ack")
+    before_policies = store.list_policy_decisions()
+    original = StorePolicyMixin._replace_remote_policy_rows_locked
+
+    def replace_then_fail(connection, rows) -> None:
+        original(connection, rows)
+        raise RuntimeError("injected policy-memory transaction failure")
+
+    monkeypatch.setattr(StorePolicyMixin, "_replace_remote_policy_rows_locked", staticmethod(replace_then_fail))
+    next_bundle = _bundle(store)
+    next_bundle["policyVersion"] = "policy-version-next"
+
+    with pytest.raises(RuntimeError, match="injected policy-memory transaction failure"):
+        _execute(store, {"decisionMemoryBundle": _resign_bundle(next_bundle)})
+
+    assert store.get_sync_payload("guard_review_memory_registry") == before_registry
+    assert store.get_sync_payload("guard_review_memory_policy_version") == before_version
+    assert store.get_sync_payload("guard_review_memory_last_ack") == before_ack
     assert store.list_policy_decisions() == before_policies

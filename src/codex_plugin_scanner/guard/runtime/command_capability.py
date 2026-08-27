@@ -12,7 +12,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from ..review_contracts import GuardReviewContractError, guard_review_oauth_metadata
+from ..stable_digest import sha256_content_digest
 from ..store import GuardStore
+from .command_operation_classification import (
+    LOCAL_CONFIRMATION_COMMAND_OPERATIONS,
+    POLICY_MEMORY_COMMAND_OPERATIONS,
+    READ_ONLY_COMMAND_OPERATIONS,
+    REMOTE_STEP_UP_COMMAND_OPERATIONS,
+    STATE_CHANGING_COMMAND_OPERATIONS,
+)
 from .time_support import parse_utc_timestamp
 
 COMMAND_CAPABILITY_STATE_KEY = "guard_command_capability_v1"
@@ -25,33 +33,6 @@ COMMAND_CAPABILITY_MAX_TTL_SECONDS = 365 * 24 * 60 * 60
 COMMAND_CAPABILITY_DEFAULT_TTL_SECONDS = 30 * 24 * 60 * 60
 COMMAND_REPLAY_MAX_ITEMS = 512
 COMMAND_QUEUE_ENABLED_ENV = "GUARD_CLOUD_COMMAND_QUEUE_ENABLED"
-
-READ_ONLY_COMMAND_OPERATIONS: tuple[str, ...] = (
-    "guard.packageShims.status",
-    "guard.packageShims.test",
-    "guard.packageShims.audit",
-    "guard.app.status",
-    "guard.app.updateCheck",
-)
-LOCAL_CONFIRMATION_COMMAND_OPERATIONS: frozenset[str] = frozenset(
-    {
-        "guard.packageShims.remove",
-        "guard.app.remove",
-    }
-)
-STATE_CHANGING_COMMAND_OPERATIONS: frozenset[str] = frozenset(
-    {
-        "guard.packageShims.repair",
-        "guard.packageShims.sync",
-        "guard.packageShims.install",
-        "guard.app.repair",
-        "guard.app.connect",
-        "guard.app.update",
-        "guard.review.syncPolicyMemory",
-    }
-)
-POLICY_MEMORY_COMMAND_OPERATIONS: frozenset[str] = frozenset({"guard.review.syncPolicyMemory"})
-REMOTE_STEP_UP_COMMAND_OPERATIONS: frozenset[str] = frozenset()
 
 
 class CommandCapabilityError(ValueError):
@@ -246,24 +227,27 @@ def _verified_capability(store: GuardStore, *, now: str | None = None) -> dict[s
     if capability.get("workspaceId") != workspace_id:
         raise CommandCapabilityError("capability_workspace_mismatch")
     operations = capability.get("operations")
-    if (
-        not isinstance(operations, list)
-        or not operations
-        or not all(isinstance(operation, str) and operation for operation in operations)
-    ):
+    if not isinstance(operations, list) or not operations:
         raise CommandCapabilityError("capability_operations_invalid")
-    if len(operations) != len(set(operations)):
+    validated_operations: list[str] = []
+    for operation in operations:
+        if not isinstance(operation, str) or not operation:
+            raise CommandCapabilityError("capability_operations_invalid")
+        validated_operations.append(operation)
+    if len(validated_operations) != len(set(validated_operations)):
         raise CommandCapabilityError("capability_operations_invalid")
     classified_operations = (
         set(READ_ONLY_COMMAND_OPERATIONS)
         | set(LOCAL_CONFIRMATION_COMMAND_OPERATIONS)
         | set(STATE_CHANGING_COMMAND_OPERATIONS)
     )
-    if any(operation not in classified_operations for operation in operations):
-        raise CommandCapabilityError("capability_operation_unsupported")
+    # Verify the original signed payload before projecting it onto the current
+    # operation set. This lets upgrades drop retired grants without preserving
+    # their names or authorizing any operation the current runtime cannot model.
+    active_operations = set(validated_operations) & classified_operations
     return {
         **capability,
-        "operations": sorted(operations),
+        "operations": sorted(active_operations),
     }
 
 
@@ -366,7 +350,7 @@ def command_job_identity(
     payload = job.get("payload")
     if not isinstance(payload, dict):
         raise CommandCapabilityError("command_payload_invalid")
-    identity["payloadDigest"] = hashlib.sha256(_canonical_bytes(payload)).hexdigest()
+    identity["payloadDigest"] = sha256_content_digest(_canonical_bytes(payload))
     return identity
 
 
@@ -409,7 +393,7 @@ def authorize_command_job(
 
 
 def _identity_digest(identity: Mapping[str, object]) -> str:
-    return hashlib.sha256(_canonical_bytes(identity)).hexdigest()
+    return sha256_content_digest(_canonical_bytes(identity))
 
 
 def register_pending_command(
