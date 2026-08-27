@@ -1,0 +1,38 @@
+name: FEC source export
+
+on:
+  push:
+    branches:
+      - chore/fec-source-export-20260827
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Build source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='.venv' \
+            --exclude='dist' \
+            --exclude='build' \
+            -czf "$RUNNER_TEMP/hol-guard-source.tgz" .
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: hol-guard-source
+          path: ${{ runner.temp }}/hol-guard-source.tgz
+          if-no-files-found: error
+          retention-days: 1
