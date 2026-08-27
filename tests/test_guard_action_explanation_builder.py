@@ -115,6 +115,26 @@ def test_semantic_fact_model_is_bounded_and_uses_typed_targets() -> None:
     assert facts.canonical_identity == canonical.security_identity
 
 
+def test_builder_does_not_promote_flags_to_typed_operands() -> None:
+    canonical = parse_shell_command("rm ./build -rf")
+    facts = semantic_facts_from_action(
+        action_envelope={"action_type": "shell_command", "command": canonical.raw_text},
+        action_identity="approval:rm-flags",
+        actor_label="Cursor",
+        canonical_command=canonical,
+    )
+    assert facts.operands == ()
+    explanation = build_action_explanation(
+        action_envelope={"action_type": "shell_command", "command": canonical.raw_text},
+        action_identity="approval:rm-flags",
+        actor_label="Cursor",
+        canonical_command=canonical,
+    )
+    assert explanation.kind == "file_delete"
+    assert "build" in explanation.everyday.summary
+    assert "item named rf" not in explanation.everyday.summary
+
+
 def test_cache_key_covers_identity_catalog_renderer_locale_and_redaction() -> None:
     base = action_explanation_cache_key(action_identity="a", canonical_identity="c")
     assert base != action_explanation_cache_key(action_identity="b", canonical_identity="c")

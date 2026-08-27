@@ -104,6 +104,12 @@ def test_ordinary_file_read_is_not_misclassified_as_credentials(name: str) -> No
     assert "credentials" not in explanation.everyday.headline.casefold()
 
 
+def test_curl_fail_flag_is_not_misclassified_as_upload() -> None:
+    explanation = explain_command(_input("curl", "-f", "https://example.com/status"))
+    assert explanation.kind == "network_read"
+    assert "Connect to a website" in explanation.everyday.headline
+
+
 def test_everyday_projection_keeps_safe_destination_while_redacting_secret_payload() -> None:
     secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
     explanation = explain_command(

@@ -111,8 +111,6 @@ def semantic_facts_from_action(
             segment = canonical_command.segments[0]
             executable = segment.executable
             arguments = tuple(segment.arguments)
-            if not operands:
-                operands = tuple(segment.arguments)
 
     return ActionSemanticFacts(
         action_identity=_bounded_text(action_identity, 512),
