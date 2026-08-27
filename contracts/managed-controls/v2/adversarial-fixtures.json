@@ -1,0 +1,77 @@
+{
+  "cases": [
+    {
+      "contract": "fleetExtensionConfiguration",
+      "expectedError": "fec_unknown_field",
+      "id": "unknown-top-level",
+      "patch": {
+        "unexpected": true
+      }
+    },
+    {
+      "contract": "fleetExtensionConfiguration",
+      "expectedError": "fec_managed_weaken_forbidden",
+      "id": "managed-permit",
+      "replace": {
+        "entries": [
+          {
+            "authorityMode": "managed-restrictive",
+            "availability": "enabled",
+            "contextualOutcome": "permit",
+            "entryId": "entry.bad",
+            "source": "explicit",
+            "target": {
+              "extensionId": "command.shell",
+              "kind": "extension"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "contract": "fleetExtensionConfiguration",
+      "duplicatePath": "entries[0]",
+      "expectedError": "fec_duplicate_entry",
+      "id": "duplicate-entry"
+    },
+    {
+      "contract": "assignment",
+      "expectedError": "fec_conflicting_entry",
+      "id": "assignment-no-future-enrollment",
+      "replace": {
+        "continuousEnrollment": false
+      }
+    },
+    {
+      "contract": "customExtensionDefinition",
+      "expectedError": "fec_unknown_field",
+      "id": "custom-raw-path",
+      "patch": {
+        "sourcePath": "/Users/example/tool"
+      }
+    },
+    {
+      "contract": "customExtensionConfiguration",
+      "expectedError": "fec_unknown_field",
+      "id": "custom-raw-command",
+      "patch": {
+        "rawCommand": "deploy --token secret"
+      }
+    },
+    {
+      "contract": "catalogSemantics",
+      "duplicatePath": "extensions[0]",
+      "expectedError": "fec_duplicate_entry",
+      "id": "catalog-duplicate-extension"
+    },
+    {
+      "contract": "catalogSemantics",
+      "expectedError": "fec_unsupported_capability",
+      "id": "unsupported-schema",
+      "replace": {
+        "schemaVersion": "guard.catalog-semantic-fingerprint.v9"
+      }
+    }
+  ],
+  "schemaVersion": "guard.managed-controls.adversarial-fixtures.v2"
+}

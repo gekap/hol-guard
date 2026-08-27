@@ -1,0 +1,197 @@
+{
+  "$defs": {
+    "command": {
+      "additionalProperties": false,
+      "properties": {
+        "commandId": {
+          "maxLength": 68,
+          "pattern": "^cec_[a-z0-9]{8,64}$",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "semanticFingerprint": {
+          "maxLength": 71,
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "commandId",
+        "label",
+        "semanticFingerprint"
+      ],
+      "type": "object"
+    },
+    "variant": {
+      "additionalProperties": false,
+      "properties": {
+        "identityEvidenceDigest": {
+          "maxLength": 71,
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "platforms": {
+          "items": {
+            "enum": [
+              "linux",
+              "macos",
+              "windows",
+              "container"
+            ]
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "reviewState": {
+          "enum": [
+            "pending",
+            "trusted",
+            "rejected",
+            "revoked"
+          ]
+        },
+        "reviewedAt": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "maxLength": 32,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reviewedBy": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 5,
+              "pattern": "^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "semanticFingerprint": {
+          "maxLength": 71,
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "variantId": {
+          "maxLength": 68,
+          "pattern": "^cev_[a-z0-9]{16,64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "variantId",
+        "semanticFingerprint",
+        "identityEvidenceDigest",
+        "platforms",
+        "reviewState"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://hol.org/contracts/managed-controls/v2/guard.custom-extension-definition.v2.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "commands": {
+      "items": {
+        "$ref": "#/$defs/command"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "createdAt": {
+      "format": "date-time",
+      "maxLength": 32,
+      "type": "string"
+    },
+    "createdBy": {
+      "maxLength": 128,
+      "minLength": 5,
+      "pattern": "^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$",
+      "type": "string"
+    },
+    "definitionId": {
+      "maxLength": 68,
+      "pattern": "^ced_[a-z0-9]{16,64}$",
+      "type": "string"
+    },
+    "displayName": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    },
+    "opaqueIdentity": {
+      "maxLength": 68,
+      "pattern": "^cei_[a-z0-9]{32,64}$",
+      "type": "string"
+    },
+    "retiredAt": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "maxLength": 32,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "revision": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "schemaVersion": {
+      "const": "guard.custom-extension-definition.v2"
+    },
+    "surface": {
+      "enum": [
+        "cli",
+        "mcp",
+        "package-scripts"
+      ]
+    },
+    "variants": {
+      "items": {
+        "$ref": "#/$defs/variant"
+      },
+      "maxItems": 32,
+      "type": "array"
+    },
+    "workspaceId": {
+      "format": "uuid",
+      "maxLength": 36,
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "definitionId",
+    "workspaceId",
+    "opaqueIdentity",
+    "revision",
+    "displayName",
+    "surface",
+    "commands",
+    "variants",
+    "createdAt",
+    "createdBy"
+  ],
+  "title": "HOL Guard Custom Extension definition v2",
+  "type": "object"
+}

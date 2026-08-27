@@ -1,0 +1,189 @@
+{
+  "$defs": {
+    "exclusion": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "member",
+            "device",
+            "agent"
+          ]
+        },
+        "reason": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "targetId": {
+          "maxLength": 128,
+          "minLength": 5,
+          "pattern": "^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "targetId",
+        "reason"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://hol.org/contracts/managed-controls/v2/guard.managed-control-assignment.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "assignmentId": {
+      "maxLength": 68,
+      "pattern": "^mca_[a-z0-9]{16,64}$",
+      "type": "string"
+    },
+    "configurationVersionDigest": {
+      "maxLength": 71,
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "continuousEnrollment": {
+      "type": "boolean"
+    },
+    "createdAt": {
+      "format": "date-time",
+      "maxLength": 32,
+      "type": "string"
+    },
+    "createdBy": {
+      "maxLength": 128,
+      "minLength": 5,
+      "pattern": "^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$",
+      "type": "string"
+    },
+    "effectiveFrom": {
+      "format": "date-time",
+      "maxLength": 32,
+      "type": "string"
+    },
+    "exclusions": {
+      "items": {
+        "$ref": "#/$defs/exclusion"
+      },
+      "maxItems": 256,
+      "type": "array"
+    },
+    "expiresAt": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "maxLength": 32,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "revision": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "schemaVersion": {
+      "const": "guard.managed-control-assignment.v1"
+    },
+    "selector": {
+      "additionalProperties": false,
+      "properties": {
+        "agentIds": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 5,
+            "pattern": "^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$",
+            "type": "string"
+          },
+          "maxItems": 512,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "deviceIds": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 5,
+            "pattern": "^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$",
+            "type": "string"
+          },
+          "maxItems": 512,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "deviceTags": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z0-9][a-z0-9._:-]*$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "directoryQueryId": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 5,
+              "pattern": "^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memberIds": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 5,
+            "pattern": "^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$",
+            "type": "string"
+          },
+          "maxItems": 512,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "mode": {
+          "enum": [
+            "all-active-devices",
+            "selected-members",
+            "selected-devices",
+            "supported-agents",
+            "directory-query",
+            "device-tags"
+          ]
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "type": "object"
+    },
+    "workspaceId": {
+      "format": "uuid",
+      "maxLength": 36,
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "assignmentId",
+    "workspaceId",
+    "configurationVersionDigest",
+    "revision",
+    "selector",
+    "exclusions",
+    "continuousEnrollment",
+    "createdAt",
+    "createdBy"
+  ],
+  "title": "HOL Guard managed control assignment v1",
+  "type": "object"
+}
