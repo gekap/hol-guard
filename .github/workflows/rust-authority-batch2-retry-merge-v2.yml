@@ -36,7 +36,10 @@ jobs:
         run: |
           number=$(gh pr list --repo hashgraph-online/hol-guard --head fix/rust-authority-batch-2 --base main --state open --json number --jq '.[].number')
           test "$(printf '%s\n' "$number" | sed '/^$/d' | wc -l | tr -d ' ')" -eq 1
+          head=$(gh pr view "$number" --repo hashgraph-online/hol-guard --json headRefOid --jq .headRefOid)
+          test "$head" = "$GITHUB_SHA"
           echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
           gh pr comment "$number" --repo hashgraph-online/hol-guard --body "@coderabbitai review"
       - name: Verify authority, compile, integrate, and benchmark
         env:

@@ -267,7 +267,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
           gh pr merge "$PR" --repo hashgraph-online/hol-guard --squash --delete-branch \
+            --match-head-commit "$HEAD_SHA" \
             --subject "feat(guard): complete Rust runtime authority batch 2" \
             --body "Tasks T101-T200 passed two independent compiled integration passes, native differential and mutation testing, performance, CI, Security Gates, CodeQL, type checking, and review-thread checks."

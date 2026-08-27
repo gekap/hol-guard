@@ -170,9 +170,7 @@ class HookWorker:
             deadline=deadline,
         )
         mode = native_mode()
-        native_required = mode == "force" or (
-            mode == "auto" and native_runtime_status().available
-        )
+        native_required = mode == "force" or (mode == "auto" and native_runtime_status().available)
         if native_required:
             config = self._load_config(guard_home, workspace)
             response = review_post_tool_native(

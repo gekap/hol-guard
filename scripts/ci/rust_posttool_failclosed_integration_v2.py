@@ -136,7 +136,7 @@ def main() -> int:
                 _request(
                     workspace,
                     rule_digest,
-                    "AWS_SECRET_ACCESS_KEY=abc123secretvalue\n",
+                    "AKIAAAAAAAAAAAAAAAAA\n",
                     time.time_ns(),
                 ),
             )
