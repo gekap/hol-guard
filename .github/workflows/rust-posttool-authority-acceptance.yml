@@ -91,9 +91,12 @@ jobs:
             ci/native_runtime/test_guard_native_runtime_mutation_differential.py \
             --tb=short
       - name: Enforce release performance
+        env:
+          HOL_GUARD_NATIVE: force
+          HOL_GUARD_NATIVE_BINARY: ${{ github.workspace }}/rust/target/release/hol-guard-runtime
         run: |
           uv run --no-sync python scripts/bench_guard_native_release_gate.py \
-            --runtime rust/target/release/hol-guard-runtime \
+            --runtime "$HOL_GUARD_NATIVE_BINARY" \
             --warm-iterations 30 --cold-iterations 2 \
             --json rust-posttool-performance.json --enforce
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
