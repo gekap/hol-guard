@@ -301,6 +301,7 @@ class TestGuardSurfaceServer:
             "policy_engine",
             "rule_packs",
             "tamper_checks",
+            "harness_hooks",
             "decision_plane_compatibility",
             "containment_compatibility",
             "sandbox",
