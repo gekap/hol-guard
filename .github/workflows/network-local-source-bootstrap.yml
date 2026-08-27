@@ -19,15 +19,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git rev-parse HEAD > SOURCE_HEAD
-          tar --exclude=.git --exclude=.venv --exclude=node_modules --exclude=dist --exclude=build -czf hol-guard-source.tgz .
-          sha256sum hol-guard-source.tgz > hol-guard-source.tgz.sha256
+          git rev-parse HEAD > /tmp/SOURCE_HEAD
+          tar --exclude=.git --exclude=.venv --exclude=node_modules --exclude=dist --exclude=build -czf /tmp/hol-guard-source.tgz .
+          sha256sum /tmp/hol-guard-source.tgz > /tmp/hol-guard-source.tgz.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: network-local-source
           path: |
-            hol-guard-source.tgz
-            hol-guard-source.tgz.sha256
-            SOURCE_HEAD
+            /tmp/hol-guard-source.tgz
+            /tmp/hol-guard-source.tgz.sha256
+            /tmp/SOURCE_HEAD
           if-no-files-found: error
           retention-days: 1
