@@ -1,21 +1,23 @@
 # Everyday Mode semantic explanation catalog
 
-HOL Guard Core owns action meaning. This catalog is deterministic, local, and side-effect free. It consumes the executable and argument vector from Core's canonical action pipeline. It does not execute commands, make network requests, or call a language model.
+HOL Guard Core owns action meaning. The catalog is deterministic, local, bounded, and side-effect free. It consumes typed facts from the canonical action envelope and `CanonicalCommand`; it never executes commands, performs network requests, or calls a language model. Policy outcomes may add reason context, but they do not determine what an action means.
 
-## Initial covered families
+## Covered families in EVM-101–200
 
-- file and folder deletion, including recursive deletion;
-- copying, moving, and renaming files;
-- ownership and permission changes;
-- reads of typed sensitive credential locations;
-- outbound web requests, downloads, and uploads;
-- remote file transfer;
-- package installation, removal, and publication across common package managers.
+The first runtime slice covers ordered compound commands; recursive and ordinary file deletion; file copy, move, and rename; ownership and permission changes; exact credential-file reads; outbound web requests, downloads, uploads, and remote transfer; package installation, removal, and publication; and safe unknown-action fallback. File, network, package, remote, and credential targets prefer typed Core facts before bounded executable-specific fallback logic.
 
-Every recognized action receives a consequence-first headline, a plain-language summary, a material impact, a recommendation, and safer alternatives. Unknown or unsupported actions remain explicitly limited-confidence and are never inferred safe.
+Every recognized action has a consequence-first headline, plain-language summary, material impact, recommendation, typed target list, typed consequence list, and safer alternatives. Unknown or unsupported actions are `limited` confidence and are never inferred safe. Compound actions preserve execution order and expose individual material steps without changing enforcement.
 
-## Privacy and authority
+## Identity and compatibility
 
-Everyday text uses safe target labels rather than full local paths. Secret-like values are removed before any technical projection is returned. Exact commands are present only when Core retained them and the caller is authorized to see them. Cloud consumers must use the contract's cloud-safe projection.
+Every explanation binds `action_identity`, optional `canonical_identity`, semantic `catalog_digest`, renderer version, locale, and redaction version. Cache keys cover all of those values. A consumer must reject or visibly degrade an explanation when the action or canonical identity no longer matches the request being rendered. The semantic catalog digest covers every rule field that can affect rendered output.
 
-The catalog is content-addressed through `stable_semantic_catalog_digest()` so caches and compatibility checks can detect semantic changes without using raw action content.
+## Privacy and retention
+
+Everyday text uses bounded safe target labels rather than full local paths. Network actions retain a safe destination host while secret-bearing payload values are redacted separately. Credential targets are identified only from exact sensitive filename/path patterns, avoiding substring guesses such as `secretary.txt` or `tokenizer.py`.
+
+Technical values pass through Guard's existing redaction service, including bearer, API, GitHub, AWS, npm, private-key, environment-secret, password, and connection-string handling. Exact commands are available only when Core retained them and the caller is authorized to see them. List and Cloud consumers use the contract projections that strip exact command text, arguments, segments, and working-scope details.
+
+## Extension metadata
+
+Extension explanation metadata is presentation-only. It may contribute everyday names, purposes, synonyms, dialect coverage, action-intent IDs, target kinds, consequence IDs, safer-step IDs, and safe-variant IDs. The parser rejects enforcement/decision fields, rollback revisions, invalid schemas, unbounded values, and rules that suppress all consequences. Built-in command rules require explanation metadata or an explicit generic fallback before release.
