@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
 
+mod pretool;
+
+pub use pretool::{evaluate_pre_tool, PreToolDecisionV1};
+
 use serde::{Deserialize, Serialize};
 
 pub const MAX_COMMAND_BYTES: usize = 32_768;
@@ -440,8 +444,8 @@ fn assignment_name(token: &str) -> Option<&str> {
     Some(name)
 }
 
-fn executable_basename(executable: &str) -> &str {
-    executable.rsplit('/').next().unwrap_or(executable)
+pub(crate) fn executable_basename(executable: &str) -> &str {
+    executable.rsplit(['/', '\\']).next().unwrap_or(executable)
 }
 
 fn is_shell_control_keyword(executable: &str) -> bool {

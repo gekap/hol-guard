@@ -28,10 +28,9 @@ def envelope(command: str, request_id: str = "adversarial") -> bytes:
 
 def decision(runtime: Path, command: str, request_id: str) -> dict[str, object]:
     completed = subprocess.run(
-        [str(runtime), "pretool", "--stdin"],
+        [str(runtime), "pre-tool", "--stdin"],
         input=envelope(command, request_id),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=10,
         check=True,
     )
@@ -43,10 +42,9 @@ def decision(runtime: Path, command: str, request_id: str) -> dict[str, object]:
 
 def reject_wire(runtime: Path, payload: bytes) -> None:
     completed = subprocess.run(
-        [str(runtime), "pretool", "--stdin"],
+        [str(runtime), "pre-tool", "--stdin"],
         input=payload,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=10,
     )
     assert completed.returncode != 0, completed.stdout
@@ -123,7 +121,10 @@ def main() -> int:
     reject_wire(runtime, b"{}")
     reject_wire(runtime, b'{"protocol_version":1,"request_id":"x","event_name":"PostToolUse","payload":{}}')
     reject_wire(runtime, b'{"protocol_version":2,"request_id":"x","event_name":"PreToolUse","payload":{}}')
-    reject_wire(runtime, b'{"protocol_version":1,"request_id":"x","request_id":"y","event_name":"PreToolUse","payload":{}}')
+    reject_wire(
+        runtime,
+        b'{"protocol_version":1,"request_id":"x","request_id":"y","event_name":"PreToolUse","payload":{}}',
+    )
     reject_wire(runtime, b'{"protocol_version":1,"request_id":"x","event_name":"PreToolUse","payload":{}} trailing')
     deep = b"[" * 40 + b"0" + b"]" * 40
     reject_wire(runtime, deep)

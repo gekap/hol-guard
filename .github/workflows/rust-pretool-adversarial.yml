@@ -5,8 +5,7 @@ on:
     branches: [release/3.0]
     paths:
       - "rust/**"
-      - "src/codex_plugin_scanner/guard/native_pretool.py"
-      - "src/codex_plugin_scanner/guard/native_pretool_cli.py"
+      - "src/codex_plugin_scanner/guard/native_command_model.py"
       - "src/codex_plugin_scanner/guard/daemon/hook_worker.py"
       - "scripts/integration/rust_pretool_adversarial.py"
       - ".github/workflows/rust-pretool-adversarial.yml"
@@ -14,8 +13,7 @@ on:
     branches: [release/3.0]
     paths:
       - "rust/**"
-      - "src/codex_plugin_scanner/guard/native_pretool.py"
-      - "src/codex_plugin_scanner/guard/native_pretool_cli.py"
+      - "src/codex_plugin_scanner/guard/native_command_model.py"
       - "src/codex_plugin_scanner/guard/daemon/hook_worker.py"
       - "scripts/integration/rust_pretool_adversarial.py"
       - ".github/workflows/rust-pretool-adversarial.yml"

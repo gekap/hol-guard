@@ -50,12 +50,12 @@ jobs:
           rustup default 1.88.0
       - name: Enforce source authority invariants
         run: |
-          test -f docs/guard/rust-pretool-authority-bootstrap-report.md
-          grep -q "Accepted candidate" docs/guard/rust-pretool-authority-bootstrap-report.md
-          ! grep -q "Shadow-only Python bridge" src/codex_plugin_scanner/guard/native_command_model.py
-          ! grep -q "evaluate_command(" src/codex_plugin_scanner/guard/native_command_model.py
-          ! grep -qE 'status\.mode not in .*shadow.*force' src/codex_plugin_scanner/guard/native_command_model.py
-          grep -RqsE 'PreToolUse|pre_tool_use|pre-tool' rust/crates
+          ! grep -q "Python remains authoritative" src/codex_plugin_scanner/guard/native_command_model.py
+          grep -q "def review_pre_tool_native(" src/codex_plugin_scanner/guard/native_command_model.py
+          grep -q 'command == "pre-tool"' rust/crates/guard-runtime/src/main.rs
+          grep -q "pub fn evaluate_pre_tool" rust/crates/guard-command/src/pretool.rs
+          grep -q 'if event_name == "PreToolUse":' src/codex_plugin_scanner/guard/daemon/hook_worker.py
+          uv run --no-sync python scripts/ci/rust_pretool_no_python_gate.py --root .
       - name: Compile and lint Rust authority
         run: |
           cargo fmt --manifest-path rust/Cargo.toml --all --check
@@ -79,6 +79,7 @@ jobs:
           HOL_GUARD_NATIVE_BINARY: ${{ github.workspace }}/rust/target/release/hol-guard-runtime
         run: |
           uv run --no-sync pytest -q \
+            tests/test_rust_pretool_authority.py \
             ci/native_runtime/test_command_model_resident.py \
             ci/native_runtime/test_guard_native_runtime_binary.py \
             --tb=short

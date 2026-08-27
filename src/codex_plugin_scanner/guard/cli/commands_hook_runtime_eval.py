@@ -46,6 +46,7 @@ from ..local_supply_chain import (
     _package_policy_override_evaluation,
 )
 from ..models import GuardAction
+from ..native_command_model import native_pre_tool_policy_floor
 from ..package_execution_context import PackageExecutionContext, build_package_execution_context
 from ..runtime.approval_context import approval_context_tokens_validation_reason
 from ..runtime.approval_reuse import (
@@ -457,6 +458,19 @@ def _evaluate_runtime_artifact_hook(
         # Hook payloads are untrusted hints.  They may make a decision stricter,
         # but can never lower current local policy or suppress later scanners.
         current_action_inputs.append(payload_action_normalization.action)
+    native_pre_tool_floor: GuardAction | None = None
+    if event_name == "PreToolUse":
+        native_command = _runtime_package_raw_command(payload_map, action_envelope)
+        if native_command is not None:
+            native_floor = native_pre_tool_policy_floor(
+                native_command,
+                guard_home=context.guard_home,
+                cwd=runtime_workspace,
+                home_dir=context.home_dir,
+            )
+            native_pre_tool_floor = coerce_guard_action(native_floor)
+            if native_pre_tool_floor is not None:
+                current_action_inputs.append(native_pre_tool_floor)
     policy_action = most_restrictive_guard_action(*current_action_inputs)
     approval_context_policy_action = most_restrictive_guard_action(
         approval_context_config_action,
@@ -678,6 +692,16 @@ def _evaluate_runtime_artifact_hook(
         current_policy_action = granted
         policy_action = granted
         approval_context_policy_action = granted
+    if native_pre_tool_floor is not None:
+        policy_action = most_restrictive_guard_action(policy_action, native_pre_tool_floor)
+        current_policy_action = most_restrictive_guard_action(
+            current_policy_action,
+            native_pre_tool_floor,
+        )
+        approval_context_policy_action = most_restrictive_guard_action(
+            approval_context_policy_action,
+            native_pre_tool_floor,
+        )
     runtime_artifact_hash = _runtime_hook_approval_context_token(
         artifact=approval_context_artifact,
         content_hash=artifact_content_hash,

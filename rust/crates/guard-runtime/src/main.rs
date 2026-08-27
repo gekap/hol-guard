@@ -2,7 +2,7 @@
 
 mod hardening;
 
-use guard_command::{parse_command, CommandModelRequestV1};
+use guard_command::{evaluate_pre_tool, parse_command, CommandModelRequestV1, PreToolDecisionV1};
 use guard_contracts::{
     NativeHookRequestV1, RuntimeCapabilitiesV1, MAX_NATIVE_REQUEST_BYTES,
     MAX_NATIVE_RESPONSE_BYTES, NATIVE_PROTOCOL_VERSION,
@@ -60,6 +60,7 @@ const PARENT_LIVENESS_FD_ENV: &str = "HOL_GUARD_PARENT_LIVENESS_FD";
 #[serde(tag = "operation", content = "request", rename_all = "snake_case")]
 enum ResidentOperationV1 {
     CommandModel(CommandModelRequestV1),
+    PreToolUse(CommandModelRequestV1),
     Health(Value),
 }
 
@@ -250,6 +251,7 @@ fn capabilities() -> RuntimeCapabilitiesV1 {
         "rule-contract-v2".into(),
         "pre-tool-command-model-shadow-v1".into(),
         "resident-command-model-shadow-v1".into(),
+        "pre-tool-command-authority-v1".into(),
     ];
     if cfg!(windows) {
         features.push("authenticated-loopback-resident-v1".into());
@@ -297,6 +299,83 @@ fn evaluate_hook_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
     encode_response(&review_post_tool(&request))
 }
 
+fn mapping_string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+}
+
+fn extract_pre_tool_command(value: &Value) -> Result<String, String> {
+    if let Some(event_name) = mapping_string(value, "event_name") {
+        if event_name != "PreToolUse" {
+            return Err("native_pre_tool_unsupported_event".to_owned());
+        }
+    }
+    if let Some(version) = value.get("protocol_version") {
+        let protocol_version = version
+            .as_u64()
+            .ok_or_else(|| "native_pre_tool_invalid_protocol".to_owned())?;
+        if protocol_version != u64::from(NATIVE_PROTOCOL_VERSION) {
+            return Err("native_pre_tool_invalid_protocol".to_owned());
+        }
+    }
+    let command_holders = [
+        value,
+        value.get("payload").unwrap_or(&Value::Null),
+        value
+            .get("payload")
+            .and_then(|payload| payload.get("tool_input"))
+            .unwrap_or(&Value::Null),
+        value
+            .get("payload")
+            .and_then(|payload| payload.get("arguments"))
+            .unwrap_or(&Value::Null),
+        value.get("tool_input").unwrap_or(&Value::Null),
+    ];
+    for holder in command_holders {
+        for key in ["command", "cmd", "shell_command", "shellCommand"] {
+            if let Some(command) = mapping_string(holder, key) {
+                return Ok(command.to_owned());
+            }
+        }
+    }
+    Err("native_pre_tool_command_missing".to_owned())
+}
+
+fn pre_tool_response(request_id: Option<&str>, decision: PreToolDecisionV1) -> serde_json::Value {
+    serde_json::json!({
+        "authority": "rust",
+        "request_id": request_id.unwrap_or(""),
+        "decision": &decision.decision,
+        "policy_action": &decision.minimum_action,
+        "minimum_action": &decision.minimum_action,
+        "reason_code": &decision.reason_code,
+        "reason": &decision.reason,
+        "explicitly_benign": decision.explicitly_benign,
+        "command_model": &decision.command_model,
+    })
+}
+
+fn evaluate_pre_tool_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let value = strict_json_value(bytes)?;
+    let command = extract_pre_tool_command(&value)?;
+    let dialect = mapping_string(&value, "dialect").unwrap_or("posix");
+    let transport = mapping_string(&value, "transport").unwrap_or("shell_string");
+    let extraction_provenance =
+        mapping_string(&value, "extraction_provenance").unwrap_or("guard-shell");
+    let request = CommandModelRequestV1 {
+        command,
+        dialect: dialect.to_owned(),
+        transport: transport.to_owned(),
+        extraction_provenance: extraction_provenance.to_owned(),
+    };
+    let decision = evaluate_pre_tool(&request)?;
+    let request_id = mapping_string(&value, "request_id");
+    encode_response(&pre_tool_response(request_id, decision))
+}
+
 fn evaluate_command_model_request(request: &CommandModelRequestV1) -> Result<Vec<u8>, String> {
     let response = parse_command(request)?;
     encode_response(&response)
@@ -316,6 +395,9 @@ fn evaluate_resident_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
     match request {
         ResidentRequestV1::Operation(ResidentOperationV1::CommandModel(request)) => {
             evaluate_command_model_request(&request)
+        }
+        ResidentRequestV1::Operation(ResidentOperationV1::PreToolUse(request)) => {
+            encode_response(&pre_tool_response(None, evaluate_pre_tool(&request)?))
         }
         ResidentRequestV1::Operation(ResidentOperationV1::Health(_request)) => {
             encode_response(&serde_json::json!({
@@ -781,12 +863,17 @@ fn run() -> Result<(), String> {
             let response = evaluate_command_model_bytes(&bytes)?;
             write_bytes_response(&response)
         }
+        [command, flag] if command == "pre-tool" && flag == "--stdin" => {
+            let bytes = read_stdin_bounded()?;
+            let response = evaluate_pre_tool_bytes(&bytes)?;
+            write_bytes_response(&response)
+        }
         [command, flag, path] if command == "serve" && flag == "--socket" => serve(path),
         [command, flag, address] if command == "serve" && flag == "--tcp-loopback" => {
             serve_loopback(address)
         }
         _ => Err(
-            "usage: hol-guard-runtime capabilities --json | rule-contract --json | self-test --json | hook --stdin | command-model --stdin | serve --socket PATH | serve --tcp-loopback 127.0.0.1:PORT"
+            "usage: hol-guard-runtime capabilities --json | rule-contract --json | self-test --json | hook --stdin | command-model --stdin | pre-tool --stdin | serve --socket PATH | serve --tcp-loopback 127.0.0.1:PORT"
                 .into(),
         ),
     }
