@@ -1,0 +1,216 @@
+name: Reconcile Everyday foundation v4
+
+on:
+  push:
+    branches:
+      - tmp/everyday-pr2569-clean-v3-20260826
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: everyday-pr2569-clean-v4
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out orchestration branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: tmp/everyday-pr2569-clean-v3-20260826
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: "0.9.26"
+          enable-cache: true
+
+      - name: Rebuild product diff on current release/3.0
+        id: rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin release/3.0 feat/everyday-mode-001-100
+
+          base_head="$(git rev-parse origin/release/3.0)"
+          old_pr_head="$(git rev-parse origin/feat/everyday-mode-001-100)"
+          merge_base="$(git merge-base origin/release/3.0 origin/feat/everyday-mode-001-100)"
+          echo "base_head=$base_head" >> "$GITHUB_OUTPUT"
+          echo "old_pr_head=$old_pr_head" >> "$GITHUB_OUTPUT"
+          echo "merge_base=$merge_base" >> "$GITHUB_OUTPUT"
+
+          paths=(
+            dashboard/src/guard-types.ts
+            dashboard/src/main.tsx
+            dashboard/src/presentation-mode.test.ts
+            dashboard/src/presentation-mode.ts
+            dashboard/src/tailwind-root.css
+            docs/guard/adr/0012-everyday-and-technical-presentation.md
+            docs/guard/everyday-mode/copy-contract.md
+            docs/guard/everyday-mode/vocabulary.json
+            schemas/guard_action_explanation_v1.json
+            src/codex_plugin_scanner/guard/config.py
+            src/codex_plugin_scanner/guard/daemon/server.py
+            src/codex_plugin_scanner/guard/presentation_mode.py
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py
+            src/codex_plugin_scanner/guard/schemas/guard_action_explanation_v1.json
+            tests/test_guard_action_explanation_contract.py
+            tests/test_guard_codex_browser_authority.py
+            tests/test_guard_presentation_mode.py
+          )
+
+          git diff --binary --full-index "$merge_base"..origin/feat/everyday-mode-001-100 -- "${paths[@]}" > "$RUNNER_TEMP/everyday-foundation.patch"
+          git checkout -B everyday-foundation-clean origin/release/3.0
+
+          set +e
+          git apply --3way --index "$RUNNER_TEMP/everyday-foundation.patch"
+          apply_status=$?
+          set -e
+
+          mapfile -t conflicts < <(git diff --name-only --diff-filter=U | sort)
+          if ((${#conflicts[@]})); then
+            printf 'Unexpected product conflicts:\n%s\n' "${conflicts[*]}"
+            exit 1
+          fi
+          if ((apply_status != 0)); then
+            echo 'Patch application failed without an explicit conflict set.'
+            exit 1
+          fi
+
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import subprocess
+          from pathlib import Path
+          from typing import Any
+
+          merge_base = subprocess.check_output(
+              ["git", "merge-base", "origin/release/3.0", "origin/feat/everyday-mode-001-100"],
+              text=True,
+          ).strip()
+
+          def show_json(ref: str, path: str) -> Any:
+              raw = subprocess.check_output(["git", "show", f"{ref}:{path}"], text=True)
+              return json.loads(raw)
+
+          def merge_delta(current: Any, ancestor: Any, proposed: Any) -> Any:
+              if isinstance(current, dict) and isinstance(ancestor, dict) and isinstance(proposed, dict):
+                  merged = dict(current)
+                  for key, proposed_value in proposed.items():
+                      if key not in ancestor:
+                          merged[key] = proposed_value
+                          continue
+                      if key not in current:
+                          if proposed_value != ancestor[key]:
+                              merged[key] = proposed_value
+                          continue
+                      merged[key] = merge_delta(current[key], ancestor[key], proposed_value)
+                  return merged
+              if (
+                  isinstance(current, int)
+                  and not isinstance(current, bool)
+                  and isinstance(ancestor, int)
+                  and not isinstance(ancestor, bool)
+                  and isinstance(proposed, int)
+                  and not isinstance(proposed, bool)
+              ):
+                  return current + (proposed - ancestor)
+              if proposed != ancestor:
+                  return proposed
+              return current
+
+          for path_text in (
+              "ci/code-quality-baseline.json",
+              "ci/test-suite-ratchet-baseline.json",
+              "tests/fixtures/guard-command-corpus/decision-diff-report.json",
+          ):
+              path = Path(path_text)
+              current = json.loads(path.read_text(encoding="utf-8"))
+              ancestor = show_json(merge_base, path_text)
+              proposed = show_json("origin/feat/everyday-mode-001-100", path_text)
+              merged = merge_delta(current, ancestor, proposed)
+              path.write_text(json.dumps(merged, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+
+          package_path = Path("dashboard/package.json")
+          package = json.loads(package_path.read_text(encoding="utf-8"))
+          focused = "tsx src/presentation-mode.test.ts"
+          test_script = str(package["scripts"].get("test", ""))
+          parts = [part.strip() for part in test_script.split("&&") if part.strip()]
+          parts = [part for part in parts if part != focused]
+          package["scripts"]["test"] = " && ".join([focused, *parts])
+          package_path.write_text(json.dumps(package, indent=2) + "\n", encoding="utf-8")
+          PY
+
+          git add -A
+          if git diff --cached --name-only | grep -E '^\.github/(everyday-pr2569|workflows/tmp-everyday)' ; then
+            echo 'Temporary orchestration files leaked into the product diff.'
+            exit 1
+          fi
+          git diff --cached --check
+          git diff --cached --name-status
+
+      - name: Install locked development environment
+        run: uv sync --frozen --extra dev --python 3.12
+
+      - name: Validate focused Core contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --no-sync pytest \
+            tests/test_guard_action_explanation_contract.py \
+            tests/test_guard_presentation_mode.py \
+            tests/test_guard_codex_browser_authority.py \
+            --tb=short
+          uv run --no-sync python -m ruff check \
+            src/codex_plugin_scanner/guard/config.py \
+            src/codex_plugin_scanner/guard/daemon/server.py \
+            src/codex_plugin_scanner/guard/presentation_mode.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py \
+            tests/test_guard_action_explanation_contract.py \
+            tests/test_guard_presentation_mode.py \
+            tests/test_guard_codex_browser_authority.py
+          uv run --no-sync python -m ruff format --check \
+            src/codex_plugin_scanner/guard/config.py \
+            src/codex_plugin_scanner/guard/daemon/server.py \
+            src/codex_plugin_scanner/guard/presentation_mode.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py \
+            tests/test_guard_action_explanation_contract.py \
+            tests/test_guard_presentation_mode.py \
+            tests/test_guard_codex_browser_authority.py
+          uv run --no-sync python scripts/ci/code_quality_audit.py \
+            --root . \
+            --baseline ci/code-quality-baseline.json \
+            --json-output "$RUNNER_TEMP/code-quality-audit.json"
+          uv run --no-sync python scripts/ci/test_inventory.py --output "$RUNNER_TEMP/test-inventory.json"
+          uv run --no-sync python scripts/ci/test_suite_ratchet.py \
+            --baseline ci/test-suite-ratchet-baseline.json \
+            --inventory "$RUNNER_TEMP/test-inventory.json"
+
+      - name: Commit and update PR branch with lease protection
+        shell: bash
+        env:
+          OLD_PR_HEAD: ${{ steps.rebuild.outputs.old_pr_head }}
+          BASE_HEAD: ${{ steps.rebuild.outputs.base_head }}
+        run: |
+          set -euo pipefail
+          git add -A
+          git diff --cached --check
+          git commit -m 'feat: reconcile Everyday Mode foundation onto current release/3.0'
+          git push origin \
+            "HEAD:refs/heads/feat/everyday-mode-001-100" \
+            --force-with-lease="refs/heads/feat/everyday-mode-001-100:${OLD_PR_HEAD}"
+          echo "Reconciled onto ${BASE_HEAD} and updated from ${OLD_PR_HEAD}."
