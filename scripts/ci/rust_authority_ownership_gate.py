@@ -21,11 +21,33 @@ TEMPORARY_PATHS: Final = (
     Path(".github/workflows/rust-authority-batch1-merge-gate.yml"),
     Path(".github/workflows/rust-posttool-authority-bootstrap.yml"),
     Path(".github/workflows/rust-posttool-authority-orchestrator.yml"),
+    Path(".github/workflows/rust-posttool-authority-lint-fix.yml"),
     Path(".github/workflows/rust-authority-batch2-merge-gate.yml"),
+    Path(".github/workflows/rust-authority-batch2-retry-merge-v2.yml"),
+    Path(".github/workflows/rust-authority-batch2-converge-v3.yml"),
+    Path(".github/workflows/rust-authority-batch2-converge-v4.yml"),
+    Path(".github/workflows/rust-authority-final-orchestrator.yml"),
+    Path(".github/workflows/rust-authority-final-lint-fix.yml"),
+    Path(".github/workflows/rust-authority-final-merge-gate.yml"),
+    Path(".github/workflows/rust-authority-final-retry-merge-v2.yml"),
+    Path(".github/workflows/rust-authority-batch3-converge-v3.yml"),
     Path("scripts/ci/bootstrap_rust_pretool_authority.sh"),
     Path("scripts/ci/bootstrap_rust_posttool_authority.sh"),
     Path("scripts/ci/fallback_rust_posttool_authority.py"),
+    Path("scripts/ci/converge_rust_posttool_authority_v2.py"),
+    Path("scripts/ci/harden_rust_policy_snapshot_v3.py"),
+    Path("scripts/ci/select_rust_posttool_authority_candidate_v2.sh"),
+    Path("scripts/ci/rust_authority_ownership_gate_v2.py"),
+    Path("scripts/ci/rust_authority_ownership_gate_v3.py"),
+    Path("scripts/ci/finalize_rust_authority_migration.py"),
+    Path("scripts/ci/finalize_rust_authority_migration_v2.py"),
     Path("docs/guard/.batch1-merge-probe"),
+    Path("docs/guard/rust-authority-batch-2-bootstrap.md"),
+    Path("rust/AUTHORITY_BATCH_1"),
+    Path("rust/AUTHORITY_BATCH_1_FINAL"),
+    Path("rust/AUTHORITY_BATCH_2"),
+    Path("rust/AUTHORITY_BATCH_2_FINAL"),
+    Path("rust/AUTHORITY_FINAL"),
 )
 
 
@@ -64,30 +86,33 @@ def _manifest() -> dict[str, object]:
 
 
 def _pretool_gate() -> None:
-    path = Path("src/codex_plugin_scanner/guard/native_command_model.py")
-    if path.exists():
-        source = _read(path)
-        forbidden = (
-            "Shadow-only Python bridge",
-            "Python remains authoritative",
-            "status.mode not in {\"shadow\", \"force\"}",
-            "evaluate_command(",
-        )
-        matches = [value for value in forbidden if value in source]
-        if matches:
-            raise RuntimeError(f"Python PreToolUse authority residue remains: {matches}")
-        if _python_imports_function(path, "command_evaluation", "evaluate_command"):
-            raise RuntimeError("native command bridge imports the Python command evaluator")
+    pretool = Path("src/codex_plugin_scanner/guard/native_pretool.py")
+    if _python_imports_function(pretool, "command_evaluation", "evaluate_command"):
+        raise RuntimeError("native PreToolUse transport imports the Python command evaluator")
+    if "evaluate_command(" in _read(pretool):
+        raise RuntimeError("native PreToolUse transport calls the Python command evaluator")
 
     hook = _read(Path("src/codex_plugin_scanner/guard/daemon/hook_worker.py"))
-    if "PreToolUse" not in hook and "pre_tool" not in hook:
-        raise RuntimeError("daemon hook ingress does not expose native PreToolUse authority")
+    if "review_pre_tool_native" not in hook:
+        raise RuntimeError("PreToolUse hook path is not bound to the native runtime")
     region = re.search(
         r'if event_name\s*==\s*"PreToolUse":[\s\S]*?(?=\n\s*if event_name\s*!=\s*"PostToolUse")',
         hook,
     )
-    if region and "self.engine.review(" in region.group(0):
+    if region is None:
+        raise RuntimeError("daemon has no Rust PreToolUse authority route")
+    if "self.engine.review(" in region.group(0):
         raise RuntimeError("PreToolUse can reach the Python HookReviewEngine")
+    if "native_pre_tool_unavailable" not in region.group(0):
+        raise RuntimeError("PreToolUse does not fail closed when native is unavailable")
+
+    command_model = Path("src/codex_plugin_scanner/guard/native_command_model.py")
+    if command_model.exists():
+        model = _read(command_model)
+        if 'status.mode not in {"shadow", "force"}' not in model:
+            raise RuntimeError("command-model bridge is not confined to shadow or force")
+        if "Python remains authoritative" in model:
+            raise RuntimeError("command-model bridge still declares Python authority")
 
     runtime = _read(Path("rust/crates/guard-runtime/src/main.rs"))
     command = _read(Path("rust/crates/guard-command/src/lib.rs"))
@@ -225,19 +250,15 @@ def run(root: Path) -> dict[str, object]:
             os.chdir(original)
 
 
-def main() -> int:
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--json", type=Path)
-    args = parser.parse_args()
-    result = run(args.root.resolve())
-    rendered = json.dumps(result, indent=2, sort_keys=True)
+    parsed = parser.parse_args()
+    payload = run(parsed.root.resolve())
+    rendered = json.dumps(payload, indent=2, sort_keys=True)
     print(rendered)
-    if args.json is not None:
-        args.json.parent.mkdir(parents=True, exist_ok=True)
-        args.json.write_text(rendered + "\n", encoding="utf-8")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    if parsed.json is not None:
+        parsed.json.parent.mkdir(parents=True, exist_ok=True)
+        parsed.json.write_text(rendered + "\n", encoding="utf-8")
+    raise SystemExit(0)

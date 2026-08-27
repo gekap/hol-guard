@@ -1,6 +1,6 @@
 {
   "schema": "hol-guard-rust-authority-ownership.v1",
-  "release_branch": "release/3.0",
+  "release_branch": "main",
   "surfaces": {
     "pre_tool_use": {
       "semantic_authority": "rust",
