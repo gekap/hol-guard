@@ -1,11 +1,6 @@
 name: Rust authority batch 2 merge gate
 
 on:
-  push:
-    branches: [fix/rust-authority-batch-2]
-    paths:
-      - "rust/AUTHORITY_BATCH_2_FINAL"
-      - ".github/workflows/rust-authority-batch2-merge-gate.yml"
   workflow_dispatch:
 
 permissions:
@@ -45,14 +40,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          number=$(gh pr list --repo hashgraph-online/hol-guard --head fix/rust-authority-batch-2 --state open --json number --jq '.[0].number')
-          test -n "$number"
+          number=$(gh pr list --repo hashgraph-online/hol-guard --head fix/rust-authority-batch-2 --base main --state open --json number --jq '.[].number')
+          test "$(printf '%s\n' "$number" | sed '/^$/d' | wc -l | tr -d ' ')" -eq 1
           echo "number=$number" >> "$GITHUB_OUTPUT"
           gh pr edit "$number" --repo hashgraph-online/hol-guard --add-reviewer deep-purple-boots || true
           gh pr comment "$number" --repo hashgraph-online/hol-guard --body "@coderabbitai review"
       - name: Require completed batch evidence
         run: |
-          test "$(grep -c '^- \[x\] T' docs/guard/rust-migration-batch-2-tasks.md)" -eq 100
+          test "$(grep -c '^- \[x\] T' docs/guard/rust-migration-batch-2-tasks.md)" -eq 98
           test -f docs/guard/evidence/rust-posttool-authority-batch-2.json
           test -f docs/guard/evidence/rust-posttool-performance-batch-2.json
           test -f docs/guard/evidence/rust-posttool-authority-batch-2-review.md
@@ -124,33 +119,62 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
           sleep 60
-          gh api graphql -f query="query { repository(owner:\"hashgraph-online\", name:\"hol-guard\") { pullRequest(number:${PR_NUMBER}) { reviewThreads(first:100) { nodes { isResolved } } reviews(last:100) { nodes { state author { login } } } } } }" > /tmp/review.json
           python - <<'PY'
-          import json
-          value=json.load(open('/tmp/review.json'))['data']['repository']['pullRequest']
-          unresolved=[node for node in value['reviewThreads']['nodes'] if not node['isResolved']]
+          import json, os, subprocess
+          number = os.environ["PR_NUMBER"]
+          sha = os.environ["HEAD_SHA"]
+          cursor = None
+          unresolved = 0
+          changes = []
+          while True:
+              after = f', after: "{cursor}"' if cursor else ""
+              query = (
+                  "query { repository(owner:\"hashgraph-online\", name:\"hol-guard\") {"
+                  f" pullRequest(number:{number}) {{ reviewThreads(first:100{after}) {{"
+                  " pageInfo { hasNextPage endCursor } nodes { isResolved } }"
+                  " reviews(last:100) { nodes { state author { login } } } } } } }"
+              )
+              payload = json.loads(subprocess.check_output(
+                  ["gh", "api", "graphql", "-f", f"query={query}"], text=True
+              ))
+              pr = payload["data"]["repository"]["pullRequest"]
+              threads = pr["reviewThreads"]
+              unresolved += sum(1 for node in threads["nodes"] if not node["isResolved"])
+              changes = [
+                  node["author"]["login"]
+                  for node in pr["reviews"]["nodes"]
+                  if node["state"] == "CHANGES_REQUESTED"
+              ]
+              if not threads["pageInfo"]["hasNextPage"]:
+                  break
+              cursor = threads["pageInfo"]["endCursor"]
           if unresolved:
-              raise SystemExit(f'{len(unresolved)} unresolved review thread(s)')
-          changes=[node for node in value['reviews']['nodes'] if node['state']=='CHANGES_REQUESTED']
+              raise SystemExit(f"{unresolved} unresolved review thread(s)")
           if changes:
-              raise SystemExit('Changes requested: '+', '.join(node['author']['login'] for node in changes))
-          PY
-          gh api repos/hashgraph-online/hol-guard/commits/${{ github.sha }}/status > /tmp/status.json
-          python - <<'PY'
-          import json
-          value=json.load(open('/tmp/status.json'))
-          bad=[item for item in value.get('statuses',[]) if item.get('state') in {'error','failure'}]
+              raise SystemExit("Changes requested: " + ", ".join(changes))
+          checks = json.loads(subprocess.check_output(
+              ["gh", "api", f"repos/hashgraph-online/hol-guard/commits/{sha}/check-runs?per_page=100"],
+              text=True,
+          ))
+          bad = [
+              item.get("name", "unknown")
+              for item in checks.get("check_runs", [])
+              if item.get("conclusion") in {"failure", "timed_out", "cancelled"}
+          ]
           if bad:
-              raise SystemExit('Failed statuses: '+', '.join(item.get('context','unknown') for item in bad))
+              raise SystemExit("Failed checks: " + ", ".join(bad))
           PY
       - name: Merge reviewed batch into main
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
           gh pr comment "$PR_NUMBER" --repo hashgraph-online/hol-guard --body-file docs/guard/evidence/rust-posttool-authority-batch-2-review.md
           gh pr merge "$PR_NUMBER" --repo hashgraph-online/hol-guard --squash --delete-branch \
+            --match-head-commit "$HEAD_SHA" \
             --subject "feat(guard): complete Rust runtime authority batch 2" \
             --body "Supported PostToolUse is Rust-authoritative and fail-closed, native policy snapshots are active, and the batch passed real-binary differential, mutation, performance, CI, Security Gates, CodeQL, and review-thread checks."

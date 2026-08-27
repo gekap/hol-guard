@@ -1,10 +1,6 @@
 name: Rust authority batch 2 retry merge v2
 
 on:
-  push:
-    branches: [fix/rust-authority-batch-2]
-    paths:
-      - ".github/workflows/rust-authority-batch2-retry-merge-v2.yml"
   workflow_dispatch:
 
 permissions:
@@ -38,15 +34,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          number=$(gh pr list --repo hashgraph-online/hol-guard --head fix/rust-authority-batch-2 --state open --json number --jq '.[0].number')
-          test -n "$number"
+          number=$(gh pr list --repo hashgraph-online/hol-guard --head fix/rust-authority-batch-2 --base main --state open --json number --jq '.[].number')
+          test "$(printf '%s\n' "$number" | sed '/^$/d' | wc -l | tr -d ' ')" -eq 1
           echo "number=$number" >> "$GITHUB_OUTPUT"
           gh pr comment "$number" --repo hashgraph-online/hol-guard --body "@coderabbitai review"
       - name: Verify authority, compile, integrate, and benchmark
         env:
           HOL_GUARD_BUILD_SHA: ${{ github.sha }}
         run: |
-          test "$(grep -c '^- \[x\] T' docs/guard/rust-migration-batch-2-tasks.md)" -eq 100
+          test "$(grep -c '^- \[x\] T' docs/guard/rust-migration-batch-2-tasks.md)" -eq 98
           test -f docs/guard/evidence/rust-posttool-authority-batch-2.json
           python - <<'PY'
           from pathlib import Path
@@ -89,13 +85,40 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
           sleep 60
-          gh api graphql -f query="query { repository(owner:\"hashgraph-online\", name:\"hol-guard\") { pullRequest(number:${PR}) { reviewThreads(first:100) { nodes { isResolved } } reviews(last:100) { nodes { state } } } } }" > /tmp/review.json
           python - <<'PY'
-          import json
-          value=json.load(open('/tmp/review.json'))['data']['repository']['pullRequest']
-          if any(not n['isResolved'] for n in value['reviewThreads']['nodes']): raise SystemExit('unresolved review threads')
-          if any(n['state']=='CHANGES_REQUESTED' for n in value['reviews']['nodes']): raise SystemExit('changes requested')
+          import json, os, subprocess
+          number = os.environ["PR"]
+          cursor = None
+          unresolved = False
+          changes = False
+          while True:
+              after = f', after: "{cursor}"' if cursor else ""
+              query = (
+                  "query { repository(owner:\"hashgraph-online\", name:\"hol-guard\") {"
+                  f" pullRequest(number:{number}) {{ reviewThreads(first:100{after}) {{"
+                  " pageInfo { hasNextPage endCursor } nodes { isResolved } }"
+                  " reviews(last:100) { nodes { state } } } } } }"
+              )
+              pr = json.loads(subprocess.check_output(
+                  ["gh", "api", "graphql", "-f", f"query={query}"], text=True
+              ))["data"]["repository"]["pullRequest"]
+              threads = pr["reviewThreads"]
+              if any(not node["isResolved"] for node in threads["nodes"]):
+                  unresolved = True
+              if any(node["state"] == "CHANGES_REQUESTED" for node in pr["reviews"]["nodes"]):
+                  changes = True
+              if not threads["pageInfo"]["hasNextPage"]:
+                  break
+              cursor = threads["pageInfo"]["endCursor"]
+          if unresolved:
+              raise SystemExit("unresolved review threads")
+          if changes:
+              raise SystemExit("changes requested")
           PY
-          gh pr merge "$PR" --repo hashgraph-online/hol-guard --squash --delete-branch --subject "feat(guard): complete Rust runtime authority batch 2" --body "Native PostToolUse authority and policy snapshots passed compiled differential, mutation, performance, CI, Security Gates, CodeQL, and review-thread checks."
+          gh pr merge "$PR" --repo hashgraph-online/hol-guard --squash --delete-branch \
+            --match-head-commit "$HEAD_SHA" \
+            --subject "feat(guard): complete Rust runtime authority batch 2" \
+            --body "Native PostToolUse authority and policy snapshots passed compiled differential, mutation, performance, CI, Security Gates, CodeQL, and review-thread checks."

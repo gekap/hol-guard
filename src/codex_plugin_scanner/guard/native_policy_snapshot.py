@@ -3,11 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import itertools
 import json
-import time
-
-_POLICY_GENERATIONS = itertools.count(max(1, time.time_ns()))
 
 
 def native_policy_snapshot(*, rule_digest: str, observe_mode: bool) -> dict[str, object]:
@@ -19,10 +15,12 @@ def native_policy_snapshot(*, rule_digest: str, observe_mode: bool) -> dict[str,
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
+    policy_digest = hashlib.sha256(policy_bytes).hexdigest()
+    generation = int(policy_digest[:16], 16) or 1
     return {
         "schema": "hol-guard-native-policy.v1",
-        "generation": next(_POLICY_GENERATIONS),
-        "policy_digest": hashlib.sha256(policy_bytes).hexdigest(),
+        "generation": generation,
+        "policy_digest": policy_digest,
         "config_digest": config_digest,
         "rule_digest": rule_digest,
         "mode": mode,

@@ -75,7 +75,8 @@ def patch_hook_worker() -> None:
 def patch_native_runtime_python() -> None:
     path = Path("src/codex_plugin_scanner/guard/native_runtime.py")
     source = path.read_text(encoding="utf-8")
-    source = source.replace("import functools\n", "import functools\nimport itertools\n")
+    if "import itertools\n" not in source:
+        source = source.replace("import functools\n", "import functools\nimport itertools\n")
     marker = '_UNAVAILABLE_IDENTITY = "0" * 64\n'
     if "_POLICY_GENERATIONS" not in source:
         source = source.replace(
@@ -102,10 +103,12 @@ def _native_policy_snapshot(
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
+    policy_digest = hashlib.sha256(policy_bytes).hexdigest()
+    generation = int(policy_digest[:16], 16) or 1
     return {
         "schema": "hol-guard-native-policy.v1",
-        "generation": next(_POLICY_GENERATIONS),
-        "policy_digest": hashlib.sha256(policy_bytes).hexdigest(),
+        "generation": generation,
+        "policy_digest": policy_digest,
         "config_digest": config_digest,
         "rule_digest": capabilities.rule_digest,
         "mode": mode,
@@ -157,11 +160,12 @@ def patch_runtime_rust() -> None:
         if anchor not in source:
             raise RuntimeError("runtime import anchor not found")
         source = source.replace(anchor, anchor + addition, 1)
-    source = source.replace(
-        "use std::sync::{Arc, Mutex};\n",
-        "use std::sync::atomic::{AtomicU64, Ordering};\nuse std::sync::{Arc, Mutex};\n",
-        1,
-    )
+    if "use std::sync::atomic::{AtomicU64, Ordering};\n" not in source:
+        source = source.replace(
+            "use std::sync::{Arc, Mutex};\n",
+            "use std::sync::atomic::{AtomicU64, Ordering};\nuse std::sync::{Arc, Mutex};\n",
+            1,
+        )
     const_anchor = 'const CLIENT_PROOF_LABEL: &[u8] = b"hol-guard-resident-client-v1\\0";\n'
     if "MIN_POLICY_GENERATION" not in source:
         if const_anchor not in source:

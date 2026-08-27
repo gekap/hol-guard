@@ -161,6 +161,12 @@ fn remove_policy_snapshot(value: &mut Value) {
             '    let mut value = strict_json_value(bytes)?;\n    if value.get("operation").is_none() {\n        validate_request_policy_snapshot(&value)?;\n        remove_policy_snapshot(&mut value);\n    }',
             1,
         )
+    elif "remove_policy_snapshot(&mut value);" not in resident:
+        resident = resident.replace(
+            "        validate_request_policy_snapshot(&value)?;\n    }",
+            "        validate_request_policy_snapshot(&value)?;\n        remove_policy_snapshot(&mut value);\n    }",
+            1,
+        )
     source = source[:start] + resident + source[end:]
 
     path.write_text(source, encoding="utf-8")

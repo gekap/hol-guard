@@ -77,3 +77,53 @@ def test_hook_worker_fails_closed_when_available_native_posttool_returns_none(
     )
     assert result["decision"] == "deny"
     assert result["reason_code"] == "native_post_tool_unavailable"
+
+
+def test_hook_worker_uses_python_when_auto_native_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = {"native": 0}
+
+    def _missing_native(*_args: object, **_kwargs: object) -> None:
+        called["native"] += 1
+        return None
+
+    monkeypatch.setattr(
+        "codex_plugin_scanner.guard.daemon.hook_worker.review_post_tool_native",
+        _missing_native,
+    )
+    monkeypatch.setattr(
+        "codex_plugin_scanner.guard.daemon.hook_worker.native_mode",
+        lambda: "auto",
+    )
+    monkeypatch.setattr(
+        "codex_plugin_scanner.guard.daemon.hook_worker.native_runtime_status",
+        lambda: NativeRuntimeStatus(
+            mode="auto",
+            available=False,
+            compatible=False,
+            reason="missing",
+        ),
+    )
+    worker = HookWorker(store=GuardStore(tmp_path / "guard-home"))
+    result = worker.review_http_payload(
+        payload=_post_tool_payload(),
+        params={},
+        default_harness="pi",
+        home_dir=tmp_path / "home",
+        guard_home=tmp_path / "guard-home",
+        workspace=tmp_path / "workspace",
+    )
+    assert called["native"] == 0
+    assert result["reason_code"] != "native_post_tool_unavailable"
+
+
+def test_native_policy_snapshot_generation_is_stable_for_same_policy() -> None:
+    from codex_plugin_scanner.guard.native_policy_snapshot import native_policy_snapshot
+
+    digest = "a" * 64
+    first = native_policy_snapshot(rule_digest=digest, observe_mode=False)
+    second = native_policy_snapshot(rule_digest=digest, observe_mode=False)
+    assert first["generation"] == second["generation"]
+    assert isinstance(first["generation"], int)

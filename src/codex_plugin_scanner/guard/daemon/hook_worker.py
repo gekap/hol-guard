@@ -170,21 +170,21 @@ class HookWorker:
             deadline=deadline,
         )
         mode = native_mode()
-        if mode in {"auto", "force"}:
+        native_required = mode == "force" or (
+            mode == "auto" and native_runtime_status().available
+        )
+        if native_required:
             config = self._load_config(guard_home, workspace)
             response = review_post_tool_native(
                 request,
                 observe_mode=config.mode == "observe",
             )
             if response is None:
-                status = native_runtime_status()
-                if status.available or mode == "force":
-                    return post_tool_fail_safe_response(
-                        harness,
-                        reason="HOL Guard could not complete the native local hook review safely.",
-                        reason_code="native_post_tool_unavailable",
-                    )
-                response = self.engine.review(request)
+                return post_tool_fail_safe_response(
+                    harness,
+                    reason="HOL Guard could not complete the native local hook review safely.",
+                    reason_code="native_post_tool_unavailable",
+                )
         else:
             response = self.engine.review(request)
             if mode == "shadow":

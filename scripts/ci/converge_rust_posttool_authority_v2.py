@@ -145,11 +145,12 @@ def patch_runtime_rust() -> None:
         if import_anchor not in source:
             raise RuntimeError("runtime hook-core import anchor not found")
         source = source.replace(import_anchor, import_anchor + policy_import, 1)
-    source = source.replace(
-        "use std::sync::{Arc, Mutex};\n",
-        "use std::sync::atomic::{AtomicU64, Ordering};\nuse std::sync::{Arc, Mutex};\n",
-        1,
-    )
+    if "use std::sync::atomic::{AtomicU64, Ordering};\n" not in source:
+        source = source.replace(
+            "use std::sync::{Arc, Mutex};\n",
+            "use std::sync::atomic::{AtomicU64, Ordering};\nuse std::sync::{Arc, Mutex};\n",
+            1,
+        )
     const_anchor = 'const CLIENT_PROOF_LABEL: &[u8] = b"hol-guard-resident-client-v1\\0";\n'
     if "MIN_POLICY_GENERATION" not in source:
         if const_anchor not in source:

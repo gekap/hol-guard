@@ -43,27 +43,27 @@ PY
 
 validate_candidate() {
   local log_dir=$1
-  cargo fmt --manifest-path rust/Cargo.toml --all >"$log_dir/fmt.log" 2>&1
-  cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets -- -D warnings >"$log_dir/clippy.log" 2>&1
-  cargo test --manifest-path rust/Cargo.toml --locked --workspace --all-targets >"$log_dir/cargo-test.log" 2>&1
-  VERSION=$(uv run --no-sync python scripts/sync_repo_version.py --check)
+  cargo fmt --manifest-path rust/Cargo.toml --all >"$log_dir/fmt.log" 2>&1 || return 1
+  cargo clippy --manifest-path rust/Cargo.toml --locked --workspace --all-targets -- -D warnings >"$log_dir/clippy.log" 2>&1 || return 1
+  cargo test --manifest-path rust/Cargo.toml --locked --workspace --all-targets >"$log_dir/cargo-test.log" 2>&1 || return 1
+  VERSION=$(uv run --no-sync python scripts/sync_repo_version.py --check) || return 1
   HOL_GUARD_BUILD_SHA=$(git rev-parse HEAD) HOL_GUARD_PACKAGE_VERSION="$VERSION" \
-    cargo build --manifest-path rust/Cargo.toml --locked --release -p hol-guard-runtime >"$log_dir/build.log" 2>&1
-  rust/target/release/hol-guard-runtime self-test --json >"$log_dir/self-test.json" 2>&1
+    cargo build --manifest-path rust/Cargo.toml --locked --release -p hol-guard-runtime >"$log_dir/build.log" 2>&1 || return 1
+  rust/target/release/hol-guard-runtime self-test --json >"$log_dir/self-test.json" 2>&1 || return 1
   uv run --no-sync python scripts/ci/rust_posttool_failclosed_integration.py \
     --runtime rust/target/release/hol-guard-runtime \
-    --json "$log_dir/posttool.json" >"$log_dir/integration.log" 2>&1
+    --json "$log_dir/posttool.json" >"$log_dir/integration.log" 2>&1 || return 1
   HOL_GUARD_NATIVE=force HOL_GUARD_NATIVE_BINARY="$PWD/rust/target/release/hol-guard-runtime" \
     uv run --no-sync pytest -q \
       ci/native_runtime/test_guard_native_runtime_binary.py \
       ci/native_runtime/test_guard_native_runtime_differential.py \
       ci/native_runtime/test_guard_native_runtime_mutation_differential.py \
-      --tb=short >"$log_dir/differential.log" 2>&1
+      --tb=short >"$log_dir/differential.log" 2>&1 || return 1
   HOL_GUARD_NATIVE=force HOL_GUARD_NATIVE_BINARY="$PWD/rust/target/release/hol-guard-runtime" \
     uv run --no-sync python scripts/bench_guard_native_release_gate.py \
       --runtime rust/target/release/hol-guard-runtime \
       --warm-iterations 30 --cold-iterations 2 \
-      --json "$log_dir/performance.json" --enforce >"$log_dir/performance.log" 2>&1
+      --json "$log_dir/performance.json" --enforce >"$log_dir/performance.log" 2>&1 || return 1
 }
 
 mkdir -p docs/guard
