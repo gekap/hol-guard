@@ -19,7 +19,7 @@ from .hook_process_protocol import (
     is_pair,
 )
 from .hook_process_request import build_hook_process_review_request, runtime_hook_review_is_idempotent
-from .hook_process_runner_lifecycle import HookProcessRunnerLifecycleMixin
+from .hook_process_runner_lifecycle import _HOOK_PROCESS_READY_TIMEOUT_SECONDS, HookProcessRunnerLifecycleMixin
 from .hook_process_slot_review import review_hook_worker_slot
 from .hook_process_spawner import hook_worker_became_isolated, hook_worker_became_ready, spawn_hook_worker
 from .hook_process_worker import (
@@ -30,7 +30,7 @@ from .hook_process_worker import (
 
 _HOOK_PROCESS_MAX_LIMIT = 16
 _HOOK_PROCESS_TIMEOUT_SECONDS = 2.8
-_HOOK_PROCESS_READY_TIMEOUT_SECONDS, _HOOK_PROCESS_START_TIMEOUT_SECONDS = 14.0, 30.0
+_HOOK_PROCESS_START_TIMEOUT_SECONDS = 30.0
 _HOOK_PROCESS_BACKFILL_DELAY_SECONDS = 2.0
 _HOOK_PROCESS_BACKFILL_MAX_DEFERRAL_SECONDS = 5.0
 _HOOK_PROCESS_RETRY_MAX_SECONDS = 5.0

@@ -14,6 +14,8 @@ from .hook_process_capacity import AdaptiveHookProcessCapacity, process_tree_rss
 from .hook_process_metrics import increment_bounded_metric
 from .hook_process_worker import HookWorkerSlot, retire_worker_slot, worker_retirement_thread
 
+_HOOK_PROCESS_READY_TIMEOUT_SECONDS = 14.0
+
 
 class HookProcessRunnerLifecycleMixin:
     _slots: queue.Queue[HookWorkerSlot]
@@ -39,6 +41,13 @@ class HookProcessRunnerLifecycleMixin:
     _restarts: int
     _decisions: dict[str, int]
     _reason_codes: dict[str, int]
+    wait_for_capacity: Callable[..., bool]
+
+    def require_initial_capacity(self) -> None:
+        """Refuse readiness until one isolated worker completes its handshake."""
+
+        if not self.wait_for_capacity(minimum_workers=1, timeout_seconds=_HOOK_PROCESS_READY_TIMEOUT_SECONDS):
+            raise RuntimeError("initial isolated hook worker did not become ready")
 
     def _withdraw_slot_capacity(self, slot: HookWorkerSlot) -> None:
         with self._state_lock:

@@ -8048,8 +8048,7 @@ class GuardDaemonServer:
             self._cloud_review_sync_worker,
         )
         self._start_command_activity_maintenance()
-        hook_ready_timeout = _RUNTIME_HOOK_PROCESS_TIMEOUT_SECONDS
-        _ = self._server.hook_process_runner.wait_for_capacity(minimum_workers=1, timeout_seconds=hook_ready_timeout)
+        self._server.hook_process_runner.require_initial_capacity()
         self._record_lifecycle("ready")
         self._diagnostics.record("daemon_ready")
 
