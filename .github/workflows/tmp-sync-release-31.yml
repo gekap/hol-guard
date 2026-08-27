@@ -1,0 +1,71 @@
+name: Sync release 3.0 into 3.1
+
+on:
+  push:
+    branches:
+      - chore/sync-release-3.0-into-3.1-everyday
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-release-30-into-31-everyday
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out sync branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: chore/sync-release-3.0-into-3.1-everyday
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Merge release/3.0 preserving 3.1 conflict choices
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin release/3.0 release/3.1
+          git merge --no-commit -X ours origin/release/3.0 || true
+          conflicts="$(git diff --name-only --diff-filter=U || true)"
+          if [ -n "$conflicts" ]; then
+            while IFS= read -r path; do
+              [ -n "$path" ] || continue
+              if git ls-files -u -- "$path" | awk '$3 == 2 {found=1} END{exit !found}'; then
+                git checkout --ours -- "$path" || true
+                git add "$path" || true
+              else
+                git rm --ignore-unmatch "$path" || true
+              fi
+            done <<< "$conflicts"
+          fi
+          if git diff --name-only --diff-filter=U | grep -q .; then
+            echo "Unresolved merge conflicts remain"
+            git status --short
+            exit 1
+          fi
+          if [ -f .git/MERGE_HEAD ]; then
+            git commit --no-edit
+          fi
+      - name: Remove one-shot workflow
+        run: git rm .github/workflows/tmp-sync-release-31.yml
+      - name: Validate merged source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q src/codex_plugin_scanner/guard
+          git diff --check origin/release/3.1...HEAD
+      - name: Commit workflow removal and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit --amend --no-edit
+          fi
+          git push origin HEAD:chore/sync-release-3.0-into-3.1-everyday
