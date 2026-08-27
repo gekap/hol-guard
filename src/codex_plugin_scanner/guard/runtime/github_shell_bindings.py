@@ -222,6 +222,14 @@ def conditional_pipeline_connectors(parts: list[str]) -> dict[int, str]:
     return connectors
 
 
+def _literal_command_truth(command_name: str | None) -> bool | None:
+    if command_name == "true":
+        return True
+    if command_name == "false":
+        return False
+    return None
+
+
 def pipeline_control_flow(
     parts: list[str],
     pipelines: list[list[list[str]]],
@@ -232,12 +240,30 @@ def pipeline_control_flow(
 
     connectors = conditional_pipeline_connectors(parts)
     skipped: set[int] = set()
-    for pipeline_index, connector in connectors.items():
-        if pipeline_index <= 0 or pipeline_index >= len(pipelines) or not pipelines[pipeline_index - 1]:
+    accumulated: bool | None = None
+    for pipeline_index, pipeline in enumerate(pipelines):
+        if not pipeline:
+            accumulated = None
             continue
-        previous_command, _previous_index = primary_command(pipelines[pipeline_index - 1][-1])
-        if (connector == "&&" and previous_command == "false") or (connector == "||" and previous_command == "true"):
-            skipped.add(pipeline_index)
+        command_name, _command_index = primary_command(pipeline[-1])
+        truth = _literal_command_truth(command_name)
+        if pipeline_index == 0:
+            accumulated = truth
+            continue
+        connector = connectors.get(pipeline_index)
+        if connector == "&&":
+            if accumulated is False:
+                skipped.add(pipeline_index)
+                continue
+            accumulated = truth if accumulated is True else None
+            continue
+        if connector == "||":
+            if accumulated is True:
+                skipped.add(pipeline_index)
+                continue
+            accumulated = truth if accumulated is False else None
+            continue
+        accumulated = truth
     conditional = set(connectors)
     if_stack: list[tuple[bool | None, str | None]] = []
     for pipeline_index, pipeline in enumerate(pipelines):

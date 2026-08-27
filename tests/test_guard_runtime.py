@@ -16803,6 +16803,13 @@ def _assert_pytest_requires_restricted_profile(match):
     assert match.reason_code == "pytest_restricted_profile_required"
 
 
+def test_guard_runtime_requires_restricted_profile_for_uv_run_with_value_option(tmp_path):
+    command = "uv run --color always pytest -q"
+    assert secret_file_requests_module._shell_command_targets_pytest(command)
+    match = extract_sensitive_tool_action_request("Bash", {"command": command}, cwd=tmp_path)
+    _assert_pytest_requires_restricted_profile(match)
+
+
 def test_guard_runtime_requires_restricted_profile_for_simple_pytest_module_invocation(tmp_path):
     match = extract_sensitive_tool_action_request(
         "Bash",

@@ -156,6 +156,17 @@ def test_verified_routine_typescript_pipeline_is_benign(
         home_dir=home,
     )
 
+    observer_command = command.replace(
+        '| grep -v "npm warn" | head -8',
+        "| grep error | head -200",
+    )
+    assert is_explicitly_benign_tool_action_request(
+        "bash",
+        {"command": observer_command},
+        cwd=caller,
+        home_dir=home,
+    )
+
     assert (
         extract_sensitive_tool_action_request(
             "bash",
@@ -237,6 +248,9 @@ def test_verified_direct_typescript_diagnostic_is_benign(
         ("npx tsc", 'NODE_OPTIONS="--require=payload" npx tsc'),
         ("src/index.ts", "../outside.ts"),
         ('grep -v "npm warn"', "grep -f patterns.txt"),
+        ('grep -v "npm warn"', "grep -a ^*"),
+        ('grep -v "npm warn"', "grep error?"),
+        ('grep -v "npm warn"', "grep [error]"),
         ('grep -v "npm warn"', "grep -v --file=patterns.txt"),
         ('grep -v "npm warn"', 'grep -v "$(touch marker)"'),
         ('grep -v "npm warn" | head -8', 'grep -v "npm warn"'),
