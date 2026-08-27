@@ -1,0 +1,42 @@
+name: Temporary batch 1 format remediation
+
+on:
+  push:
+    branches: [rust/authority-t001-t100-final]
+    paths:
+      - ".github/workflows/tmp-batch1-ruff-fix.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: rust/authority-t001-t100-final
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: "0.9.26"
+      - run: uv sync --frozen --extra dev --python 3.12
+      - name: Format native identity boundary
+        run: |
+          uv run --no-sync python -m ruff format src/codex_plugin_scanner/guard/native_runtime.py
+          uv run --no-sync python -m ruff check src/codex_plugin_scanner/guard/native_runtime.py
+          git diff --check
+      - name: Commit and remove transport workflow
+        run: |
+          git config user.name "Michael Kantor"
+          git config user.email "6068672+kantorcodes@users.noreply.github.com"
+          git rm .github/workflows/tmp-batch1-ruff-fix.yml
+          git add src/codex_plugin_scanner/guard/native_runtime.py
+          git diff --cached --check
+          git commit -s -m "style(rust): format native runtime bridge"
+          git push origin HEAD:rust/authority-t001-t100-final
