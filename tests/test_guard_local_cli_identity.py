@@ -95,14 +95,27 @@ def test_compound_identities_skip_ssh(tmp_path: Path) -> None:
 
 
 def test_interpreter_option_before_script_is_identified(tmp_path: Path) -> None:
-    script = tmp_path / "cwv.py"
-    script.write_text("print('ok')\n", encoding="utf-8")
+    helper = tmp_path / "server-access.sh"
+    helper.write_text("#!/bin/sh\necho access\n", encoding="utf-8")
     identities = identify_unlisted_cli_identities(
-        f"python3 -u {script} && echo done",
+        f"bash -e {helper} && echo done",
         cwd=tmp_path,
         home_dir=tmp_path,
     )
-    assert [item.name for item in identities] == ["cwv.py"]
+    assert [item.name for item in identities] == ["server-access.sh"]
+
+
+def test_preload_option_value_is_not_treated_as_the_tool(tmp_path: Path) -> None:
+    preload = tmp_path / "preload.js"
+    preload.write_text("export {}\n", encoding="utf-8")
+    app = tmp_path / "app.js"
+    app.write_text("console.log('ok')\n", encoding="utf-8")
+    identities = identify_unlisted_cli_identities(
+        f"node -r {preload} {app} && echo done",
+        cwd=tmp_path,
+        home_dir=tmp_path,
+    )
+    assert identities == ()
 
 
 def test_relative_source_after_cd_is_not_guessed(tmp_path: Path) -> None:

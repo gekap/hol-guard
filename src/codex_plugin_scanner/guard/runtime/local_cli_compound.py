@@ -12,6 +12,8 @@ from .local_cli_identity import UnlistedCliIdentity, identify_unlisted_cli
 
 _SOURCE_BUILTINS = frozenset({".", "source"})
 _INLINE_FLAGS = frozenset({"-c", "-lc"})
+_SHELL_INTERPRETERS = frozenset({"ash", "bash", "dash", "ksh", "sh", "zsh"})
+_SHELL_SCRIPT_SUFFIXES = frozenset({".bash", ".ksh", ".rc", ".sh", ".zsh"})
 
 
 def identify_unlisted_cli_identities(
@@ -79,25 +81,26 @@ def _identity_from_segment(
             home_dir=home_dir,
             registry=registry,
         )
-    if any(argument in _INLINE_FLAGS for argument in segment.arguments):
-        return None
-    for argument in segment.arguments:
-        if argument.startswith("-"):
-            continue
-        script = _resolve_existing_file(
-            argument,
-            cwd=cwd,
-            home_dir=home_dir,
-            allow_relative=allow_relative,
-        )
-        if script is None:
-            continue
-        return identify_unlisted_cli(
-            f"{exe} {shlex.quote(str(script))}",
-            cwd=cwd,
-            home_dir=home_dir,
-            registry=registry,
-        )
+    if exe in _SHELL_INTERPRETERS:
+        if any(argument in _INLINE_FLAGS for argument in segment.arguments):
+            return None
+        for argument in segment.arguments:
+            if argument.startswith("-"):
+                continue
+            script = _resolve_existing_file(
+                argument,
+                cwd=cwd,
+                home_dir=home_dir,
+                allow_relative=allow_relative,
+            )
+            if script is None or script.suffix.lower() not in _SHELL_SCRIPT_SUFFIXES:
+                return None
+            return identify_unlisted_cli(
+                f"{exe} {shlex.quote(str(script))}",
+                cwd=cwd,
+                home_dir=home_dir,
+                registry=registry,
+            )
     if segment.executable is None:
         return None
     script = _resolve_existing_file(
