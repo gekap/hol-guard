@@ -82,7 +82,11 @@ def _pretool_gate() -> None:
     hook = _read(Path("src/codex_plugin_scanner/guard/daemon/hook_worker.py"))
     if "PreToolUse" not in hook and "pre_tool" not in hook:
         raise RuntimeError("daemon hook ingress does not expose native PreToolUse authority")
-    if re.search(r"PreToolUse[\s\S]{0,1200}self\.engine\.review\(", hook):
+    region = re.search(
+        r'if event_name\s*==\s*"PreToolUse":[\s\S]*?(?=\n\s*if event_name\s*!=\s*"PostToolUse")',
+        hook,
+    )
+    if region and "self.engine.review(" in region.group(0):
         raise RuntimeError("PreToolUse can reach the Python HookReviewEngine")
 
     runtime = _read(Path("rust/crates/guard-runtime/src/main.rs"))
@@ -94,11 +98,10 @@ def _pretool_gate() -> None:
 
 def _posttool_gate() -> None:
     hook = _read(Path("src/codex_plugin_scanner/guard/daemon/hook_worker.py"))
-    exact_fallbacks = (
-        'if response is None:\n                response = self.engine.review(request)',
-        'if response is None:\n            response = self.engine.review(request)',
-    )
-    if any(value in hook for value in exact_fallbacks):
+    if re.search(
+        r"if response is None:\s*response = self\.engine\.review\(request\)",
+        hook,
+    ):
         raise RuntimeError("supported PostToolUse still spills into Python semantic evaluation")
 
     native = _read(Path("src/codex_plugin_scanner/guard/native_runtime.py"))

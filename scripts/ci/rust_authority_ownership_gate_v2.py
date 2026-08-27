@@ -136,11 +136,10 @@ def pretool_gate() -> None:
 
 def posttool_gate() -> None:
     hook = read(Path("src/codex_plugin_scanner/guard/daemon/hook_worker.py"))
-    fallback_patterns = (
-        'if response is None:\n                response = self.engine.review(request)',
-        'if response is None:\n            response = self.engine.review(request)',
-    )
-    if any(item in hook for item in fallback_patterns):
+    if re.search(
+        r"if response is None:\s*response = self\.engine\.review\(request\)",
+        hook,
+    ):
         raise RuntimeError("supported PostToolUse still spills into Python semantic evaluation")
     native = read(Path("src/codex_plugin_scanner/guard/native_runtime.py"))
     if "currently supported Python reference backend remains authoritative" in native:

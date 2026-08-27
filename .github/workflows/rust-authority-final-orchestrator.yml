@@ -34,17 +34,17 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           deadline=$((SECONDS + 3600))
           while true; do
-            git fetch origin release/3.0
-            if git show origin/release/3.0:rust/AUTHORITY_BATCH_2_FINAL >/dev/null 2>&1; then
+            git fetch origin main
+            if git show origin/main:rust/AUTHORITY_BATCH_2_FINAL >/dev/null 2>&1; then
               break
             fi
             if (( SECONDS >= deadline )); then
-              echo "Batch 2 is not merged into release/3.0" >&2
+              echo "Batch 2 is not merged into main" >&2
               exit 1
             fi
             sleep 30
           done
-          git rebase origin/release/3.0
+          git rebase origin/main
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: "3.12"

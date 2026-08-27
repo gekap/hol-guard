@@ -74,21 +74,24 @@ def _replace_legacy_architecture(source: str) -> str:
     return source[:start].rstrip() + "\n\n" + source[end:].lstrip()
 
 
-def _append_section(path: Path, heading: str, body: str) -> None:
+def _replace_section(path: Path, heading: str, body: str) -> None:
     source = path.read_text(encoding="utf-8")
     if heading in source:
-        before = source.split(heading, 1)[0].rstrip()
-        path.write_text(before + "\n\n" + body + "\n", encoding="utf-8")
-        return
-    path.write_text(source.rstrip() + "\n\n" + body + "\n", encoding="utf-8")
+        before, rest = source.split(heading, 1)
+        next_heading = rest.find("\n## ")
+        after = "" if next_heading == -1 else rest[next_heading:]
+        source = before.rstrip() + "\n\n" + body + ("\n" + after.lstrip() if after else "\n")
+    else:
+        source = source.rstrip() + "\n\n" + body + "\n"
+    path.write_text(source, encoding="utf-8")
 
 
 def main() -> int:
     architecture = Path("docs/guard/all-harness-hook-review.md")
     source = _replace_legacy_architecture(architecture.read_text(encoding="utf-8"))
     architecture.write_text(source, encoding="utf-8")
-    _append_section(architecture, "## Rust Authority Boundary", ARCHITECTURE_SECTION)
-    _append_section(Path("docs/guard/harness-support.md"), "## Rust Authority Boundary", SUPPORT_SECTION)
+    _replace_section(architecture, "## Rust Authority Boundary", ARCHITECTURE_SECTION)
+    _replace_section(Path("docs/guard/harness-support.md"), "## Rust Authority Boundary", SUPPORT_SECTION)
 
     for raw in TEMPORARY_PATHS:
         Path(raw).unlink(missing_ok=True)

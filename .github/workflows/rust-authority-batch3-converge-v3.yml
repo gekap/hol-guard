@@ -40,17 +40,17 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           deadline=$((SECONDS + 7200))
           while true; do
-            git fetch origin release/3.0
-            if git show origin/release/3.0:docs/guard/evidence/rust-posttool-authority-batch-2.json >/dev/null 2>&1; then
+            git fetch origin main
+            if git show origin/main:rust/AUTHORITY_BATCH_2_FINAL >/dev/null 2>&1; then
               break
             fi
             if (( SECONDS >= deadline )); then
-              echo "Batch 2 did not reach release/3.0" >&2
+              echo "Batch 2 did not reach main" >&2
               exit 1
             fi
             sleep 30
           done
-          git reset --hard origin/release/3.0
+          git reset --hard origin/main
           mkdir -p .github/workflows ci scripts/ci docs/guard
           cp /tmp/batch3-seed/.github/workflows/rust-authority-ownership.yml .github/workflows/
           cp /tmp/batch3-seed/ci/rust-authority-ownership.v1.json ci/
@@ -167,7 +167,7 @@ jobs:
         run: |
           number=$(gh pr list --repo hashgraph-online/hol-guard --head fix/rust-authority-batch-3 --state open --json number --jq '.[0].number')
           if [[ -z "$number" ]]; then
-            url=$(gh pr create --repo hashgraph-online/hol-guard --base release/3.0 --head fix/rust-authority-batch-3 --title "ci(guard): permanently enforce Rust runtime authority batch 3" --body "Completes T201-T220 with permanent source ownership, repository-wide CI, compiled integration, performance, installed native-wheel proof, documentation, and migration hygiene.")
+            url=$(gh pr create --repo hashgraph-online/hol-guard --base main --head fix/rust-authority-batch-3 --title "ci(guard): permanently enforce Rust runtime authority batch 3" --body "Completes T201-T220 with permanent source ownership, repository-wide CI, compiled integration, performance, installed native-wheel proof, documentation, and migration hygiene.")
             number=${url##*/}
           fi
           echo "number=$number" >> "$GITHUB_OUTPUT"
@@ -243,9 +243,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          git fetch origin release/3.0
-          release_sha=$(git rev-parse origin/release/3.0)
-          gh workflow run rust-authority-ownership.yml --repo hashgraph-online/hol-guard --ref release/3.0
+          git fetch origin main
+          release_sha=$(git rev-parse origin/main)
+          gh workflow run rust-authority-ownership.yml --repo hashgraph-online/hol-guard --ref main
           deadline=$((SECONDS + 3600))
           while true; do
             gh api "repos/hashgraph-online/hol-guard/actions/runs?head_sha=$release_sha&per_page=100" > /tmp/release-runs.json

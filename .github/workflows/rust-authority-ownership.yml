@@ -2,7 +2,7 @@ name: Rust authority ownership
 
 on:
   pull_request:
-    branches: [release/3.0]
+    branches: [main]
     paths:
       - "rust/**"
       - "src/codex_plugin_scanner/guard/**"
@@ -14,7 +14,7 @@ on:
       - "pyproject.toml"
       - "uv.lock"
   push:
-    branches: [release/3.0]
+    branches: [main]
     paths:
       - "rust/**"
       - "src/codex_plugin_scanner/guard/**"

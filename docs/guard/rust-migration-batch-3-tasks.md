@@ -1,6 +1,6 @@
 # Rust Authority Migration Batch 3: Tasks T201-T220
 
-Base branch: `release/3.0`
+Base branch: `main`
 
 Invariant: the completed Rust authority migration is permanently enforced by source ownership gates, real-binary integration, release packaging checks, documentation, and repository hygiene.
 
