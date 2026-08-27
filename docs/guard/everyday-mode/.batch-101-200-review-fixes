@@ -1,0 +1,1 @@
+EVM-101-200 review corrections verified: curl --fail is not treated as upload, canonical argv flags are not promoted into typed operands, and both regressions have focused tests.
