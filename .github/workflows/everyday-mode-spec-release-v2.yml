@@ -1,0 +1,19 @@
+name: Prepare internal Everyday Mode specification asset release
+on:
+  push:
+    branches: [feat/everyday-mode-001-100-v32]
+permissions:
+  contents: write
+jobs:
+  prepare:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=internal-everyday-mode-specs-20260827-v2
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --draft --prerelease --target feat/everyday-mode-001-100-v32 --title 'Internal Everyday Mode specification transfer v2' --notes 'Temporary staging release for the release/3.2 completion workflow.'
