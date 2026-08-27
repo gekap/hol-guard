@@ -15569,9 +15569,11 @@ function protectionHealthFor(snapshot, harness = null) {
   return { harness: STABLE_ID$1.test(harness) && harness.length <= 64 ? harness : "unknown", ...fallback };
 }
 function remainingProtectionRepairParts(health) {
+  const hooksCheck = health.checks.find((check) => check.check_id === "harness_hooks");
   return {
     failedHookHarnesses: health.apps.filter((app) => app.checks.some((check) => check.check_id === "harness_hooks" && check.status === "fail")).map((app) => app.harness),
-    evidenceFailed: health.checks.some((check) => check.check_id === "decision_stream" && check.status !== "pass")
+    evidenceFailed: health.checks.some((check) => check.check_id === "decision_stream" && check.status !== "pass"),
+    needsConnectedApp: hooksCheck?.status === "fail" && hooksCheck.reason_code === "no_managed_harness"
   };
 }
 function isRecord$3(value) {
@@ -31462,6 +31464,9 @@ function App() {
     const currentFailedHarnesses = new Set(remainingParts.failedHookHarnesses);
     const failedHookApps = remainingParts.failedHookHarnesses.map((harness) => harnessDisplayName(harness));
     const remainingMessages = [];
+    if (remainingParts.needsConnectedApp) {
+      remainingMessages.push("Connect an AI app to start local protection.");
+    }
     if (failedHookApps.length > 0) {
       remainingMessages.push(
         `${failedHookApps.join(", ")} still ${failedHookApps.length === 1 ? "needs" : "need"} hook repair.`

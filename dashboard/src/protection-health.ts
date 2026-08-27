@@ -234,11 +234,15 @@ export function protectionHealthFor(
 export function remainingProtectionRepairParts(health: GuardProtectionHealth): {
   failedHookHarnesses: string[];
   evidenceFailed: boolean;
+  needsConnectedApp: boolean;
 } {
+  const hooksCheck = health.checks.find((check) => check.check_id === "harness_hooks");
   return {
     failedHookHarnesses: health.apps
       .filter((app) => app.checks.some((check) => check.check_id === "harness_hooks" && check.status === "fail"))
       .map((app) => app.harness),
     evidenceFailed: health.checks.some((check) => check.check_id === "decision_stream" && check.status !== "pass"),
+    needsConnectedApp:
+      hooksCheck?.status === "fail" && hooksCheck.reason_code === "no_managed_harness",
   };
 }

@@ -190,6 +190,7 @@ assert.match(appSource, /const handleRepairProtection = useCallback/);
 assert.match(appSource, /onRepairProtection=\{handleRepairProtection\}/);
 assert.match(appSource, /remainingProtectionRepairParts\(remainingHealth\)/);
 assert.match(appSource, /Command evidence still needs repair/);
+assert.match(appSource, /Connect an AI app to start local protection/);
 assert.doesNotMatch(appSource, /app\.checks\.some\(\(check\) => check\.status === "fail"\)/);
 
 const evidenceOnlyHealth = normalizeProtectionHealth({
@@ -213,6 +214,7 @@ const evidenceOnlyHealth = normalizeProtectionHealth({
 assert.deepEqual(remainingProtectionRepairParts(evidenceOnlyHealth), {
   failedHookHarnesses: [],
   evidenceFailed: true,
+  needsConnectedApp: false,
 });
 
 const evidenceUnknown = checks();
@@ -249,6 +251,18 @@ const hookFailureHealth = normalizeProtectionHealth({
 assert.deepEqual(remainingProtectionRepairParts(hookFailureHealth), {
   failedHookHarnesses: ["grok"],
   evidenceFailed: false,
+  needsConnectedApp: false,
+});
+const noManagedChecks = checks();
+noManagedChecks[PROTECTION_CHECK_IDS.indexOf("harness_hooks")] = {
+  check_id: "harness_hooks",
+  status: "fail",
+  reason_code: "no_managed_harness",
+};
+assert.deepEqual(remainingProtectionRepairParts(normalizeProtectionHealth(payload(noManagedChecks))), {
+  failedHookHarnesses: [],
+  evidenceFailed: false,
+  needsConnectedApp: true,
 });
 assert.match(appDetailSource, /Install state" value=\{active \? "Installed"/);
 assert.match(appDetailSource, /protectionHealthFor\(runtime, harness\)/);
@@ -256,6 +270,8 @@ assert.match(appDetailSource, /useProtectionPresentationState\(appProtection\)/)
 assert.match(fleetSource, /useProtectionPresentationState\(protectionHealth\)/);
 assert.match(fleetSource, /resolveAppStatus\(install, appProtection,/);
 assert.match(fleetSource, /hookCheck\?\.status === "fail"/);
+assert.match(fleetSource, /connectHarness=\{repairHarness \?\? visibleHarnesses\[0\]\}/);
+assert.match(fleetSource, /connectHarness=\{repairHarness \?\? visibleHarnesses\[0\]\}/);
 assert.match(reviewStatesSource, /useProtectionPresentationState\(protectionHealth\)/);
 assert.match(reviewStatesSource, /protectedAppsCount = protectionHealth\.apps\.filter/);
 assert.match(reviewStatesSource, /if \(runtime === null\)/);

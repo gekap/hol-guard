@@ -890,6 +890,9 @@ export function App() {
     const currentFailedHarnesses = new Set(remainingParts.failedHookHarnesses);
     const failedHookApps = remainingParts.failedHookHarnesses.map((harness) => harnessDisplayName(harness));
     const remainingMessages: string[] = [];
+    if (remainingParts.needsConnectedApp) {
+      remainingMessages.push("Connect an AI app to start local protection.");
+    }
     if (failedHookApps.length > 0) {
       remainingMessages.push(
         `${failedHookApps.join(", ")} still ${failedHookApps.length === 1 ? "needs" : "need"} hook repair.`,

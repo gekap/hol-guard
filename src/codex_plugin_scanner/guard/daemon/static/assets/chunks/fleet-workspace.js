@@ -140,6 +140,12 @@ function cloudPolicyRecoveryHint(input) {
   };
 }
 function actionForCheck(check, repairHarness) {
+  if (check.check_id === "harness_hooks" && check.reason_code === "no_managed_harness") {
+    return {
+      label: "App hooks",
+      detail: "Connect at least one AI app so Guard can install local protection hooks."
+    };
+  }
   if (check.check_id === "harness_hooks" && repairHarness) {
     return {
       label: "App hooks",
@@ -182,7 +188,10 @@ function TargetedRepairButton({
     " repair"
   ] });
 }
-function recoverySummary(failCount, unknownCount) {
+function recoverySummary(failCount, unknownCount, needsConnectedApp) {
+  if (needsConnectedApp) {
+    return "Connect an AI app to start local protection. Repair cannot finish until at least one app is connected.";
+  }
   if (failCount === 0) {
     return "Complete the remaining local proof here. Guard repairs and rechecks every local protection layer in one pass.";
   }
@@ -193,8 +202,9 @@ function recoverySummary(failCount, unknownCount) {
   }
   return `Repair the ${failedChecks} here${remainingProofs}. Guard repairs and rechecks every local protection layer in one pass.`;
 }
-function repairButtonLabel(repairState) {
+function repairButtonLabel(repairState, needsConnectedApp) {
   if (repairState?.status === "working") return "Repairing…";
+  if (needsConnectedApp) return "Connect an app";
   if (repairState?.status === "error") return "Retry repair";
   return "Repair protection";
 }
@@ -234,6 +244,9 @@ function FleetProtectionRecovery(props) {
   const gaps = props.health.checks.filter((check) => check.status !== "pass");
   const failCount = gaps.filter((check) => check.status === "fail").length;
   const unknownCount = gaps.length - failCount;
+  const needsConnectedApp = props.health.checks.some(
+    (check) => check.check_id === "harness_hooks" && check.reason_code === "no_managed_harness" && check.status === "fail"
+  );
   const cloudPolicyHint = cloudPolicyRecoveryHint(props.cloudPolicy);
   const repairHarnessKey = props.repairHarnesses.join("\0");
   const repairHarnessList = reactExports.useMemo(
@@ -264,8 +277,12 @@ function FleetProtectionRecovery(props) {
     }
   }, [props.onRepairProtection, props.repairHarnesses]);
   const handleRepairClick = reactExports.useCallback(() => {
+    if (needsConnectedApp && props.connectHarness && props.onRepairHarness) {
+      props.onRepairHarness(props.connectHarness);
+      return;
+    }
     void handleRepair();
-  }, [handleRepair]);
+  }, [handleRepair, needsConnectedApp, props.connectHarness, props.onRepairHarness]);
   const handleDetailsToggle = reactExports.useCallback(() => {
     setDetailsOpen((open) => !open);
   }, []);
@@ -375,9 +392,9 @@ function FleetProtectionRecovery(props) {
               ),
               /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { className: "text-sm font-semibold text-brand-dark", children: "Restore local protection" })
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-1 text-sm text-slate-600", children: recoverySummary(failCount, unknownCount) })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-1 text-sm text-slate-600", children: recoverySummary(failCount, unknownCount, needsConnectedApp) })
           ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(ActionButton, { onClick: handleRepairClick, disabled: working, children: repairButtonLabel(repairState) })
+          /* @__PURE__ */ jsxRuntimeExports.jsx(ActionButton, { onClick: handleRepairClick, disabled: working, children: repairButtonLabel(repairState, needsConnectedApp) })
         ] }),
         cloudPolicyHint ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-3 border-t border-brand-attention/10 pt-3 text-sm text-slate-600", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "font-medium text-brand-dark", children: cloudPolicyHint.title }),
@@ -677,8 +694,9 @@ function FleetWorkspace(props) {
         health: protectionHealth,
         repairHarness,
         repairHarnesses,
+        connectHarness: repairHarness ?? visibleHarnesses[0],
         onRepairProtection: props.onRepairProtection,
-        onRepairHarness: props.onRepairHarness
+        onRepairHarness: props.onRepairHarness ?? props.onConnectHarness
       }
     ) : null,
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "grid gap-8 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,0.8fr)]", children: [
