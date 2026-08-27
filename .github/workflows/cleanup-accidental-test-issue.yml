@@ -1,0 +1,21 @@
+name: Close accidental connector probe issue
+on:
+  push:
+    branches: [feat/everyday-mode-001-100-v32]
+permissions:
+  issues: write
+  contents: read
+jobs:
+  close:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue list --repo hashgraph-online/hol-guard --state open --limit 100 --json number,title,createdAt --jq '.[] | select(.title == "test") | .number' | while read -r number; do
+            [ -n "$number" ] || continue
+            gh issue close "$number" --repo hashgraph-online/hol-guard --comment 'Closed immediately after an accidental connector invocation.'
+          done
