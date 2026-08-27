@@ -53,7 +53,7 @@ from .interpreter_observers import (
     _looks_like_safe_read_only_lookup_command,
 )
 from .request_artifacts import _candidate_command_texts
-from .request_models import ToolActionRequestMatch, _normalize_tool_name
+from .request_models import ToolActionRequestMatch, _normalize_tool_name, tool_action_risk_summary
 from .routine_directory_creation import is_safe_routine_directory_creation
 from .sensitive_read_pipeline import _runtime_read_root_texts
 from .shell_quote_tokens import shell_token_segments, shell_tokens_preserving_quote_context
@@ -439,7 +439,7 @@ def build_tool_action_request_artifact(
             f"Requested `{request.tool_name}` action `{request.command_text}` via transparent wrappers "
             f"`{' -> '.join(wrapper_chain)}` ({request.action_class})."
         )
-    risk_summary = _tool_action_risk_summary(request)
+    risk_summary = tool_action_risk_summary(request)
     runtime_reason = request.reason
     if wrapper_chain:
         runtime_reason = (
@@ -532,17 +532,6 @@ def build_tool_action_request_artifact(
             ),
         },
     )
-
-
-def _tool_action_risk_summary(request: ToolActionRequestMatch) -> str:
-    """Describe the consequence that made a native tool action reviewable."""
-
-    if request.action_class.casefold() == "destructive shell command":
-        return (
-            "This command can delete or overwrite local files, discard work, or alter repository or system state. "
-            "Recovery may require version control or a backup."
-        )
-    return request.reason.rstrip(".") + "."
 
 
 def _path_is_within_roots(path: Path, roots: tuple[Path, ...]) -> bool:

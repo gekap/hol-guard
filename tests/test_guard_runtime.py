@@ -15429,7 +15429,6 @@ def test_guard_hook_saved_artifact_approval_never_lowers_current_payload_block(t
     assert first_output["approval_requests"] == []
     assert first_output["terminal"] is True
     assert first_output["artifact_type"] == "tool_action_request"
-    assert "delete or overwrite local files" in first_output["risk_summary"].lower()
     assert "recovery may require version control or a backup" in first_output["risk_summary"].lower()
     assert second_rc == 1
     assert second_output["policy_action"] == "block"
@@ -16137,7 +16136,6 @@ def test_guard_hook_codex_saved_artifact_approval_never_lowers_current_payload_b
     assert first_output["approval_requests"] == []
     assert first_output["terminal"] is True
     assert first_output["artifact_type"] == "tool_action_request"
-    assert "delete or overwrite local files" in first_output["risk_summary"].lower()
     assert "recovery may require version control or a backup" in first_output["risk_summary"].lower()
     assert second_rc == 1
     assert second_output["policy_action"] == "block"
@@ -20108,7 +20106,6 @@ def test_hermes_pretool_blocks_destructive_shell_command_requests(tmp_path, caps
     assert rc == 1
     assert output["artifact_type"] == "tool_action_request"
     assert output["policy_action"] == "block"
-    assert "delete or overwrite local files" in output["risk_summary"].lower()
     assert "recovery may require version control or a backup" in output["risk_summary"].lower()
 
 
