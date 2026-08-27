@@ -233,7 +233,6 @@ def _is_transient_appimage_path(value: str) -> bool:
 
 def _build_durable_cli_shim(harness: str, context: HarnessContextLike, workspace_args: list[str]) -> str:
     fixed_args = [
-        "guard",
         "run",
         harness,
         "--guard-home",
@@ -280,15 +279,10 @@ def _durable_guard_cli_path(context: HarnessContextLike) -> Path | None:
             continue
         if not invocation_path.is_file() or not os.access(invocation_path, os.X_OK):
             continue
-        if _is_transient_runtime_path(invocation_path) or _is_transient_runtime_path(resolved_path):
+        if _is_transient_path(invocation_path) or _is_transient_path(resolved_path):
             continue
         return invocation_path
     return None
-
-
-def _is_transient_runtime_path(path: Path) -> bool:
-    normalized = str(path).replace("\\", "/").lower()
-    return any(fragment in normalized for fragment in _TRANSIENT_PATH_FRAGMENTS)
 
 
 def _build_windows_script(posix_path: Path) -> str:

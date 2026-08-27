@@ -102,7 +102,7 @@ def test_appimage_harness_shim_executes_durable_official_cli(
     )
     monkeypatch.setattr(
         guard_shims_module,
-        "_is_transient_runtime_path",
+        "_is_transient_path",
         lambda path: ".mount_" in str(path),
     )
     payload = install_guard_shim("pi", context, launcher_name="omp", display_name="Oh My Pi")
@@ -115,7 +115,6 @@ def test_appimage_harness_shim_executes_durable_official_cli(
     )
 
     assert capture_path.read_text(encoding="utf-8").splitlines() == [
-        "guard",
         "run",
         "pi",
         "--guard-home",
@@ -150,7 +149,7 @@ def test_appimage_harness_shim_rejects_transient_official_cli_symlink(
     )
     monkeypatch.setattr(
         guard_shims_module,
-        "_is_transient_runtime_path",
+        "_is_transient_path",
         lambda path: ".mount_" in str(path),
     )
     payload = install_guard_shim("pi", context, launcher_name="omp", display_name="Oh My Pi")
