@@ -46,7 +46,7 @@ def _copilot_command(context: HarnessContext) -> tuple[str, ...]:
     ("harness", "factory", "timeout_seconds"),
     [
         ("copilot", _copilot_command, 25),
-        ("grok", GrokHarnessAdapter._hook_command_parts, 25),  # pyright: ignore[reportPrivateUsage]
+        ("grok", GrokHarnessAdapter._hook_command_parts, 85),  # pyright: ignore[reportPrivateUsage]
         ("kimi", KimiHarnessAdapter._hook_command_parts, 25),  # pyright: ignore[reportPrivateUsage]
         ("zcode", ZCodeHarnessAdapter._hook_command_parts, 25),  # pyright: ignore[reportPrivateUsage]
     ],
@@ -65,6 +65,31 @@ def test_managed_cli_hooks_use_bounded_process_bridge(
     assert config["harness"] == harness
     assert config["timeout_seconds"] == timeout_seconds
     assert config["guard_home"] == str(tmp_path / "guard-home")
+
+
+@pytest.mark.parametrize(
+    ("harness", "factory"),
+    [
+        ("copilot", _copilot_command),
+        ("grok", GrokHarnessAdapter._hook_command_parts),  # pyright: ignore[reportPrivateUsage]
+        ("kimi", KimiHarnessAdapter._hook_command_parts),  # pyright: ignore[reportPrivateUsage]
+        ("zcode", ZCodeHarnessAdapter._hook_command_parts),  # pyright: ignore[reportPrivateUsage]
+    ],
+)
+def test_frozen_managed_cli_hooks_enter_supported_bridge_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    harness: str,
+    factory: CommandFactory,
+) -> None:
+    monkeypatch.setattr("sys.frozen", True, raising=False)
+
+    command = factory(_context(tmp_path))
+
+    assert command[:2] == (command[0], "__guard-bounded-hook")
+    config = cast(dict[str, object], json.loads(command[2]))
+    assert config["frozen_launcher"] is True
+    assert config["harness"] == harness
 
 
 @pytest.mark.parametrize(

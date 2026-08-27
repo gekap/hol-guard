@@ -17,106 +17,60 @@ class StoreApprovalsMixin:
                 now,
                 oauth_source=self._guard_source,
             )
-            bind_live_request_outbox_for_request(
+            bind_review_events_for_request(
                 connection,
                 request_id=request_id,
                 oauth_source=self._guard_source,
             )
             return request_id
 
-    def list_approval_requests(
+    def resolve_harness_native_approval_request(
         self,
+        request_id: str,
         *,
-        status: str | None = "pending",
-        harness: str | None = None,
-        limit: int | None = 50,
-        cursor: str | None = None,
-        search: str | None = None,
-    ) -> list[dict[str, object]]:
+        reason: str | None,
+        resolved_at: str,
+        expected_harness: str,
+        expected_artifact_id: str | None = None,
+        expected_artifact_hash: str | None = None,
+    ) -> bool:
+        """Close an inbox request after a verified harness-native Accept.
+
+        Cursor (and similar) native prompts are the user's approval. Requiring
+        the local approval-gate password/MFA a second time left the request
+        inbox pending after Accept. This path is artifact-scoped allow-only.
+        """
+
+        if not request_id.strip():
+            return False
         with self._connect() as connection:
-            return load_approval_requests(
+            connection.execute("begin immediate")
+            request = load_approval_request(connection, request_id)
+            if request is None:
+                return False
+            if str(request.get("status") or "") != "pending":
+                return False
+            if str(request.get("harness") or "") != expected_harness:
+                return False
+            request_artifact_id = str(request.get("artifact_id") or "")
+            if expected_artifact_id is not None and request_artifact_id != expected_artifact_id:
+                return False
+            request_artifact_hash = str(request.get("artifact_hash") or "")
+            if expected_artifact_hash is not None and request_artifact_hash != expected_artifact_hash:
+                return False
+            try:
+                require_resolvable_approval_request(request)
+            except ValueError:
+                return False
+            persist_approval_resolution(
                 connection,
-                status=status,
-                harness=harness,
-                limit=limit,
-                cursor=cursor,
-                search=search,
+                request_id,
+                resolution_action="allow",
+                resolution_scope="artifact",
+                reason=reason,
+                resolved_at=resolved_at,
             )
-
-    def list_pending_approval_summaries(
-        self,
-        *,
-        limit: int = 50,
-        cursor: str | None = None,
-        harness: str | None = None,
-        search: str | None = None,
-        include_totals: bool = True,
-    ) -> dict[str, object]:
-        with self._connect() as connection:
-            return load_pending_approval_summaries(
-                connection,
-                limit=limit,
-                cursor=cursor,
-                harness=harness,
-                search=search,
-                include_totals=include_totals,
-            )
-
-    def list_approval_request_page(
-        self,
-        *,
-        status: str | None = "pending",
-        limit: int = 50,
-        cursor: str | None = None,
-        harness: str | None = None,
-        search: str | None = None,
-        include_totals: bool = True,
-    ) -> dict[str, object]:
-        with self._connect() as connection:
-            return load_approval_request_page(
-                connection,
-                status=status,
-                limit=limit,
-                cursor=cursor,
-                harness=harness,
-                search=search,
-                include_totals=include_totals,
-            )
-
-    def get_approval_request(self, request_id: str) -> dict[str, object] | None:
-        with self._connect() as connection:
-            return load_approval_request(connection, request_id)
-
-    def approval_desktop_notified_at(self, request_id: str) -> str | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                """
-                select desktop_notified_at
-                from approval_requests
-                where request_id = ?
-                """,
-                (request_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        value = row["desktop_notified_at"]
-        return str(value) if isinstance(value, str) and value else None
-
-    def mark_approval_desktop_notified(self, request_id: str, notified_at: str) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                update approval_requests
-                set desktop_notified_at = ?
-                where request_id = ?
-                  and desktop_notified_at is null
-                """,
-                (notified_at, request_id),
-            )
-
-    def get_next_pending_request(self, *, exclude_ids: set[str] | None = None) -> dict[str, object] | None:
-        with self._connect() as connection:
-            return load_next_pending_request(connection, exclude_ids=exclude_ids)
+        return True
 
     def resolve_approval_request(
         self,
@@ -484,58 +438,3 @@ class StoreApprovalsMixin:
                 reason=reason,
                 resolved_at=resolved_at,
             )
-
-    def count_approval_requests(
-        self,
-        *,
-        status: str | None = "pending",
-        harness: str | None = None,
-        search: str | None = None,
-        resolved_at_from: str | None = None,
-        resolved_at_before: str | None = None,
-    ) -> int:
-        with self._connect() as connection:
-            return count_pending_approval_requests(
-                connection,
-                status=status,
-                harness=harness,
-                search=search,
-                resolved_at_from=resolved_at_from,
-                resolved_at_before=resolved_at_before,
-            )
-
-    def oldest_approval_request_created_at(self, *, status: str = "pending") -> str | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                "select min(created_at) as oldest_created_at from approval_requests where status = ?",
-                (status,),
-            ).fetchone()
-        if row is None:
-            return None
-        value = row["oldest_created_at"]
-        return str(value) if isinstance(value, str) and value else None
-
-    def count_pending_requests(self, *, harness: str | None = None, search: str | None = None) -> int:
-        return self.count_approval_requests(status="pending", harness=harness, search=search)
-
-    def clear_approval_requests(self, *, harness: str | None = None, status: str | None = None) -> int:
-        conditions: list[str] = []
-        params: list[object] = []
-        if harness is not None:
-            conditions.append("harness = ?")
-            params.append(harness)
-        if status is not None:
-            conditions.append("status = ?")
-            params.append(status)
-        query = "delete from approval_requests"
-        if conditions:
-            query += " where " + " and ".join(conditions)
-        with self._connect() as connection:
-            request_rows = connection.execute(
-                f"select request_id from approval_requests{' where ' + ' and '.join(conditions) if conditions else ''}",
-                tuple(params),
-            ).fetchall()
-            request_ids = [str(row["request_id"]) for row in request_rows]
-            purge_request_resumes(connection, request_ids)
-            cursor = connection.execute(query, tuple(params))
-            return int(cursor.rowcount if cursor.rowcount is not None else 0)

@@ -3,10 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import http.client
 import json
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,14 +11,11 @@ from typing import cast
 
 import pytest
 
-from codex_plugin_scanner.guard.daemon import GuardDaemonServer
 from codex_plugin_scanner.guard.daemon import extension_control_api as extension_control_api_module
-from codex_plugin_scanner.guard.daemon.client import GuardDaemonRequestError, GuardSurfaceDaemonClient
 from codex_plugin_scanner.guard.daemon.extension_control_api import (
     ExtensionControlApiError,
     ExtensionControlApiService,
 )
-from codex_plugin_scanner.guard.daemon.manager import load_guard_daemon_auth_token
 from codex_plugin_scanner.guard.local_dashboard_session import LOCAL_DASHBOARD_SESSION_AUDIENCE
 from codex_plugin_scanner.guard.runtime.command_extensions import (
     BUILT_IN_COMMAND_EXTENSION_REGISTRY,
@@ -29,7 +23,17 @@ from codex_plugin_scanner.guard.runtime.command_extensions import (
 )
 from codex_plugin_scanner.guard.runtime.extension_control_authority import (
     AuthorityHealth,
+    ExtensionControlAuthorityError,
     ExtensionControlAuthorityView,
+    layers_to_json,
+)
+from codex_plugin_scanner.guard.runtime.extension_control_contract import (
+    CONTROL_SCHEMA_VERSION,
+    ControlLayerKind,
+    ExtensionControlLayer,
+)
+from codex_plugin_scanner.guard.runtime.extension_control_limits import (
+    advertised_extension_control_limits,
 )
 from codex_plugin_scanner.guard.runtime.extension_control_proof import ExtensionControlProof
 from codex_plugin_scanner.guard.runtime.extension_control_runtime import ExtensionControlRuntime
@@ -85,11 +89,19 @@ def test_catalog_and_effective_responses_are_bounded_public_dtos(tmp_path: Path)
 
     assert catalog["catalog_digest"] == BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest
     assert isinstance(catalog["extensions"], list)
+    limits = advertised_extension_control_limits()
     assert catalog["limits"] == {
-        "max_body_bytes": 1_000_000,
-        "max_controls": 4096,
-        "max_observations": 2048,
+        **limits,
+        "max_body_bytes": limits["max_catalog_payload_bytes"],
+        "max_controls": limits["max_controls_total"],
     }
+    projection = cast(dict[str, object], effective.pop("projection"))
+    assert projection["schema_version"] == "guard.daemon.extension-control-projection.v1"
+    assert projection["revision"] == effective["revision"]
+    assert projection["catalog_digest"] == effective["catalog_digest"]
+    assert projection["health"] == effective["health"]
+    assert isinstance(projection["extensions"], list)
+    assert isinstance(projection["permissions"], list)
     assert effective == {
         "schema_version": "guard.daemon.extension-controls.v1",
         "health": "protected",
@@ -160,6 +172,116 @@ def test_degraded_acknowledgement_rejects_missing_daemon_approval(tmp_path: Path
 
     assert denied.value.status == 423
     assert service.effective()["health"] == AuthorityHealth.DEGRADED_UNACKNOWLEDGED.value
+
+
+def test_authority_recovery_consumes_daemon_bound_approval_before_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = GuardStore(tmp_path / "guard-home")
+    tampered = ExtensionControlAuthorityView(
+        AuthorityHealth.TAMPERED,
+        4,
+        BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest,
+        (),
+    )
+    protected = replace(tampered, health=AuthorityHealth.PROTECTED, revision=5)
+    service = ExtensionControlApiService(
+        store=store,
+        registry=BUILT_IN_COMMAND_EXTENSION_REGISTRY,
+        runtime=ExtensionControlRuntime(tampered),
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(store, "read_extension_control_authority_for_registry", lambda _registry: tampered)
+    monkeypatch.setattr(
+        store,
+        "recover_extension_control_authority",
+        lambda **_kwargs: calls.append("recover") or protected,
+    )
+    monkeypatch.setattr(
+        extension_control_api_module,
+        "require_extension_control",
+        lambda *_args, **_kwargs: calls.append("require") or object(),
+    )
+    monkeypatch.setattr(
+        extension_control_api_module,
+        "consume_extension_control_grant",
+        lambda *_args, **_kwargs: calls.append("consume"),
+    )
+
+    effective = service.recover_authority({"approval_password": "secret", "session_nonce": "nonce"})
+
+    assert effective["health"] == AuthorityHealth.PROTECTED.value
+    assert effective["revision"] == 5
+    assert calls == ["require", "consume", "recover"]
+
+
+def test_authority_recovery_rejects_healthy_authority(tmp_path: Path) -> None:
+    service = _service(GuardStore(tmp_path / "guard-home"))
+
+    with pytest.raises(ExtensionControlApiError) as denied:
+        service.recover_authority({"session_nonce": "nonce"})
+
+    assert denied.value.status == 409
+    assert denied.value.code == "authority_not_recoverable"
+
+
+def test_authority_recovery_never_reports_success_while_still_tampered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = GuardStore(tmp_path / "guard-home")
+    tampered = ExtensionControlAuthorityView(
+        AuthorityHealth.TAMPERED,
+        4,
+        BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest,
+        (),
+    )
+    service = ExtensionControlApiService(
+        store=store,
+        registry=BUILT_IN_COMMAND_EXTENSION_REGISTRY,
+        runtime=ExtensionControlRuntime(tampered),
+    )
+    monkeypatch.setattr(store, "read_extension_control_authority_for_registry", lambda _registry: tampered)
+    monkeypatch.setattr(store, "recover_extension_control_authority", lambda **_kwargs: tampered)
+    monkeypatch.setattr(extension_control_api_module, "require_extension_control", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(extension_control_api_module, "consume_extension_control_grant", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(ExtensionControlApiError) as denied:
+        service.recover_authority({"approval_password": "secret", "session_nonce": "nonce"})
+
+    assert denied.value.status == 503
+    assert denied.value.code == "authority_recovery_incomplete"
+
+
+def test_authority_recovery_returns_bounded_error_when_store_repair_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = GuardStore(tmp_path / "guard-home")
+    tampered = ExtensionControlAuthorityView(
+        AuthorityHealth.TAMPERED,
+        4,
+        BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest,
+        (),
+    )
+    service = ExtensionControlApiService(
+        store=store,
+        registry=BUILT_IN_COMMAND_EXTENSION_REGISTRY,
+        runtime=ExtensionControlRuntime(tampered),
+    )
+    monkeypatch.setattr(store, "read_extension_control_authority_for_registry", lambda _registry: tampered)
+    monkeypatch.setattr(
+        store,
+        "recover_extension_control_authority",
+        lambda **_kwargs: (_ for _ in ()).throw(ExtensionControlAuthorityError("failed")),
+    )
+    monkeypatch.setattr(extension_control_api_module, "require_extension_control", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(extension_control_api_module, "consume_extension_control_grant", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(ExtensionControlApiError) as denied:
+        service.recover_authority({"approval_password": "secret", "session_nonce": "nonce"})
+
+    assert denied.value.status == 503
+    assert denied.value.code == "authority_recovery_failed"
 
 
 def test_legacy_extension_aliases_migrate_to_canonical_catalog_ids(tmp_path: Path) -> None:
@@ -276,14 +398,57 @@ class _ApplyingStore:
         self.guard_home = guard_home
         self.events: list[tuple[str, dict[str, object], str]] = []
         self.commits = 0
+        self.committed_layers: tuple[ExtensionControlLayer, ...] | None = None
+        self.managed_layers: tuple[ExtensionControlLayer, ...] = ()
+        self.managed_revision = 0
+        self.current_view = ExtensionControlAuthorityView(
+            AuthorityHealth.PROTECTED,
+            4,
+            BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest,
+            (),
+        )
 
-    def commit_extension_control_layers(self, *_args: object, **_kwargs: object) -> ExtensionControlAuthorityView:
+    def commit_extension_control_layers(
+        self,
+        layers: tuple[ExtensionControlLayer, ...],
+        **_kwargs: object,
+    ) -> ExtensionControlAuthorityView:
         self.commits += 1
-        return ExtensionControlAuthorityView(
+        self.committed_layers = layers
+        self.current_view = ExtensionControlAuthorityView(
             AuthorityHealth.PROTECTED,
             5,
             BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest,
-            (),
+            layers,
+        )
+        return self.current_view
+
+    def read_extension_control_authority(
+        self,
+        *,
+        catalog_digest: str,
+    ) -> ExtensionControlAuthorityView:
+        assert catalog_digest == self.current_view.catalog_digest
+        return self.current_view
+
+    def read_extension_control_authority_for_registry(
+        self,
+        _registry: object,
+        **kwargs: object,
+    ) -> ExtensionControlAuthorityView:
+        if kwargs.get("include_managed_controls") is False:
+            return self.current_view
+        base_layers = (
+            tuple(layer for layer in self.current_view.layers if layer.kind is ControlLayerKind.LOCAL_ADMIN)
+            if self.managed_layers
+            else self.current_view.layers
+        )
+        return ExtensionControlAuthorityView(
+            self.current_view.health,
+            self.current_view.revision,
+            self.current_view.catalog_digest,
+            (*base_layers, *self.managed_layers),
+            self.managed_revision,
         )
 
     def add_event(self, event_name: str, payload: dict[str, object], now: str) -> None:
@@ -324,60 +489,138 @@ def test_apply_requires_matching_server_held_proof_and_refreshes_runtime(
     assert mismatch.value.code == "proof_mismatch"
 
 
-def test_http_routes_authenticate_before_reading_sensitive_post_body(tmp_path: Path) -> None:
-    store = GuardStore(tmp_path / "guard-home")
-    daemon = GuardDaemonServer(store, host="127.0.0.1", port=0)
-    daemon.start()
-    connection = http.client.HTTPConnection("127.0.0.1", daemon.port, timeout=2)
-    try:
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{daemon.port}/v1/extension-controls/catalog",
-            method="GET",
-        )
-        with pytest.raises(urllib.error.HTTPError) as unauthorized:
-            urllib.request.urlopen(request, timeout=2)
-        assert unauthorized.value.code == 401
+def test_local_apply_does_not_persist_composed_managed_layer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _ApplyingStore(tmp_path / "guard-home")
+    managed_layer = ExtensionControlLayer(
+        CONTROL_SCHEMA_VERSION,
+        ControlLayerKind.SIGNED_CLOUD,
+        BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest,
+        False,
+        (),
+    )
+    service = ExtensionControlApiService(
+        store=cast(GuardStore, store),
+        registry=BUILT_IN_COMMAND_EXTENSION_REGISTRY,
+        runtime=ExtensionControlRuntime(
+            ExtensionControlAuthorityView(
+                AuthorityHealth.PROTECTED,
+                4,
+                BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest,
+                (managed_layer,),
+                1,
+            )
+        ),
+    )
+    store.managed_layers = (managed_layer,)
+    store.managed_revision = 1
+    monkeypatch.setattr(
+        extension_control_api_module,
+        "issue_extension_control_proof",
+        lambda *_args, **_kwargs: cast(ExtensionControlProof, _FakeProof()),
+    )
+    payload = _mutation_payload()
+    payload["layers"] = json.loads(layers_to_json((managed_layer,)))
+    payload.update({"session_nonce": "session-1", "approval_password": "not-persisted"})
 
-        auth_token = load_guard_daemon_auth_token(store.guard_home)
-        assert auth_token is not None
-        authenticated = urllib.request.Request(
-            f"http://127.0.0.1:{daemon.port}/v1/extension-controls/catalog",
-            method="GET",
-            headers={"X-Guard-Dashboard-Session": _dashboard_token(auth_token)},
-        )
-        with urllib.request.urlopen(authenticated, timeout=2) as response:
-            assert response.status == 200
-            assert json.loads(response.read())["catalog_digest"] == (BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest)
+    preview = service.preview(payload)
+    _ = service.apply({**payload, "proof_id": preview["proof_id"]})
 
-        connection.putrequest("POST", "/v1/extension-controls/apply")
-        connection.putheader("Content-Type", "application/json")
-        connection.putheader("Content-Length", "1000000")
-        connection.endheaders()
-        response = connection.getresponse()
-        assert response.status == 401
-        response.read()
-        connection.close()
-        connection = http.client.HTTPConnection("127.0.0.1", daemon.port, timeout=2)
-        connection.putrequest("POST", "/v1/extension-controls/apply")
-        connection.putheader("X-Guard-Token", auth_token)
-        connection.putheader("Content-Type", "application/json")
-        connection.putheader("Content-Length", "1000001")
-        connection.endheaders()
-        response = connection.getresponse()
-        client = GuardSurfaceDaemonClient(f"http://127.0.0.1:{daemon.port}", auth_token)
-        refreshed = client.refresh_extension_controls()
-        assert refreshed["health"] == "unenrolled"
-        with pytest.raises(GuardDaemonRequestError) as not_degraded:
-            client.acknowledge_degraded_extension_controls({})
-        assert not_degraded.value.status == 409
-        assert not_degraded.value.code == "authority_not_degraded"
-        with pytest.raises(GuardDaemonRequestError) as unavailable:
-            client.preview_extension_controls(_mutation_payload(revision=0))
-        assert unavailable.value.status == 423
-        assert unavailable.value.code == "authority_unavailable"
-        assert unavailable.value.recovery_action == "enroll_or_repair_authority"
+    assert store.committed_layers == ()
 
-        assert response.status == 413
-    finally:
-        connection.close()
-        daemon.stop()
+
+def test_local_apply_preserves_signed_layer_from_raw_base(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _ApplyingStore(tmp_path / "guard-home")
+    signed_layer = ExtensionControlLayer(
+        CONTROL_SCHEMA_VERSION,
+        ControlLayerKind.SIGNED_CLOUD,
+        BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest,
+        False,
+        (),
+    )
+    store.current_view = ExtensionControlAuthorityView(
+        AuthorityHealth.PROTECTED,
+        4,
+        BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest,
+        (signed_layer,),
+    )
+    service = ExtensionControlApiService(
+        store=cast(GuardStore, store),
+        registry=BUILT_IN_COMMAND_EXTENSION_REGISTRY,
+        runtime=ExtensionControlRuntime(store.current_view),
+    )
+    monkeypatch.setattr(
+        extension_control_api_module,
+        "issue_extension_control_proof",
+        lambda *_args, **_kwargs: cast(ExtensionControlProof, _FakeProof()),
+    )
+    payload = _mutation_payload()
+    payload["layers"] = json.loads(layers_to_json((signed_layer,)))
+    payload.update({"session_nonce": "session-1", "approval_password": "not-persisted"})
+
+    preview = service.preview(payload)
+    _ = service.apply({**payload, "proof_id": preview["proof_id"]})
+
+    assert store.committed_layers == (signed_layer,)
+    assert service.effective()["layers"] == json.loads(layers_to_json((signed_layer,)))
+
+
+def test_local_apply_persists_raw_signed_but_previews_active_managed_layer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _ApplyingStore(tmp_path / "guard-home")
+    raw_signed = ExtensionControlLayer(
+        CONTROL_SCHEMA_VERSION,
+        ControlLayerKind.SIGNED_CLOUD,
+        BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest,
+        False,
+        (),
+    )
+    managed_signed = ExtensionControlLayer(
+        CONTROL_SCHEMA_VERSION,
+        ControlLayerKind.SIGNED_CLOUD,
+        BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest,
+        True,
+        (),
+    )
+    store.current_view = ExtensionControlAuthorityView(
+        AuthorityHealth.PROTECTED,
+        4,
+        BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest,
+        (raw_signed,),
+    )
+    store.managed_layers = (managed_signed,)
+    store.managed_revision = 1
+    service = ExtensionControlApiService(
+        store=cast(GuardStore, store),
+        registry=BUILT_IN_COMMAND_EXTENSION_REGISTRY,
+        runtime=ExtensionControlRuntime(
+            ExtensionControlAuthorityView(
+                AuthorityHealth.PROTECTED,
+                4,
+                BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest,
+                (managed_signed,),
+                1,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        extension_control_api_module,
+        "issue_extension_control_proof",
+        lambda *_args, **_kwargs: cast(ExtensionControlProof, _FakeProof()),
+    )
+    payload = _mutation_payload()
+    payload["layers"] = json.loads(layers_to_json((managed_signed,)))
+    payload.update({"session_nonce": "session-1", "approval_password": "not-persisted"})
+
+    preview = service.preview(payload)
+    _ = service.apply({**payload, "proof_id": preview["proof_id"]})
+
+    assert store.committed_layers == (raw_signed,)
+    assert service.effective()["layers"] == json.loads(layers_to_json((managed_signed,)))

@@ -1,21 +1,20 @@
-"""Classify GitHub CLI commands by their observable security capability.
-
-The classifier uses reviewed command sets for prompt-free reads and routine
-mutations. A new or aliased ``gh`` command therefore cannot inherit trusted
-status merely because it is followed by an output formatter in a shell pipeline.
-"""
+"""Classify GitHub CLI commands without trusting unknown commands through output filters."""
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import Literal
 
+from .github_auth_capabilities import classify_github_auth
 from .github_capability_contract import (
     GitHubCommandAssessment,
     GitHubCommandCapability,
     github_assessment,
+    github_cli_invocation_is_help,
 )
 from .github_rest_capabilities import classify_github_api
+from .github_routine_merge import ROUTINE_SQUASH_MERGE_DETAIL, is_routine_squash_merge
 
 _READ_ONLY_SUBCOMMANDS: dict[str, frozenset[str]] = {
     "issue": frozenset({"list", "status", "view"}),
@@ -68,6 +67,37 @@ _LOCAL_TOP_LEVEL = frozenset({"completion", "help", "version"})
 _GROUP_OPTIONS_WITH_VALUES = frozenset({"-R", "--repo"})
 _GROUP_BOOLEAN_OPTIONS = frozenset({"--help"})
 _GLOBAL_OPTIONS_WITH_VALUES = frozenset({"--hostname", "--repo", "-R"})
+_REPOSITORY_COMPONENT = re.compile(r"[A-Za-z0-9_.-]+")
+_READ_SHORT_BOOLEAN_FLAGS: dict[tuple[str, str], frozenset[str]] = {
+    ("issue", "list"): frozenset({"w"}),
+    ("issue", "view"): frozenset({"c", "w"}),
+    ("pr", "checks"): frozenset({"w"}),
+    ("pr", "diff"): frozenset({"w"}),
+    ("pr", "list"): frozenset({"d", "w"}),
+    ("pr", "status"): frozenset({"c"}),
+    ("pr", "view"): frozenset({"c", "w"}),
+    ("release", "view"): frozenset({"w"}),
+    ("repo", "view"): frozenset({"w"}),
+    ("run", "list"): frozenset({"a"}),
+    ("run", "view"): frozenset({"v", "w"}),
+    ("workflow", "list"): frozenset({"a"}),
+    ("workflow", "view"): frozenset({"w", "y"}),
+}
+_READ_SHORT_VALUE_FLAGS: dict[tuple[str, str], frozenset[str]] = {
+    ("issue", "list"): frozenset({"A", "L", "S", "a", "l", "m", "s"}),
+    ("pr", "checks"): frozenset({"i"}),
+    ("pr", "diff"): frozenset({"e"}),
+    ("pr", "list"): frozenset({"A", "B", "H", "L", "S", "a", "l", "s"}),
+    ("release", "list"): frozenset({"L", "O"}),
+    ("repo", "list"): frozenset({"L", "l"}),
+    ("repo", "view"): frozenset({"b"}),
+    ("run", "list"): frozenset({"L", "b", "c", "e", "s", "u", "w"}),
+    ("run", "view"): frozenset({"a", "j"}),
+    ("run", "watch"): frozenset({"i"}),
+    ("workflow", "list"): frozenset({"L"}),
+    ("workflow", "view"): frozenset({"r"}),
+}
+_INHERITED_READ_SHORT_VALUE_FLAGS = frozenset({"q", "t"})
 
 
 def classify_github_cli(args: Sequence[str]) -> GitHubCommandAssessment:
@@ -80,6 +110,18 @@ def classify_github_cli(args: Sequence[str]) -> GitHubCommandAssessment:
     original = tuple(normalized)
     if not normalized:
         return _assessment("unknown", "github.command.missing", "The GitHub CLI subcommand is missing.")
+    if _alternate_hostname_requested(original):
+        return _assessment(
+            "unknown",
+            "github.command.alternate-host",
+            "An alternate GitHub host requires explicit review.",
+        )
+    if _unsafe_repository_selector_requested(original):
+        return _assessment(
+            "unknown",
+            "github.command.untrusted-repository-selector",
+            "An alternate, dynamic, or malformed GitHub repository selector requires explicit review.",
+        )
     normalized = _strip_global_options(normalized)
     if not normalized:
         return _assessment(
@@ -90,28 +132,15 @@ def classify_github_cli(args: Sequence[str]) -> GitHubCommandAssessment:
     top_level = normalized[0].lower()
     if top_level in {"--version", "-v"}:
         return _assessment("read_local", "github.command.local-metadata", "The command reads local CLI metadata.")
-    if top_level in {"--help", "-h"}:
+    if github_cli_invocation_is_help(normalized):
         return _assessment("read_local", "github.command.local-help", "The command displays local CLI help.")
     if top_level == "api":
         return classify_github_api(normalized[1:])
     if top_level in _LOCAL_TOP_LEVEL:
         return _assessment("read_local", "github.command.local-metadata", "The command reads local CLI metadata.")
-    if top_level == "auth" and len(normalized) > 1:
-        auth_subcommand = normalized[1].lower()
-        if auth_subcommand == "token" or (
-            auth_subcommand == "status" and _has_any_option(normalized[2:], "--show-token", "-t")
-        ):
-            return _assessment(
-                "secret_remote",
-                "github.command.auth-token-read",
-                "The command reads a GitHub authentication token.",
-            )
-        if auth_subcommand == "status":
-            return _assessment(
-                "read_local",
-                "github.command.local-auth-read",
-                "The command reads local CLI auth state.",
-            )
+    auth_assessment = classify_github_auth(normalized)
+    if auth_assessment is not None:
+        return auth_assessment
     if top_level in _READ_ONLY_TOP_LEVEL:
         return _assessment(
             "read_remote",
@@ -184,6 +213,12 @@ def classify_github_cli(args: Sequence[str]) -> GitHubCommandAssessment:
                 "The command deletes GitHub-hosted state.",
             )
         if top_level == "pr" and subcommand == "merge":
+            if is_routine_squash_merge(tail):
+                return _assessment(
+                    "routine_merge_remote",
+                    "github.command.pr-routine-squash-merge",
+                    ROUTINE_SQUASH_MERGE_DETAIL,
+                )
             admin_state = _boolean_option_state(tail, "--admin")
             if admin_state == "invalid":
                 return _assessment(
@@ -212,6 +247,12 @@ def classify_github_cli(args: Sequence[str]) -> GitHubCommandAssessment:
                 "The command publishes or changes a GitHub release artifact.",
             )
         if subcommand in _WORKFLOW_SUBCOMMANDS.get(top_level, frozenset()):
+            if top_level == "run" and subcommand == "rerun" and _is_routine_failed_run_rerun(original, tail):
+                return _assessment(
+                    "routine_workflow_remote",
+                    "github.command.routine-failed-run-rerun",
+                    "The command retries only failed jobs from one numeric GitHub Actions run.",
+                )
             return _assessment(
                 "workflow_remote",
                 "github.command.workflow-mutation",
@@ -344,12 +385,14 @@ def static_markdown_pr_body_file_operand(args: Sequence[str]) -> str | None:
     if len(body_files) != 1:
         return None
     body_file = body_files[0]
-    shell_expansion_markers = ("$", "`", "*", "?", "[", "]", "{", "}", "(", ")", "<", ">", "^", "#", "~")
+    shell_expansion_markers = ("$", "`", "*", "?", "[", "]", "{", "}", "(", ")", "<", ">", "^", "#")
     if (
         not body_file
         or body_file == "-"
         or body_file.startswith("=")
+        or body_file.startswith("~//")
         or any(marker in body_file for marker in shell_expansion_markers)
+        or ("~" in body_file and not body_file.startswith("~/"))
     ):
         return None
     if not body_file.lower().endswith((".md", ".markdown")):
@@ -420,10 +463,106 @@ def _has_dynamic_value(args: Sequence[str]) -> bool:
     return any("$" in token or "`" in token or token.startswith("@") for token in args)
 
 
+def _is_routine_failed_run_rerun(original: tuple[str, ...], args: Sequence[str]) -> bool:
+    """Accept one numeric run, one static repository, and exactly ``--failed``."""
+
+    if not any(
+        token in {"--repo", "-R"} or token.startswith(("--repo=", "-R=")) or (token.startswith("-R") and len(token) > 2)
+        for token in original
+    ):
+        return False
+    run_id: str | None = None
+    failed = False
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--failed":
+            if failed:
+                return False
+            failed = True
+        elif token in {"--repo", "-R"}:
+            if index + 1 >= len(args):
+                return False
+            index += 1
+        elif token.startswith(("--repo=", "-R=")) or (token.startswith("-R") and len(token) > 2):
+            pass
+        elif run_id is None and token.isascii() and token.isdigit() and 0 < len(token) <= 20 and int(token) > 0:
+            run_id = token
+        else:
+            return False
+        index += 1
+    return run_id is not None and failed
+
+
+def _alternate_hostname_requested(args: tuple[str, ...]) -> bool:
+    hostnames: list[str] = []
+    for index, token in enumerate(args):
+        if index > 0 and token.startswith("-h") and token != "--help":
+            hostname = token[2:] if token != "-h" else (args[index + 1] if index + 1 < len(args) else "")
+            hostnames.append(hostname)
+        if token.startswith("--hostname="):
+            hostnames.append(token.partition("=")[2])
+        if token == "--hostname":
+            hostnames.append(args[index + 1] if index + 1 < len(args) else "")
+    return any(hostname.casefold() != "github.com" for hostname in hostnames) or len(set(hostnames)) > 1
+
+
+def _unsafe_repository_selector_requested(args: tuple[str, ...]) -> bool:
+    selectors: list[str] = []
+    malformed_cluster = False
+    command_args = _strip_global_options(list(args))
+    command_key: tuple[str, str] = (command_args[0], command_args[1]) if len(command_args) >= 2 else ("", "")
+    boolean_flags = _READ_SHORT_BOOLEAN_FLAGS.get(command_key, frozenset())
+    value_flags = _READ_SHORT_VALUE_FLAGS.get(command_key, frozenset()) | _INHERITED_READ_SHORT_VALUE_FLAGS
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token.startswith("--repo="):
+            selectors.append(token.partition("=")[2])
+        elif token == "--repo" or token == "-R":
+            selectors.append(args[index + 1] if index + 1 < len(args) else "")
+            index += 1
+        elif len(token) > 2 and token.startswith("-") and token[1] in value_flags:
+            pass
+        elif token.startswith("-") and not token.startswith("--") and "R" in token[1:]:
+            cluster = token[1:]
+            prefix, _separator, attached_selector = cluster.partition("R")
+            if any(flag in value_flags for flag in prefix):
+                pass
+            elif not prefix or all(flag in boolean_flags for flag in prefix):
+                if attached_selector:
+                    selectors.append(attached_selector)
+                else:
+                    selectors.append(args[index + 1] if index + 1 < len(args) else "")
+                    index += 1
+            else:
+                malformed_cluster = True
+        index += 1
+    return (
+        malformed_cluster
+        or len(selectors) > 1
+        or any(not _github_repository_selector_is_safe(selector) for selector in selectors)
+    )
+
+
+def _github_repository_selector_is_safe(selector: str) -> bool:
+    if any(marker in selector for marker in ("$", "`", "$(", "${")):
+        return False
+    parts = selector.split("/")
+    if len(parts) == 3:
+        if parts[0].casefold() != "github.com":
+            return False
+        parts = parts[1:]
+    return len(parts) == 2 and all(_REPOSITORY_COMPONENT.fullmatch(part) for part in parts)
+
+
 def _strip_global_options(args: list[str]) -> list[str]:
     index = 0
     while index < len(args):
         token = args[index]
+        if token.startswith("-R") and token != "-R":
+            index += 1
+            continue
         option_name, separator, _value = token.partition("=")
         if option_name not in _GLOBAL_OPTIONS_WITH_VALUES:
             break

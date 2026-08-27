@@ -8,7 +8,7 @@ import shlex
 from collections.abc import Callable
 from pathlib import Path
 
-from ..action_lattice import is_guard_action, most_restrictive_guard_action
+from ..action_lattice import is_guard_action, most_restrictive_guard_action, normalize_guard_action
 from ..adapters.base import HarnessContext
 from ..approvals import approval_center_hint, attach_primary_approval_link, queue_blocked_approvals
 from ..config import load_guard_config
@@ -177,6 +177,10 @@ def _protect_approval_item(
     decision_reason = risk_summary or f"package_supply_chain_{policy_action.replace('-', '_')}"
     decision_v2 = build_decision_v2(policy_action, reason=decision_reason)
     decision_v2_payload = decision_v2.to_dict()
+    action_envelope = _protect_approval_action_envelope(
+        receipt.get("action_envelope_json"),
+        policy_action=policy_action,
+    )
     reasons = supply_chain_evaluation.get("reasons")
     reason_items = reasons if isinstance(reasons, list) else []
     reason_codes = {str(reason.get("code") or "") for reason in reason_items if isinstance(reason, dict)}
@@ -195,12 +199,32 @@ def _protect_approval_item(
         "changed_fields": _protect_target_labels(response_payload),
         "risk_summary": risk_summary,
         "risk_signals": _string_list(verdict.get("risk_signals")),
-        "action_envelope_json": (
-            receipt.get("action_envelope_json") if isinstance(receipt.get("action_envelope_json"), dict) else None
-        ),
+        "action_envelope_json": action_envelope,
         "decision_v2_json": decision_v2_payload,
         "scanner_evidence": scanner_evidence,
     }
+
+
+def _protect_approval_action_envelope(
+    value: object,
+    *,
+    policy_action: GuardAction,
+) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    envelope = dict(value)
+    if envelope.get("observe_mode") is True:
+        observed_action = _normalize_protect_policy_action(envelope.get("observed_policy_action"))
+        if observed_action != policy_action:
+            return envelope
+        envelope.pop("observe_mode", None)
+        envelope.pop("observed_policy_action", None)
+    action_keys = ("policy_action", "policyAction", "pre_execution_result", "preExecutionResult")
+    for key in action_keys:
+        if key not in envelope or envelope.get(key) is None:
+            continue
+        envelope[key] = policy_action
+    return envelope
 
 
 def _annotate_package_execution_context_change(
@@ -297,11 +321,20 @@ def _protect_policy_action_candidates(
 
 def _protect_policy_action(response_payload: dict[str, object]) -> GuardAction | None:
     verdict_action, supply_action = _protect_policy_action_candidates(response_payload)
-    if verdict_action is None:
-        return supply_action
-    if supply_action is None:
-        return verdict_action
-    return most_restrictive_guard_action(verdict_action, supply_action, unknown_action="block")
+    candidates: list[GuardAction] = [action for action in (verdict_action, supply_action) if action is not None]
+    receipt = response_payload.get("receipt")
+    envelope = receipt.get("action_envelope_json") if isinstance(receipt, dict) else None
+    if isinstance(envelope, dict):
+        for key in ("policy_action", "policyAction", "pre_execution_result", "preExecutionResult"):
+            if key not in envelope or envelope.get(key) is None:
+                continue
+            candidates.append(normalize_guard_action(envelope.get(key), unknown_action="block"))
+    if not candidates:
+        return None
+    action = candidates[0]
+    for candidate in candidates[1:]:
+        action = most_restrictive_guard_action(action, candidate, unknown_action="block")
+    return action
 
 
 def _protect_policy_actions_disagree(response_payload: dict[str, object]) -> bool:

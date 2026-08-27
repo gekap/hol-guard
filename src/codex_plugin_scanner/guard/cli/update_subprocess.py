@@ -26,8 +26,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import BinaryIO
 
-from packaging.version import InvalidVersion, Version
-
 from ..mdm.network import platform_system_proxies
 from ..redaction import redact_sensitive_text
 from ..shims import _trusted_python_flags
@@ -39,6 +37,7 @@ from ..windows_paths import (
 )
 
 _DEFAULT_INDEX_URL = "https://pypi.org/simple"
+_PIP_NO_CACHE_ARG = "--no-cache-dir"
 _DEFAULT_TIMEOUT_SECONDS = 10 * 60.0
 _DEFAULT_OUTPUT_LIMIT_BYTES = 256 * 1024
 _PROCESS_MONITOR_INTERVAL_SECONDS = 0.01
@@ -54,45 +53,15 @@ _TRUSTED_SCRIPT_BOOTSTRAP = (
 )
 _TRUSTED_MODULE_BOOTSTRAP = (
     "import json,runpy,sys; "
-    "sys.path[:0]=json.loads(sys.argv.pop(1)); "
+    "import_paths=json.loads(sys.argv.pop(1)); "
+    "extra_import_paths=json.loads(sys.argv.pop(1)) if sys.argv[1].startswith('[') else []; "
+    "install_prefix=sys.argv.pop(1); sys.prefix=install_prefix; sys.exec_prefix=install_prefix; "
     "module=sys.argv.pop(1); "
+    "sys.path[:0]=import_paths; "
+    "sys.path.extend(extra_import_paths); "
     "sys.argv[0]=module; "
     "runpy.run_module(module, run_name='__main__', alter_sys=True)"
 )
-_DISTRIBUTION_QUERY_SCRIPT = """
-from __future__ import annotations
-
-import importlib.metadata
-import json
-import stat
-from pathlib import Path
-
-distribution = importlib.metadata.distribution("hol-guard")
-root = Path(distribution.locate_file("")).resolve()
-direct_url = None
-direct_url_entries = [
-    entry
-    for entry in (distribution.files or ())
-    if entry.as_posix().endswith(".dist-info/direct_url.json")
-]
-if len(direct_url_entries) > 1:
-    raise RuntimeError("multiple direct_url metadata files")
-if direct_url_entries:
-    direct_url_path = Path(distribution.locate_file(direct_url_entries[0])).resolve(strict=True)
-    direct_url_path.relative_to(root)
-    direct_url_stat = direct_url_path.stat()
-    if not stat.S_ISREG(direct_url_stat.st_mode) or not 0 < direct_url_stat.st_size <= 65536:
-        raise RuntimeError("invalid direct_url metadata file")
-    direct_url = json.loads(direct_url_path.read_text(encoding="utf-8"))
-    if not isinstance(direct_url, dict):
-        raise RuntimeError("invalid direct_url metadata payload")
-print(json.dumps({
-    "direct_url": direct_url,
-    "name": distribution.metadata.get("Name"),
-    "version": distribution.version,
-    "root": str(root),
-}, sort_keys=True))
-""".strip()
 _PIP_QUERY_SCRIPT = """
 from __future__ import annotations
 
@@ -307,6 +276,7 @@ class InstalledDistribution:
     version: str
     root: Path
     direct_url: dict[str, object] | None = None
+    code_version: str | None = None
 
 
 @dataclass(slots=True)
@@ -431,6 +401,7 @@ class TrustedUpdateContext:
     environment: Mapping[str, str]
     install_prefix: Path
     python_import_paths: tuple[Path, ...]
+    pipx_shared_import_path: Path | None
     neutral_identities: tuple[FilesystemIdentity, ...]
     python_import_identities: tuple[FilesystemIdentity, ...]
     ca_bundle_identity: FilesystemIdentity | None
@@ -452,16 +423,20 @@ class TrustedUpdateContext:
     def python_module_command(self, module: str, *args: str) -> list[str]:
         if not module or not all(part.isidentifier() for part in module.split(".")):
             raise UpdateSubprocessError("update_installer_command_invalid")
-        return [
+        extra_import_paths = (
+            [str(self.pipx_shared_import_path)] if module == "pip" and self.pipx_shared_import_path is not None else []
+        )
+        command = [
             str(self.python.launch_path),
             *_trusted_python_flags(),
             "-S",
             "-c",
             _TRUSTED_MODULE_BOOTSTRAP,
             self._python_import_paths_json(),
-            module,
-            *args,
         ]
+        if extra_import_paths:
+            command.append(json.dumps(extra_import_paths, separators=(",", ":")))
+        return [*command, str(self.install_prefix), module, *args]
 
     def _python_import_paths_json(self) -> str:
         return json.dumps([str(path) for path in self.python_import_paths], separators=(",", ":"))
@@ -478,6 +453,7 @@ class TrustedUpdateContext:
                 "--isolated",
                 "--disable-pip-version-check",
                 "--no-input",
+                _PIP_NO_CACHE_ARG,
                 *pip_args,
             )
             return _append_pip_source(command, self.source.index_url)
@@ -513,6 +489,7 @@ class TrustedUpdateContext:
             "--isolated",
             "--disable-pip-version-check",
             "--no-input",
+            _PIP_NO_CACHE_ARG,
             *display_command[3:],
         )
         return _append_pip_source(command, self.source.index_url)
@@ -608,47 +585,15 @@ class TrustedUpdateContext:
             raise UpdateSubprocessError("update_installer_untrusted")
 
     def query_distribution(self) -> InstalledDistribution:
+        from .update_install_verify import DISTRIBUTION_QUERY_SCRIPT, parse_distribution_probe_payload
+
         result = self.run(
-            self.python_command(_DISTRIBUTION_QUERY_SCRIPT),
+            self.python_command(DISTRIBUTION_QUERY_SCRIPT),
             timeout_seconds=30.0,
             output_limit_bytes=8192,
         )
         payload = _single_json_object(result, failure_reason="update_version_output_invalid")
-        if set(payload) != {"direct_url", "name", "root", "version"}:
-            raise UpdateSubprocessError("update_version_output_invalid")
-        name = payload.get("name")
-        version = payload.get("version")
-        root_value = payload.get("root")
-        direct_url_value = payload.get("direct_url")
-        if not isinstance(name, str) or name.lower().replace("_", "-") != "hol-guard":
-            raise UpdateSubprocessError("update_version_output_invalid")
-        if not isinstance(version, str):
-            raise UpdateSubprocessError("update_version_output_invalid")
-        try:
-            normalized_version = str(Version(version))
-        except InvalidVersion as error:
-            raise UpdateSubprocessError("update_version_output_invalid") from error
-        if not isinstance(root_value, str):
-            raise UpdateSubprocessError("update_version_output_invalid")
-        try:
-            root = Path(root_value).resolve(strict=True)
-        except (OSError, RuntimeError) as error:
-            raise UpdateSubprocessError("update_version_output_invalid") from error
-        if not _path_is_within(root, self.install_prefix):
-            raise UpdateSubprocessError("update_package_origin_mismatch")
-        if direct_url_value is not None and not isinstance(direct_url_value, dict):
-            raise UpdateSubprocessError("update_version_output_invalid")
-        direct_url = None
-        if isinstance(direct_url_value, dict):
-            direct_url = {str(key): value for key, value in direct_url_value.items() if isinstance(key, str)}
-            if len(direct_url) != len(direct_url_value):
-                raise UpdateSubprocessError("update_version_output_invalid")
-        return InstalledDistribution(
-            name="hol-guard",
-            version=normalized_version,
-            root=root,
-            direct_url=direct_url,
-        )
+        return parse_distribution_probe_payload(payload, install_prefix=self.install_prefix)
 
     def _launcher_for(self, command_path: str) -> ExecutableIdentity:
         candidate = Path(command_path)
@@ -719,6 +664,9 @@ def build_trusted_update_context(
         )
     install_prefix = Path(sys.prefix).expanduser().resolve()
     python_import_paths = _trusted_python_import_paths()
+    pipx_shared_import_identity = (
+        _trusted_pipx_shared_import_identity(python_import_paths) if installer_kind == "pipx" else None
+    )
     environment = _trusted_environment(
         path=trusted_search_path,
         neutral_home=neutral_home,
@@ -754,6 +702,11 @@ def build_trusted_update_context(
         )
         for path in python_import_paths
     )
+    if pipx_shared_import_identity is not None:
+        python_import_identities = (
+            *python_import_identities,
+            pipx_shared_import_identity,
+        )
     ca_bundle_identity = (
         FilesystemIdentity.capture(
             Path(environment["SSL_CERT_FILE"]),
@@ -774,6 +727,9 @@ def build_trusted_update_context(
         environment=MappingProxyType(environment),
         install_prefix=install_prefix,
         python_import_paths=python_import_paths,
+        pipx_shared_import_path=(
+            pipx_shared_import_identity.canonical_path if pipx_shared_import_identity is not None else None
+        ),
         neutral_identities=neutral_identities,
         python_import_identities=python_import_identities,
         ca_bundle_identity=ca_bundle_identity,
@@ -1395,6 +1351,59 @@ def _trusted_python_import_paths() -> tuple[Path, ...]:
     return tuple(paths)
 
 
+def _trusted_pipx_shared_import_identity(
+    python_import_paths: tuple[Path, ...],
+) -> FilesystemIdentity | None:
+    """Resolve pipx's one shared-library path without executing any .pth hooks."""
+
+    candidates: list[Path] = []
+    for import_path in python_import_paths:
+        candidate = import_path / "pipx_shared.pth"
+        try:
+            _ = candidate.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise UpdateSubprocessError("update_installer_untrusted") from error
+        candidates.append(candidate)
+    if not candidates:
+        return None
+    if len(candidates) != 1:
+        raise UpdateSubprocessError("update_installer_untrusted")
+    try:
+        snapshot = _inspect_filesystem_path(candidates[0], kind="file")
+    except (OSError, RuntimeError, ValueError) as error:
+        raise UpdateSubprocessError("update_installer_untrusted") from error
+    if not 0 < snapshot.size <= 4096 or snapshot.prefix is None:
+        raise UpdateSubprocessError("update_installer_untrusted")
+    try:
+        content = snapshot.prefix.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise UpdateSubprocessError("update_installer_untrusted") from error
+    lines = content.splitlines()
+    if len(lines) != 1 or not lines[0] or lines[0] != lines[0].strip():
+        raise UpdateSubprocessError("update_installer_untrusted")
+    shared_path = Path(lines[0])
+    if not shared_path.is_absolute():
+        raise UpdateSubprocessError("update_installer_untrusted")
+    try:
+        pipx_home, _pipx_bin = _manager_home_from_prefix("pipx")
+        shared_root = (pipx_home / "shared").resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise UpdateSubprocessError("update_installer_untrusted") from error
+    shared_identity = FilesystemIdentity.capture(
+        shared_path,
+        kind="directory",
+        failure_reason="update_installer_untrusted",
+    )
+    if shared_identity.canonical_path == shared_root or not _path_is_within(
+        shared_identity.canonical_path,
+        shared_root,
+    ):
+        raise UpdateSubprocessError("update_installer_untrusted")
+    return shared_identity
+
+
 def _manager_home_from_prefix(installer_kind: str) -> tuple[Path, Path]:
     prefix = Path(sys.prefix).expanduser().resolve()
     marker = "venvs" if installer_kind == "pipx" else "tools"
@@ -1501,19 +1510,62 @@ def _uv_execution_command(executable: str, args: list[str], *, python: str, inde
     ]
 
 
+def _with_pipx_no_cache_args(args: list[str]) -> list[str]:
+    rest = list(args)
+    for index, token in enumerate(rest):
+        if token == "--pip-args":
+            if index + 1 >= len(rest):
+                rest.append(_PIP_NO_CACHE_ARG)
+                return rest
+            value = rest[index + 1]
+            if _PIP_NO_CACHE_ARG not in value.split():
+                rest[index + 1] = f"{value} {_PIP_NO_CACHE_ARG}".strip()
+            return rest
+        if token.startswith("--pip-args="):
+            value = token.split("=", 1)[1]
+            if _PIP_NO_CACHE_ARG not in value.split():
+                if value:
+                    rest[index] = f"--pip-args={value} {_PIP_NO_CACHE_ARG}"
+                else:
+                    rest[index] = f"--pip-args={_PIP_NO_CACHE_ARG}"
+            return rest
+    rest.append(f"--pip-args={_PIP_NO_CACHE_ARG}")
+    return rest
+
+
 def _pipx_execution_command(executable: str, args: list[str], *, python: str, index_url: str) -> list[str]:
     if not args:
         raise UpdateSubprocessError("update_installer_command_invalid")
-    if args[0] in {"install", "upgrade"}:
-        return [
-            executable,
-            args[0],
-            "--index-url",
-            index_url,
-            "--python",
-            python,
-            *args[1:],
-        ]
+    action = args[0]
+    if action in {"install", "upgrade"}:
+        rest = _with_pipx_no_cache_args(list(args[1:]))
+        command = [executable, action, "--index-url", index_url]
+        if action == "install" and "--force" not in rest:
+            command.extend(["--python", python])
+        command.extend(rest)
+        return command
+    if len(args) >= 5 and args[:3] == ["runpip", "hol-guard", "install"]:
+        install_args = args[3:]
+        target = install_args[-1]
+        flags = install_args[:-1]
+        allowed_flags = (
+            ["--force-reinstall"],
+            ["--upgrade", "--force-reinstall"],
+            ["--upgrade", "--force-reinstall", "--pre"],
+        )
+        if flags in allowed_flags and target and not target.startswith("-"):
+            if _PIP_NO_CACHE_ARG not in flags:
+                flags = [*flags, _PIP_NO_CACHE_ARG]
+            return [
+                executable,
+                "runpip",
+                "hol-guard",
+                "install",
+                *flags,
+                target,
+                "--index-url",
+                index_url,
+            ]
     raise UpdateSubprocessError("update_installer_command_invalid")
 
 

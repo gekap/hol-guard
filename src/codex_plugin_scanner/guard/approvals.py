@@ -23,6 +23,7 @@ from .approval_gate import ApprovalGateGrant, ApprovalGateInput, require_approva
 from .approval_resolution import require_resolvable_approval_request
 from .approval_scope_support import (
     IneligibleApprovalScopeError,
+    exact_action_allow_persistence_eligible,
     package_request_portable_workspace_scope,
     request_scope_contract,
     request_scope_contract_payload,
@@ -34,7 +35,8 @@ from .cli.connect_flow import (
     resolve_guard_cloud_repair_detail,
     resolve_guard_cloud_state,
 )
-from .config import load_guard_config
+from .config import load_guard_config, maybe_auto_revert_watch
+from .continuation_runtime import continuation_offer_payload
 from .daemon.manager import load_guard_daemon_auth_token
 from .decision_boundaries import canonical_approval_surfaces
 from .desktop_notifications import (
@@ -55,6 +57,7 @@ from .models import (
     PolicyDecision,
 )
 from .package_execution_context import package_execution_context_from_scanner_evidence
+from .protection_capabilities import protection_capability_payloads
 from .redaction import redact_text
 from .risk import artifact_risk_signals, artifact_risk_summary
 from .runtime.approval_context import parse_approval_context_token
@@ -67,9 +70,12 @@ from .runtime.github_workflow_runtime import (
 from .runtime.protection_health_runtime import build_runtime_protection_health
 from .store import (
     GuardStore,
+    _global_runtime_scoped_exact_match_key,
+    _is_runtime_scoped_exact_match_key,
     _runtime_scoped_exact_match_key,
     browser_mcp_exact_match_context,
     runtime_tool_action_exact_match_context,
+    runtime_tool_action_policy_artifact_id,
     runtime_tool_action_portable_match_context,
 )
 from .synced_policy import synced_policy_bundle_validation
@@ -83,6 +89,7 @@ from .trusted_local_tools import (
     local_tool_grant_decision,
     parse_local_tool_grant_selection,
 )
+from .value_coercion import coerce_non_negative_int
 
 GUARD_COMMAND = "hol-guard"
 GUARD_DASHBOARD_URL = "https://hol.org/guard"
@@ -445,7 +452,9 @@ def queue_blocked_approvals(
     store: GuardStore,
     approval_center_url: str,
     now: str | None = None,
+    notify: bool = True,
     redaction_level: str = "full",
+    continuation_operation: Mapping[str, object] | None = None,
 ) -> list[dict[str, object]]:
     timestamp = now or _now()
     artifacts_by_id = {artifact.artifact_id: artifact for artifact in detection.artifacts}
@@ -565,6 +574,16 @@ def queue_blocked_approvals(
             first_seen_guard_version=guard_version,
             last_seen_guard_version=guard_version,
         )
+        request = replace(
+            request,
+            continuation_snapshot=continuation_offer_payload(
+                store,
+                request_row=request.to_dict(),
+                now=timestamp,
+                headless=True,
+                operation=continuation_operation,
+            ),
+        )
         persisted_request_id = store.add_approval_request(request, timestamp)
         created_new_request = persisted_request_id == request.request_id
         if persisted_request_id != request.request_id:
@@ -576,7 +595,8 @@ def queue_blocked_approvals(
             )
         if created_new_request:
             _record_created_event(store, request, timestamp)
-        _notify_pending_approval(store=store, request=request)
+        if notify:
+            _notify_pending_approval(store=store, request=request)
         request_payload = store.get_approval_request(persisted_request_id)
         if request_payload is None:
             raise RuntimeError(f"Persisted approval request not found: {persisted_request_id}")
@@ -678,15 +698,17 @@ def apply_approval_resolution(
     scope = selection.applied_scope
     if selection.warning is not None:
         persist_policy = None
-    elif action == "allow" and scope == "artifact" and persist_policy is True:
+    elif scope == "artifact" and persist_policy is True:
         if scope_contract_version is not None:
-            raise IneligibleApprovalScopeError(
-                "saved_allow_scope_ineligible",
-                request_scope_contract(request),
-                action=action,
-                requested_scope=scope,
-            )
-        persist_policy = None
+            if not exact_action_allow_persistence_eligible(request):
+                raise IneligibleApprovalScopeError(
+                    "saved_allow_scope_ineligible" if action == "allow" else "saved_block_scope_ineligible",
+                    request_scope_contract(request),
+                    action="allow" if action == "allow" else "block",
+                    requested_scope=scope,
+                )
+        else:
+            persist_policy = None
     workspace_artifact_id, workspace_artifact_hash = _workspace_policy_artifact_keys(request, scope)
     request_artifact_id = _string_or_none(request.get("artifact_id"))
     request_artifact_hash = _string_or_none(request.get("artifact_hash"))
@@ -714,8 +736,13 @@ def apply_approval_resolution(
         if scope in {"artifact", "workspace", "harness", "global"}:
             scoped_artifact_id = request_artifact_id
     else:
-        artifact_runtime_exact_match_key = _artifact_scope_runtime_exact_match_key(request, scope)
+        artifact_runtime_exact_match_key = _artifact_scope_runtime_exact_match_key(
+            request,
+            scope,
+            include_envelope_command=persist_policy is True,
+        )
         if artifact_runtime_exact_match_key is not None:
+            scoped_artifact_id = runtime_tool_action_policy_artifact_id(request_artifact_id)
             scoped_artifact_hash = artifact_runtime_exact_match_key
         broad_runtime_exact_match_key = _broad_runtime_exact_match_key(request, scope)
         if broad_runtime_exact_match_key is not None:
@@ -833,7 +860,11 @@ def apply_approval_resolution(
         )
 
     resolution_harness = None if scope == "global" else str(request["harness"])
-    resolve_matching_scope_requests = resolve_scope_matches and not (action == "allow" and scope != "artifact")
+    resolve_matching_scope_requests = (
+        resolve_scope_matches
+        and not (action == "allow" and scope != "artifact")
+        and not (scope == "artifact" and _is_runtime_scoped_exact_match_key(scoped_artifact_hash))
+    )
     if return_queue_result:
         result = (
             temporary_mcp_result
@@ -978,25 +1009,41 @@ def _workspace_policy_artifact_keys(request: Mapping[str, object], scope: str) -
     return artifact_id, artifact_hash
 
 
-def _artifact_scope_runtime_exact_match_key(request: Mapping[str, object], scope: str) -> str | None:
+def _artifact_scope_runtime_exact_match_key(
+    request: Mapping[str, object],
+    scope: str,
+    *,
+    include_envelope_command: bool = False,
+) -> str | None:
     if scope != "artifact" or request.get("artifact_type") != "tool_action_request":
         return None
-    artifact_id = request.get("artifact_id")
+    request_artifact_id = _string_or_none(request.get("artifact_id"))
+    artifact_id = runtime_tool_action_policy_artifact_id(request_artifact_id)
+    synthesized_artifact_id = artifact_id != request_artifact_id
+    if synthesized_artifact_id and not include_envelope_command:
+        return None
     raw_command_text = _string_or_none(request.get("raw_command_text"))
     wrapper_chain = request.get("wrapper_chain")
     envelope = request.get("action_envelope_json")
     if isinstance(envelope, Mapping):
-        raw_command_text = raw_command_text or _string_or_none(envelope.get("raw_command_text"))
+        raw_command_text = (
+            raw_command_text
+            or _string_or_none(envelope.get("raw_command_text"))
+            or (_string_or_none(envelope.get("command")) if include_envelope_command else None)
+        )
         if not isinstance(wrapper_chain, Sequence) or isinstance(wrapper_chain, str):
             wrapper_chain = envelope.get("wrapper_chain")
     normalized_wrapper_chain = (
         wrapper_chain if isinstance(wrapper_chain, Sequence) and not isinstance(wrapper_chain, str) else None
     )
+    if synthesized_artifact_id and raw_command_text is None:
+        return None
     context = runtime_tool_action_exact_match_context(
         config_path=_string_or_none(request.get("config_path")),
         source_scope=_string_or_none(request.get("source_scope")),
         raw_command_text=raw_command_text,
         wrapper_chain=normalized_wrapper_chain,
+        permission_mode=_request_permission_mode(request),
     )
     return _runtime_scoped_exact_match_key(artifact_id, context) if isinstance(artifact_id, str) else None
 
@@ -1027,9 +1074,23 @@ def _broad_runtime_exact_match_key(request: Mapping[str, object], scope: str) ->
             wrapper_chain=(
                 wrapper_chain if isinstance(wrapper_chain, Sequence) and not isinstance(wrapper_chain, str) else None
             ),
+            permission_mode=_request_permission_mode(request),
         )
-        return _runtime_scoped_exact_match_key(artifact_id, runtime_tool_action_portable_match_context(context))
+        portable_context = runtime_tool_action_portable_match_context(context)
+        if scope == "global":
+            return _global_runtime_scoped_exact_match_key(artifact_id, portable_context)
+        return _runtime_scoped_exact_match_key(artifact_id, portable_context)
     return _runtime_scoped_exact_match_key(artifact_id)
+
+
+def _request_permission_mode(request: Mapping[str, object]) -> str | None:
+    envelope = request.get("action_envelope_json")
+    if not isinstance(envelope, Mapping):
+        return None
+    raw_payload = envelope.get("raw_payload_redacted")
+    if not isinstance(raw_payload, Mapping):
+        return None
+    return _string_or_none(raw_payload.get("permission_mode")) or _string_or_none(raw_payload.get("permissionMode"))
 
 
 def _extract_surface_flags(browser_intent: Mapping[str, object]) -> list[str] | None:
@@ -1162,6 +1223,16 @@ def _record_resolution_event(
         },
         resolved_at,
     )
+    if action == "allow" and persisted_rule:
+        store.add_event(
+            "guard.protection.ask_once_remembered",
+            {
+                "request_id": request_id,
+                "scope": scope,
+                "local_once_fallback": local_once_fallback,
+            },
+            resolved_at,
+        )
     _enqueue_memory_decision_for_resolution(
         store,
         request_id=request_id,
@@ -1216,6 +1287,17 @@ def _record_created_event(store: GuardStore, request: GuardApprovalRequest, crea
         },
         created_at,
     )
+    if request.policy_action in {"review", "require-reapproval"}:
+        store.add_event(
+            "guard.protection.ask_once_shown",
+            {
+                "request_id": request.request_id,
+                "harness": request.harness,
+                "artifact_id": request.artifact_id,
+                "policy_action": request.policy_action,
+            },
+            created_at,
+        )
 
 
 def _refresh_queue_result(
@@ -1392,6 +1474,21 @@ def attach_primary_approval_link(
         payload["primary_approval_url"] = review_url
 
 
+_UNPROVEN_HOOK_REASONS = frozenset({"guard_cursor_cli_attestation_unavailable"})
+
+
+def _recorded_hook_verification(value: object) -> bool | None:
+    """Return proven hook state, or None when current proof is still unavailable."""
+
+    if isinstance(value, bool):
+        return value
+    if not isinstance(value, Mapping):
+        return None
+    if value.get("reason") in _UNPROVEN_HOOK_REASONS or value.get("integrity_status") == "attestation-unavailable":
+        return None
+    return value.get("protection_active") is True
+
+
 def _live_hook_verification(
     managed_installs: Sequence[Mapping[str, object]],
     store: GuardStore,
@@ -1410,12 +1507,28 @@ def _live_hook_verification(
             if harness == "codex":
                 from .adapters.codex import codex_native_hook_state
 
-                verified[harness] = codex_native_hook_state(context).get("protection_active") is True
+                proven = _recorded_hook_verification(codex_native_hook_state(context))
+                if proven is None:
+                    continue
+                verified[harness] = proven
                 continue
             if harness == "cursor":
                 from .adapters.cursor_hooks import cursor_native_hook_state
 
-                verified[harness] = cursor_native_hook_state(context).get("protection_active") is True
+                proven = _recorded_hook_verification(cursor_native_hook_state(context))
+                if proven is None:
+                    continue
+                verified[harness] = proven
+                continue
+            if harness == "grok":
+                from .cli.install_commands import grok_hooks_protection_ready
+
+                verified[harness] = grok_hooks_protection_ready(context)
+                continue
+            if harness == "grok":
+                from .cli.install_commands import grok_hooks_protection_ready
+
+                verified[harness] = grok_hooks_protection_ready(context)
                 continue
             verified[harness] = verify_managed_install_proof(install.get("manifest"), context) is True
         except (ImportError, OSError, RuntimeError, TypeError, ValueError):
@@ -1456,7 +1569,7 @@ def build_runtime_snapshot(
     include_items: bool = True,
     containment_health: object = None,
 ) -> dict[str, object]:
-    queue_page = store.list_pending_approval_summaries(limit=1)
+    queue_page = store.list_pending_approval_summaries(limit=1, exclude_watch_only=True)
     queue_items = queue_page["items"] if isinstance(queue_page["items"], list) else []
     pending_count = _non_negative_int(queue_page.get("total_pending_count"))
     pending_requests = store.list_approval_requests(limit=request_limit) if include_items else []
@@ -1466,7 +1579,7 @@ def build_runtime_snapshot(
     next_request_id = active_request_id if active_is_pending else first_request_id
     latest_receipts = store.list_receipts(limit=receipt_limit) if receipt_limit > 0 else []
     snapshot_now = now or _now()
-    config = load_guard_config(store.guard_home)
+    config = maybe_auto_revert_watch(store.guard_home)
     latest_connect_state = _build_latest_connect_state(store, snapshot_now)
     oauth_storage_health = store.get_oauth_local_credential_health()
     cloud_context = _build_runtime_cloud_context(
@@ -1524,6 +1637,8 @@ def build_runtime_snapshot(
         **cloud_context,
         "trust_status": trust_status,
         "protection_health": protection_health,
+        "protection_capabilities": protection_capability_payloads(),
+        "protection_posture": config.protection_posture,
     }
 
 
@@ -2594,17 +2709,7 @@ def _optional_string(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _non_negative_int(value: object) -> int:
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int):
-        return max(0, value)
-    if isinstance(value, str) and value.strip():
-        try:
-            return max(0, int(value.strip()))
-        except ValueError:
-            return 0
-    return 0
+_non_negative_int = coerce_non_negative_int
 
 
 def _queue_risk_summary(queued: list[dict[str, object]]) -> str:

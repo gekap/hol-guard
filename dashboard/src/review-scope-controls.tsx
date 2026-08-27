@@ -11,10 +11,13 @@ type ReviewScopeControlsProps = {
   blockScopeOptions: ApprovalScopeChoice[];
   hasAllowScope: boolean;
   taskCapabilityCopy: string | null;
+  exactActionPersistenceEligible: boolean;
+  rememberExactAction: boolean;
   allowScope: DecisionScope;
   blockScope: DecisionScope;
   onAllowScopeChange: (scope: DecisionScope) => void;
   onBlockScopeChange: (scope: DecisionScope) => void;
+  onRememberExactActionChange: (checked: boolean) => void;
 };
 
 export function ReviewScopeControls(props: ReviewScopeControlsProps) {
@@ -36,13 +39,19 @@ export function ReviewScopeControls(props: ReviewScopeControlsProps) {
           />
         ))}
       </div>
+      {props.exactActionPersistenceEligible && props.allowScope === "artifact" && (
+        <ExactActionPersistenceChoice
+          checked={props.rememberExactAction}
+          onChange={props.onRememberExactActionChange}
+        />
+      )}
       {props.broaderScopeOptions.length > 0 && (
         <details className="rounded-xl border border-brand-blue/15 bg-brand-blue/[0.03] p-3">
           <summary className="cursor-pointer select-none text-xs font-semibold uppercase tracking-[0.16em] text-brand-blue">
-            Save for project or app
+            Save for this app
           </summary>
           <p className="mt-2 text-xs text-brand-dark/70">
-            These options save a decision that skips review for matching actions going forward. Choose the narrowest scope that fits what you meant to allow.
+            These options save the same action for this app. They do not grant unrelated actions.
           </p>
           <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
             {props.broaderScopeOptions.map((choice) => (
@@ -106,6 +115,49 @@ export function ReviewScopeControls(props: ReviewScopeControlsProps) {
   );
 }
 
+function ExactActionPersistenceChoice(props: { checked: boolean; onChange: (checked: boolean) => void }) {
+  const handleOnce = useCallback(() => props.onChange(false), [props.onChange]);
+  const handleAlways = useCallback(() => props.onChange(true), [props.onChange]);
+
+  return (
+    <fieldset className="rounded-lg border border-brand-blue/20 bg-brand-blue/[0.03] p-3">
+      <legend className="px-1 text-sm font-semibold text-brand-dark">How long should Guard allow it?</legend>
+      <div className="mt-1 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <label className={exactActionChoiceClassName(!props.checked)}>
+          <input
+            type="radio"
+            name="exact-action-approval-duration"
+            value="once"
+            checked={!props.checked}
+            onChange={handleOnce}
+            className="sr-only"
+          />
+          <span className="block text-sm font-semibold text-brand-dark">This time</span>
+          <span className="mt-0.5 block text-xs text-muted-foreground">Retry within 15 minutes.</span>
+        </label>
+        <label className={exactActionChoiceClassName(props.checked)}>
+          <input
+            type="radio"
+            name="exact-action-approval-duration"
+            value="always"
+            checked={props.checked}
+            onChange={handleAlways}
+            className="sr-only"
+          />
+          <span className="block text-sm font-semibold text-brand-dark">Always allow exact action</span>
+          <span className="mt-0.5 block text-xs text-muted-foreground">Changed commands still need review.</span>
+        </label>
+      </div>
+    </fieldset>
+  );
+}
+
+function exactActionChoiceClassName(selected: boolean): string {
+  const base = "min-h-20 cursor-pointer rounded-md border px-3 py-2 text-left transition-colors focus-within:ring-2 focus-within:ring-brand-blue";
+  if (selected) return `${base} border-brand-blue bg-white ring-1 ring-brand-blue/20`;
+  return `${base} border-slate-200 bg-white/60 hover:border-brand-blue/40`;
+}
+
 function ScopeChoiceButton(props: {
   choice: ApprovalScopeChoice;
   checked: boolean;
@@ -133,10 +185,10 @@ function ScopeChoiceButton(props: {
 
 export function allowButtonLabel(scope: DecisionScope): string {
   if (scope === "artifact") {
-    return "Approve once";
+    return "Allow just this once";
   }
   if (scope === "workspace") {
-    return "Remember for project";
+    return "Allow and remember for this project";
   }
   return "Approve and remember";
 }

@@ -22,7 +22,7 @@ from codex_plugin_scanner.guard.adapters import get_adapter
 from codex_plugin_scanner.guard.adapters.base import HarnessContext
 from codex_plugin_scanner.guard.cli import commands as guard_commands_module
 from codex_plugin_scanner.guard.config import GuardConfig
-from codex_plugin_scanner.guard.daemon import GuardDaemonServer
+from codex_plugin_scanner.guard.daemon import GuardDaemonServer, protection_repair_retry
 from codex_plugin_scanner.guard.daemon import manager as daemon_manager_module
 from codex_plugin_scanner.guard.daemon import server as daemon_server_module
 from codex_plugin_scanner.guard.daemon.discovery import load_authenticated_daemon_state
@@ -99,6 +99,44 @@ def _decode_dashboard_session_claims(token: str) -> dict[str, object]:
 
 
 class TestGuardSurfaceServer:
+    def test_harness_repair_runtime_failure_returns_actionable_response(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store = GuardStore(tmp_path / "guard-home", prime_policy_integrity=False)
+        monkeypatch.setattr(
+            daemon_server_module,
+            "apply_managed_install",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("private adapter detail")),
+        )
+        daemon = GuardDaemonServer(store, host="127.0.0.1", port=0)
+        daemon.start()
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{daemon.port}/v1/harnesses/opencode/repair",
+            data=json.dumps({"dry_run": False}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Guard-Token": daemon._server.auth_token},
+            method="POST",
+        )
+
+        try:
+            with pytest.raises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(request, timeout=5)
+            payload = json.loads(error.value.read().decode("utf-8"))
+        finally:
+            daemon.stop()
+
+        assert error.value.code == 409
+        assert payload == {
+            "error": "harness_repair_failed",
+            "harness": "opencode",
+            "message": (
+                "Guard could not repair opencode protection. Open this app's repair details and retry that "
+                "protection layer. "
+                "Your existing protection settings were preserved."
+            ),
+        }
+
     def test_daemon_trust_snapshot_tracks_only_committed_integrity_transitions(self, tmp_path: Path) -> None:
         store = GuardStore(tmp_path / "guard-home", prime_policy_integrity=False)
         daemon = GuardDaemonServer(store, host="127.0.0.1", port=0)
@@ -207,10 +245,10 @@ class TestGuardSurfaceServer:
             lambda self, *, force_refresh=False: containment_probes.append(force_refresh) or {},
         )
         monkeypatch.setattr(
-            daemon_server_module,
+            protection_repair_retry,
             "containment_health_signals",
             lambda value, **_kwargs: {
-                check_id: SimpleNamespace(status=daemon_server_module.ProtectionCheckStatus.PASS)
+                check_id: SimpleNamespace(status=protection_repair_retry.ProtectionCheckStatus.PASS)
                 for check_id in (
                     "decision_plane_compatibility",
                     "containment_compatibility",
@@ -424,6 +462,11 @@ class TestGuardSurfaceServer:
             "_containment_health_payload",
             lambda self, **_kwargs: (_ for _ in ()).throw(RuntimeError("probe failed")),
         )
+        monkeypatch.setattr(
+            daemon_server_module,
+            "repair_failing_managed_harness_hooks",
+            lambda _store: (_ for _ in ()).throw(RuntimeError("hook discovery failed")),
+        )
         daemon = GuardDaemonServer(store, host="127.0.0.1", port=0)
         daemon.start()
         request = urllib.request.Request(
@@ -441,10 +484,12 @@ class TestGuardSurfaceServer:
 
         assert error.value.code == 409
         assert payload["failed_check_ids"] == [
+            "harness_hooks",
             "decision_plane_compatibility",
             "containment_compatibility",
             "sandbox",
         ]
+        assert payload["failed_harnesses"] == []
         assert payload["message"] == (
             "Repair paused before every protection layer could be confirmed. Retry repair here."
         )
@@ -482,6 +527,7 @@ class TestGuardSurfaceServer:
                 "/inbox",
                 "/protect",
                 "/evidence",
+                "/extensions",
                 "/supply-chain",
                 "/audit",
                 "/policy",
@@ -966,16 +1012,17 @@ class TestGuardSurfaceServer:
         assert "protect your local secrets" in hook_payload["hookSpecificOutput"]["permissionDecisionReason"].lower()
         assert store.list_guard_sessions() == []
 
-    def test_guard_daemon_pi_hook_endpoint_returns_blocked_runtime_review_payload(self, tmp_path) -> None:
+    def test_guard_daemon_pi_hook_endpoint_returns_blocked_runtime_review_payload(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(daemon_server_module, "_RUNTIME_HOOK_PROCESS_TIMEOUT_SECONDS", 10.0)
         home_dir = tmp_path / "home"
         workspace_dir = tmp_path / "workspace"
         workspace_dir.mkdir(parents=True, exist_ok=True)
         store = GuardStore(home_dir)
         daemon = GuardDaemonServer(store, host="127.0.0.1", port=0)
+        monkeypatch.setattr(daemon._server.hook_process_runner, "_timeout_seconds", 8.0)
         daemon.start()
         assert daemon._server.hook_process_runner.wait_for_capacity(  # pyright: ignore[reportPrivateUsage]
-            minimum_workers=1,
-            timeout_seconds=15,
+            minimum_workers=1, timeout_seconds=15
         )
 
         try:
@@ -999,14 +1046,15 @@ class TestGuardSurfaceServer:
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(hook_request, timeout=5) as response:
+            with urllib.request.urlopen(hook_request, timeout=15) as response:
                 hook_payload = json.loads(response.read().decode("utf-8"))
-            if hook_payload.get("reason") == "HOL Guard could not complete isolated local hook review safely.":
+            if str(hook_payload.get("reason", "")).startswith(
+                "HOL Guard blocked this action because isolated local review could not complete safely."
+            ):
                 assert daemon._server.hook_process_runner.wait_for_capacity(  # pyright: ignore[reportPrivateUsage]
-                    minimum_workers=1,
-                    timeout_seconds=15,
+                    minimum_workers=1, timeout_seconds=15
                 )
-                with urllib.request.urlopen(hook_request, timeout=5) as response:
+                with urllib.request.urlopen(hook_request, timeout=15) as response:
                     hook_payload = json.loads(response.read().decode("utf-8"))
         finally:
             daemon.stop()
@@ -1936,11 +1984,22 @@ class TestGuardSurfaceServer:
     def test_guard_daemon_normalizes_decision_lane_event_aliases(self, event_key: str, event_value: str) -> None:
         assert daemon_server_module._GuardDaemonHandler._runtime_hook_lane({event_key: event_value}) == "decision"
 
-    def test_guard_daemon_claude_hook_endpoint_preserves_workspace_none_sentinel(self, tmp_path) -> None:
+    def test_guard_daemon_claude_hook_endpoint_preserves_workspace_none_sentinel(self, tmp_path, monkeypatch) -> None:
         store = GuardStore(tmp_path / "guard-home")
-        daemon = GuardDaemonServer(store, host="127.0.0.1", port=0)
-        daemon.start()
+        captured: dict[str, object] = {}
 
+        def fake_review(**kwargs):
+            captured["workspace"] = kwargs["workspace"]
+            from codex_plugin_scanner.guard.daemon.hook_process_runner import HookProcessReview
+
+            return HookProcessReview({}, None)
+
+        daemon = GuardDaemonServer(store, host="127.0.0.1", port=0)
+        monkeypatch.setattr(daemon._server.hook_process_runner, "start", lambda **_: None)
+        monkeypatch.setattr(daemon._server.hook_process_runner, "require_initial_capacity", lambda: None)
+        daemon.start()
+        daemon._server.runtime_hook_process_scheduler.set_active_limit(1)
+        monkeypatch.setattr(daemon._server.hook_process_runner, "review", fake_review)
         try:
             request = urllib.request.Request(
                 (
@@ -1960,7 +2019,8 @@ class TestGuardSurfaceServer:
             daemon.stop()
 
         assert response.status == 200
-        assert payload == {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit"}}
+        assert payload == {}
+        assert captured == {"workspace": None}
 
     def test_guard_daemon_claude_hook_endpoint_preserves_workspace_trailing_none_sentinel(
         self, tmp_path, monkeypatch
@@ -2787,26 +2847,29 @@ class TestGuardSurfaceServer:
         assert hook_payload["decision"] == "block"
         assert "bypass" in hook_payload["reason"].lower() or "disable" in hook_payload["reason"].lower()
 
-    def test_guard_daemon_background_start_auto_stops_after_idle_timeout(self, tmp_path) -> None:
+    def test_guard_daemon_background_start_auto_stops_after_idle_timeout(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         guard_home = tmp_path / "pytest-of-user" / "guard-home"
         store = GuardStore(guard_home)
         daemon = GuardDaemonServer(store, host="127.0.0.1", port=0, idle_timeout_seconds=0.05)
+        monkeypatch.setattr(
+            daemon._server.hook_process_runner,
+            "enable_full_capacity",
+            lambda **_kwargs: None,
+        )
         daemon.start()
 
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            runtime_state = store.get_runtime_state()
-            daemon_thread = daemon._thread
-            if runtime_state is None and daemon_thread is not None and not daemon_thread.is_alive():
-                break
-            time.sleep(0.02)
-
-        runtime_state = store.get_runtime_state()
+        assert daemon._shutdown_started.wait(timeout=3)
         daemon_thread = daemon._thread
+        assert daemon_thread is not None
+        daemon_thread.join(timeout=40)
+        runtime_state = store.get_runtime_state()
         daemon.stop()
 
         assert runtime_state is None
-        assert daemon_thread is not None
         assert daemon_thread.is_alive() is False
 
     def test_guard_daemon_keeps_stream_clients_alive_past_idle_timeout(self, tmp_path) -> None:

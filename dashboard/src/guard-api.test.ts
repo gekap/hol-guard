@@ -47,11 +47,20 @@ const localIntegrityRepairError = new GuardProtectionRepairError(409, {
   error: "local_integrity_repair_incomplete",
   repair_scope: "local_integrity",
   message: "Guard could not establish a local integrity proof.",
+  failed_check_ids: ["harness_hooks"],
+  failed_harnesses: ["codex"],
+  pending_check_ids: ["sandbox"],
 });
 assert(
   localIntegrityRepairError.code === "local_integrity_repair_incomplete" &&
     localIntegrityRepairError.repairScope === "local_integrity",
   "protection repair preserves the structured local-integrity failure scope",
+);
+assert(
+  localIntegrityRepairError.failedCheckIds[0] === "harness_hooks" &&
+    localIntegrityRepairError.failedHarnesses[0] === "codex" &&
+    localIntegrityRepairError.pendingCheckIds[0] === "sandbox",
+  "protection repair preserves actionable failed-layer metadata",
 );
 
 const missingRuntimeStateSnapshot = normalizeRuntimeSnapshot({
@@ -175,6 +184,8 @@ const partialSupplyChainSnapshot = normalizeRuntimeSnapshot({
   supply_chain: {
     package_manager_protection: {
       path_status: "in_path",
+      supported_managers: ["npm", "pnpm", "cargo"],
+      detected_managers: ["npm", "pnpm"],
       protected_managers: ["npm"],
       restart_shell_required: false,
       shell_profile_configured: false,
@@ -184,6 +195,14 @@ const partialSupplyChainSnapshot = normalizeRuntimeSnapshot({
 assert(
   partialSupplyChainSnapshot.supply_chain?.package_manager_protection.protected_managers.length === 1,
   "T761: runtime normalizer preserves valid supply-chain manager arrays"
+);
+assert(
+  partialSupplyChainSnapshot.supply_chain?.package_manager_protection.detected_managers?.join(",") === "npm,pnpm",
+  "T761: runtime normalizer forwards detected package managers"
+);
+assert(
+  partialSupplyChainSnapshot.supply_chain?.package_manager_protection.supported_managers.join(",") === "npm,pnpm,cargo",
+  "T761: runtime normalizer keeps the support matrix separate from detection"
 );
 assert(
   partialSupplyChainSnapshot.supply_chain?.package_manager_protection.unprotected_managers.length === 0,
@@ -1569,6 +1588,11 @@ const resolution = await resolveRequestWithQueueResult({
   reason: "reviewed",
   scope_contract_version: "guard.approval-scopes.v2",
   scope_contract_digest: "scope-digest",
+  mcp_grant_target: "category",
+  mcp_grant_duration: "5h",
+  local_tool_grant_target: "capability",
+  local_tool_grant_duration: "1h",
+  persist_policy: true,
 });
 const resolveBody = JSON.parse(String(fetchResolveCalls[0].init?.body)) as Record<string, unknown>;
 
@@ -1580,10 +1604,20 @@ assert(
 assert(resolveBody["scope"] === "artifact", "L077: resolveRequestWithQueueResult sends scope");
 assert(resolveBody["workspace"] === "/workspace", "L077: resolveRequestWithQueueResult sends workspace");
 assert(resolveBody["reason"] === "reviewed", "L077: resolveRequestWithQueueResult sends reason");
+assert(resolveBody["persist_policy"] === true, "L077: resolveRequestWithQueueResult preserves durable approval intent");
 assert(
   resolveBody["scope_contract_version"] === "guard.approval-scopes.v2" &&
     resolveBody["scope_contract_digest"] === "scope-digest",
   "L077: resolveRequestWithQueueResult binds the displayed scope contract",
+);
+assert(
+  resolveBody["mcp_grant_target"] === "category" && resolveBody["mcp_grant_duration"] === "5h",
+  "L077: resolveRequestWithQueueResult binds the selected temporary MCP grant",
+);
+assert(
+  resolveBody["local_tool_grant_target"] === "capability" &&
+    resolveBody["local_tool_grant_duration"] === "1h",
+  "L077: resolveRequestWithQueueResult binds the selected trusted local tool grant",
 );
 assert(resolution.remaining_pending_count === 1, "L077: resolveRequestWithQueueResult returns remaining count");
 assert(resolution.next_selectable_request_id === "req-next", "L077: resolveRequestWithQueueResult returns next selectable id");
@@ -1720,7 +1754,7 @@ const fetchCodexResolveCalls = installFetchStub({
     resolution_summary: "Decision saved.",
     retry_hint: null,
     copy: null,
-    codex_resume: {
+    codexResume: {
       status: "sent",
       supported: true,
       attempt_count: 1,
@@ -1748,11 +1782,11 @@ const codexResolution = await resolveRequestWithQueueResult({
   reason: "reviewed"
 });
 assert(fetchCodexResolveCalls.length === 1, "L078: codex resolve calls approve endpoint");
-assert(codexResolution.codex_resume !== null, "L078: codex resolve returns codex_resume");
-assert(codexResolution.codex_resume?.status === "sent", "L078: codex_resume.status is 'sent'");
-assert(codexResolution.codex_resume?.supported === true, "L078: codex_resume.supported is true");
-assert(codexResolution.codex_resume?.thread_id === "thread-abc", "L078: codex_resume.thread_id normalizes");
-assert(codexResolution.codex_resume?.attempt_count === 1, "L078: codex_resume.attempt_count normalizes");
+assert(codexResolution.codexResume !== null, "L078: codex resolve returns codexResume");
+assert(codexResolution.codexResume?.status === "sent", "L078: codexResume.status is 'sent'");
+assert(codexResolution.codexResume?.supported === true, "L078: codexResume.supported is true");
+assert(codexResolution.codexResume?.thread_id === "thread-abc", "L078: codexResume.thread_id normalizes");
+assert(codexResolution.codexResume?.attempt_count === 1, "L078: codexResume.attempt_count normalizes");
 
 installGuardWindow("?guard-token=token-codex-statuses&guardDaemon=http%3A%2F%2F127.0.0.1%3A4781");
 
@@ -1769,7 +1803,7 @@ for (const status of ["pending", "in_progress", "already_sent", "failed", "skipp
       resolution_summary: null,
       retry_hint: null,
       copy: null,
-      codex_resume: {
+      codexResume: {
         status,
         supported: true,
         attempt_count: 0,
@@ -1795,7 +1829,7 @@ for (const status of ["pending", "in_progress", "already_sent", "failed", "skipp
     scope: "artifact",
     reason: ""
   });
-  assert(res.codex_resume?.status === status, `L078b: codex_resume.status '${status}' normalizes correctly`);
+  assert(res.codexResume?.status === status, `L078b: codexResume.status '${status}' normalizes correctly`);
 }
 
 installGuardWindow("?guard-token=token-fetch-resume&guardDaemon=http%3A%2F%2F127.0.0.1%3A4781");

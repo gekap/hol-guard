@@ -16,8 +16,6 @@ from typing import Any
 import yaml as _yaml  # type: ignore[import-untyped]
 
 from ..aibom_detection import enrich_mcp_server_metadata
-from ..inventory_cisco import run_cisco_inventory_scans
-from ..inventory_contract import GuardAgentInventorySnapshot, inventory_snapshot_from_detection
 from ..models import GuardArtifact, HarnessDetection
 from ..shims import install_guard_shim, remove_guard_shim
 from ..skill_directory_identity import (
@@ -427,31 +425,6 @@ class HermesHarnessAdapter(HarnessAdapter):
             artifacts=tuple(artifacts),
             config_paths=tuple(found_paths),
             warnings=tuple(dict.fromkeys(warnings)),
-        )
-
-    def inventory_snapshot(
-        self,
-        context: HarnessContext,
-        *,
-        generated_at: str,
-        cisco_mcp_scan: str = "off",
-        cisco_skill_scan: str = "off",
-        cisco_timeout_seconds: float | None = None,
-    ) -> GuardAgentInventorySnapshot:
-        detection = self.detect(context)
-        return inventory_snapshot_from_detection(
-            detection,
-            generated_at=generated_at,
-            home_dir=context.home_dir,
-            workspace_dir=context.workspace_dir,
-            cisco_runs=run_cisco_inventory_scans(
-                harness=self.harness,
-                context=context,
-                detection=detection,
-                mcp_mode=cisco_mcp_scan,
-                skill_mode=cisco_skill_scan,
-                timeout_seconds=cisco_timeout_seconds,
-            ),
         )
 
     # ------------------------------------------------------------------
@@ -1134,16 +1107,18 @@ def _mcp_proxy_command(*, context: HarnessContext, server_key: str) -> list[str]
 
 def _pretool_payload(*, context: HarnessContext) -> dict[str, object]:
     cli_args = [
-        "hermes",
-        "pretool",
+        "guard",
+        "hook",
         "--guard-home",
         str(context.guard_home),
-        "--json",
+        "--harness",
+        "hermes",
     ]
     if context.home_dir.resolve() != Path.home().resolve():
         cli_args.extend(["--home", str(context.home_dir)])
     if context.workspace_dir is not None:
         cli_args.extend(["--workspace", str(context.workspace_dir)])
+    cli_args.append("--json")
     return {
         "command": list(
             bounded_cli_hook_command(

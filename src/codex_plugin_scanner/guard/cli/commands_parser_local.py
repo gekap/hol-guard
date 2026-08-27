@@ -87,7 +87,7 @@ def _configure_guard_local_parsers(
         app_parser.add_argument("harness")
         _add_guard_common_args(app_parser, suppress_defaults=True)
         app_parser.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
-        app_parser.add_argument("--surface", choices=("editor", "cli"))
+        app_parser.add_argument("--surface", choices=("editor", "cli", "auto", "hooks", "plugin", "all"))
         if app_command in {"connect", "repair"}:
             app_parser.add_argument("--dry-run", action="store_true")
         if app_command == "disconnect":
@@ -129,7 +129,7 @@ def _configure_guard_local_parsers(
     update_parser.add_argument(
         "--alpha",
         action="store_true",
-        help="Update to the newest alpha release in the installed major version",
+        help="Update to the newest alpha release on PyPI (may cross major versions)",
     )
     update_parser.add_argument(
         "--wheel",
@@ -291,6 +291,23 @@ def _configure_guard_local_parsers(
         required=True,
     )
     controls_subparsers.add_parser("status", help="Show authority status")
+    controls_patterns = controls_subparsers.add_parser(
+        "patterns",
+        help="Search command patterns with their local state",
+    )
+    controls_patterns.add_argument("query", nargs="?")
+    controls_patterns.add_argument("--tool", help="Limit results to one extension ID")
+    controls_patterns.add_argument("--json", action="store_true")
+    controls_set = controls_subparsers.add_parser(
+        "set",
+        help="Set one command pattern to recommended, allow, or block",
+    )
+    controls_set.add_argument("permission_id")
+    controls_set.add_argument(
+        "--state",
+        choices=("recommended", "allow", "block"),
+        required=True,
+    )
     controls_subparsers.add_parser("list", help="List catalog extensions")
     controls_show = controls_subparsers.add_parser("show", help="Show one catalog target")
     controls_show.add_argument("target_id")

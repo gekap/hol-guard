@@ -1,8 +1,9 @@
-import { r as reactExports, bL as fetchSupplyChainBundle, j as jsxRuntimeExports, S as SectionLabel, i as EmptyState, b0 as HiMiniArrowTopRightOnSquare, aj as Tag, s as formatRelativeTime, L as Badge, J as HiMiniExclamationTriangle, aY as HiMiniBugAnt, au as guardActionPresentation, bM as isSupplyChainScannerEvidence, bN as isBlockedGuardAction, ao as HiMiniArrowPath, bI as HiMiniDocumentMagnifyingGlass, bO as HiMiniShieldExclamation, bP as HiMiniComputerDesktop, B as HiMiniCloud, l as HiMiniCheckCircle, N as HiMiniWrenchScrewdriver, A as ActionButton, y as HiMiniChevronDown, P as HiMiniExclamationCircle, be as fetchReceipts, T as HiMiniXCircle, e as harnessDisplayName, x as HiMiniChevronUp } from "../guard-dashboard.js";
+import { r as reactExports, c2 as fetchSupplyChainBundle, j as jsxRuntimeExports, S as SectionLabel, m as EmptyState, aS as HiMiniArrowTopRightOnSquare, ax as Tag, w as formatRelativeTime, P as Badge, M as HiMiniExclamationTriangle, bm as HiMiniBugAnt, aX as guardActionPresentation, c3 as isSupplyChainScannerEvidence, c4 as isBlockedGuardAction, aC as HiMiniArrowPath, c1 as HiMiniDocumentMagnifyingGlass, c5 as HiMiniShieldExclamation, c6 as HiMiniComputerDesktop, I as HiMiniCloud, o as HiMiniCheckCircle, Y as HiMiniWrenchScrewdriver, A as ActionButton, C as HiMiniChevronDown, Z as HiMiniExclamationCircle, bC as fetchReceipts, a0 as HiMiniXCircle, i as harnessDisplayName, B as HiMiniChevronUp } from "../guard-dashboard.js";
 import { resolveFeedStaleness } from "./feed-health-workspace.js";
 import { r as resolveHomeProtectionStatus } from "./home-protection-module.js";
-import { b as buildSupplyChainStats } from "./supply-chain-protection-stats.js";
-import { s as supplyChainFixAllIsPending, a as supplyChainFixAllButtonLabel, S as SUPPLY_CHAIN_WORKSPACE_SHELL_CLASS } from "./supply-chain-hub-workspace.js";
+import { b as buildSupplyChainStats, r as resolveManagerCoverageManagers, a as resolveManagerCoverageStatus } from "./supply-chain-protection-stats.js";
+import { s as supplyChainFixAllIsPending, a as supplyChainFixAllNeedsCloudConnect, b as supplyChainFixAllButtonLabel, S as SUPPLY_CHAIN_WORKSPACE_SHELL_CLASS } from "./supply-chain-hub-workspace.js";
+import "./approval-proof-modal.js";
 function SeverityBadge({ severity }) {
   const tone = severity === "critical" || severity === "high" ? "destructive" : severity === "medium" ? "attention" : "default";
   return /* @__PURE__ */ jsxRuntimeExports.jsx(Badge, { tone, children: severity });
@@ -538,6 +539,9 @@ function resolveSupplyChainIssues(snapshot) {
   const protection = snapshot.supply_chain?.package_manager_protection;
   const stats = buildSupplyChainStats(snapshot);
   const protectionStatus = resolveHomeProtectionStatus(snapshot);
+  const unprotectedManagers = resolveManagerCoverageManagers(protection).filter(
+    (manager) => resolveManagerCoverageStatus(protection, manager) === "unprotected"
+  );
   const cloudDegraded = resolveSupplyChainCloudDegradedState(snapshot);
   if (cloudDegraded.active) {
     issues.push({
@@ -559,8 +563,9 @@ function resolveSupplyChainIssues(snapshot) {
       action: { kind: "firewall_unprotected" }
     });
   } else if (stats.repairRequiredManagers > 0) {
+    const coverageManagers = new Set(resolveManagerCoverageManagers(protection));
     const managers = protection !== void 0 ? protection.installed_managers.filter(
-      (manager) => !protection.protected_managers.includes(manager)
+      (manager) => coverageManagers.has(manager) && !protection.protected_managers.includes(manager)
     ) : [];
     const managerLabel = managers.length > 0 ? managers.join(", ") : "installed tools";
     issues.push({
@@ -571,30 +576,21 @@ function resolveSupplyChainIssues(snapshot) {
       actionLabel: "Repair PATH in firewall",
       action: { kind: "firewall_repair" }
     });
-  } else if (protection?.path_status === "restart_required" || stats.stagedManagers > 0) {
-    issues.push({
-      id: "path_restart",
-      title: "Finish activation in Guard",
-      detail: "Guard saved your shell setup. Finish activation here, then run a protection check from this dashboard.",
-      tone: "blue",
-      actionLabel: "Finish activation",
-      action: { kind: "activate_runtime" }
-    });
   }
-  if (protectionStatus === "partial" && protection !== void 0 && protection.protected_managers.length > 0 && protection.unprotected_managers.length > 0) {
+  if (protectionStatus === "partial" && stats.protectedManagers > 0 && unprotectedManagers.length > 0) {
     issues.push({
       id: "partial_protection",
       title: "Some package tools are still open",
-      detail: `${protection.protected_managers.length} protected, ${protection.unprotected_managers.length} still open: ${protection.unprotected_managers.join(", ")}.`,
+      detail: `${stats.protectedManagers} protected, ${unprotectedManagers.length} still open: ${unprotectedManagers.join(", ")}.`,
       tone: "attention",
       actionLabel: "Review open tools",
       action: { kind: "firewall_unprotected" }
     });
-  } else if (protectionStatus === "unprotected" && protection !== void 0 && protection.unprotected_managers.length > 0) {
+  } else if (protectionStatus === "unprotected" && unprotectedManagers.length > 0) {
     issues.push({
       id: "unprotected_tools",
       title: "Package installs are not protected yet",
-      detail: `Turn on protection for ${protection.unprotected_managers.join(", ")} to block risky installs before they run.`,
+      detail: `Turn on protection for ${unprotectedManagers.join(", ")} to block risky installs before they run.`,
       tone: "attention",
       actionLabel: "Protect package tools",
       action: { kind: "firewall_unprotected" }
@@ -639,7 +635,7 @@ function protectionDetail(snapshot, status) {
     return `${protection.unprotected_managers.length} tool${protection.unprotected_managers.length === 1 ? "" : "s"} still open: ${protection.unprotected_managers.join(", ")}.`;
   }
   if (status === "staged") {
-    return "Guard saved your shell setup. Finish activation here, then run a protection check.";
+    return "Guard saved your shell setup. Open a new terminal or restart AI apps so the updated PATH takes effect, then refresh status here.";
   }
   if (status === "unprotected") {
     return "Turn on protection for npm, pip, and other tools in the firewall panel below.";
@@ -672,14 +668,17 @@ function resolveSupplyChainWorkspaceHero(snapshot, options) {
   const protectionStatus = resolveHomeProtectionStatus(snapshot);
   const stats = buildSupplyChainStats(snapshot);
   const preventedLabel = stats.preventedInstalls > 0 ? `${stats.preventedInstalls} blocked install${stats.preventedInstalls === 1 ? "" : "s"}` : "No blocked installs yet";
+  const stagedGuidance = protectionStatus === "staged" ? protectionDetail(snapshot, protectionStatus) : null;
   const openIssueCount = options?.openIssueCount ?? 0;
   if (openIssueCount > 0) {
+    const issueSummary = `${openIssueCount} setup step${openIssueCount === 1 ? "" : "s"} ${openIssueCount === 1 ? "needs" : "need"} attention on this device.`;
     return {
       cloudMode: snapshot.cloud_state,
       cloudLabel: cloudLabel(snapshot),
       protectionStatus,
       title: "Work through the steps below",
-      detail: `${openIssueCount} setup step${openIssueCount === 1 ? "" : "s"} need attention on this device.`,
+      detail: stagedGuidance ? `${issueSummary} ${stagedGuidance}` : issueSummary,
+      stagedGuidance,
       tone: protectionTone(protectionStatus),
       statLine: `${stats.protectedManagers} protected · ${stats.unprotectedManagers} open · ${preventedLabel}`
     };
@@ -690,6 +689,7 @@ function resolveSupplyChainWorkspaceHero(snapshot, options) {
     protectionStatus,
     title: protectionTitle(protectionStatus),
     detail: protectionDetail(snapshot, protectionStatus),
+    stagedGuidance,
     tone: protectionTone(protectionStatus),
     statLine: `${stats.protectedManagers} protected · ${stats.unprotectedManagers} open · ${preventedLabel}`
   };
@@ -768,15 +768,28 @@ function SupplyChainWorkspaceHero({ hero, compact = false }) {
   );
 }
 function recoverySummary(issueCount) {
-  return `Fix ${issueCount} open issue${issueCount === 1 ? "" : "s"} in one guided pass. Guard repairs package tools, activates routing, refreshes safety intelligence, and rechecks status.`;
+  return `Fix ${issueCount} open issue${issueCount === 1 ? "" : "s"} in one guided pass. Guard repairs package tools and turns on routing. Safety intelligence refreshes when Guard Cloud is connected.`;
 }
-function SupplyChainRecovery({ issues, state, onFixAll }) {
+function SupplyChainRecovery({
+  issues,
+  state,
+  onFixAll,
+  guidance = null
+}) {
   const [detailsOpen, setDetailsOpen] = reactExports.useState(false);
   const handleDetailsToggle = reactExports.useCallback(() => {
     setDetailsOpen((open) => !open);
   }, []);
   const pending = supplyChainFixAllIsPending(state.phase);
   const showResult = state.message !== null;
+  const remainingSteps = state.remainingSteps ?? [];
+  const needsCloudConnect = supplyChainFixAllNeedsCloudConnect(state);
+  const isHardFailure = state.phase === "error" || state.phase === "incomplete" && state.failedSteps.length > 0;
+  const buttonLabel = supplyChainFixAllButtonLabel(
+    state.phase,
+    state.remainingAction ?? null,
+    state.failedSteps.length
+  );
   return /* @__PURE__ */ jsxRuntimeExports.jsxs(
     "section",
     {
@@ -796,17 +809,25 @@ function SupplyChainRecovery({ issues, state, onFixAll }) {
               ),
               /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { className: "text-sm font-semibold text-brand-dark", children: "Restore supply-chain protection" })
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-1 max-w-3xl text-sm text-slate-600", children: recoverySummary(issues.length) })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-1 max-w-3xl text-sm text-slate-600", children: recoverySummary(issues.length) }),
+            guidance ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+              "p",
+              {
+                className: "mt-2 max-w-3xl text-sm font-medium text-brand-primary",
+                "data-testid": "supply-chain-restart-guidance",
+                children: guidance
+              }
+            ) : null
           ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(ActionButton, { onClick: onFixAll, disabled: pending, "aria-busy": pending, children: supplyChainFixAllButtonLabel(state.phase) })
+          /* @__PURE__ */ jsxRuntimeExports.jsx(ActionButton, { onClick: onFixAll, disabled: pending, "aria-busy": pending, children: buttonLabel })
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: showResult ? "mt-3" : "", "aria-live": "polite", children: showResult ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs(
             "p",
             {
-              className: `flex items-start gap-2 text-sm ${state.phase === "error" || state.phase === "incomplete" ? "text-red-600" : "text-slate-600"}`,
+              className: `flex items-start gap-2 text-sm ${isHardFailure ? "text-red-600" : "text-slate-600"}`,
               children: [
-                state.phase === "success" ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                state.phase === "success" || needsCloudConnect ? /* @__PURE__ */ jsxRuntimeExports.jsx(
                   HiMiniCheckCircle,
                   {
                     className: "mt-0.5 h-4 w-4 shrink-0 text-emerald-500",
@@ -817,7 +838,8 @@ function SupplyChainRecovery({ issues, state, onFixAll }) {
               ]
             }
           ),
-          state.failedSteps.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("ul", { className: "mt-2 space-y-1 text-xs text-red-600", children: state.failedSteps.map((failure, index) => /* @__PURE__ */ jsxRuntimeExports.jsx("li", { children: failure }, `${index}:${failure}`)) }) : null
+          state.failedSteps.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("ul", { className: "mt-2 space-y-1 text-xs text-red-600", children: state.failedSteps.map((failure, index) => /* @__PURE__ */ jsxRuntimeExports.jsx("li", { children: failure }, `failed:${index}:${failure}`)) }) : null,
+          remainingSteps.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("ul", { className: "mt-2 space-y-1 text-xs font-medium text-brand-primary", children: remainingSteps.map((remaining, index) => /* @__PURE__ */ jsxRuntimeExports.jsx("li", { children: remaining }, `remaining:${index}:${remaining}`)) }) : null
         ] }) : null }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs(
           "button",
@@ -983,7 +1005,8 @@ function SupplyChainWorkspace({
       {
         issues: supplyChainIssues,
         state: fixAllState,
-        onFixAll
+        onFixAll,
+        guidance: workspaceHero.stagedGuidance
       }
     ) : /* @__PURE__ */ jsxRuntimeExports.jsx(SupplyChainWorkspaceHero, { hero: workspaceHero }),
     supplyChainIssues.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx(SupplyChainCloudCapabilitiesPanel, { state: cloudCapabilities }) : null,

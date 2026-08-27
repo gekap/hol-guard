@@ -8,6 +8,7 @@ import stat
 from hashlib import sha256
 from pathlib import Path
 
+from ..frozen_runtime_commands import frozen_daemon_recovery_command
 from .base import HarnessContext
 from .cursor_hook_config import (
     _MANAGED_HOOK_EVENTS,
@@ -356,8 +357,10 @@ def _embedded_guard_hook_argv(context: HarnessContext) -> list[str]:
 
 def _cursor_recovery_command(
     context: HarnessContext,
-    attestation: HookPythonAttestation,
+    attestation: HookPythonAttestation | None,
 ) -> list[str]:
+    if attestation is None:
+        return list(frozen_daemon_recovery_command(context.guard_home, context.home_dir))
     trusted_roots = [str(root) for root in attestation.import_roots]
     bootstrap = (
         "import json,sys;"

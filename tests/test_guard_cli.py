@@ -4040,6 +4040,7 @@ args = ["workspace-skill.js", "--changed"]
         monkeypatch.setattr(guard_update_commands_module.sys, "prefix", "/opt/guard-venv")
         monkeypatch.setattr(guard_update_commands_module.sys, "executable", "/opt/guard-venv/bin/python")
         monkeypatch.setattr(guard_update_commands_module, "_direct_url_payload", lambda: None)
+        monkeypatch.setattr(guard_update_commands_module, "_current_version", lambda: "2.0.18")
         monkeypatch.setattr(
             guard_update_commands_module, "_current_version_from_subprocess", lambda *_args, **_kwargs: "2.0.18"
         )
@@ -4050,9 +4051,10 @@ args = ["workspace-skill.js", "--changed"]
 
         assert rc == 0
         assert output["installer"] == "pip"
-        assert commands == [["/opt/guard-venv/bin/python", "-m", "pip", "install", "--upgrade", "hol-guard"]]
-        assert output["status"] == "updated"
-        assert output["stdout"] == "updated"
+        assert commands == []
+        assert output["status"] == "current"
+        assert output["changed"] is False
+        assert output["message"] == "HOL Guard is already current."
 
     def test_guard_update_uses_pipx_when_running_from_pipx(self, tmp_path, monkeypatch, capsys):
         home_dir = tmp_path / "home"
@@ -4065,6 +4067,7 @@ args = ["workspace-skill.js", "--changed"]
         monkeypatch.setattr(guard_update_commands_module.subprocess, "run", fake_run)
         monkeypatch.setattr(guard_update_commands_module.sys, "prefix", "/mock-home/.local/pipx/venvs/hol-guard")
         monkeypatch.setattr(guard_update_commands_module, "_direct_url_payload", lambda: None)
+        monkeypatch.setattr(guard_update_commands_module, "_current_version", lambda: "2.0.18")
         monkeypatch.setattr(
             guard_update_commands_module, "_current_version_from_subprocess", lambda *_args, **_kwargs: "2.0.18"
         )
@@ -4075,8 +4078,10 @@ args = ["workspace-skill.js", "--changed"]
 
         assert rc == 0
         assert output["installer"] == "pipx"
-        assert commands == [["pipx", "upgrade", "hol-guard"]]
-        assert output["status"] == "updated"
+        assert commands == []
+        assert output["status"] == "current"
+        assert output["changed"] is False
+        assert output["message"] == "HOL Guard is already current."
 
     def test_guard_update_pins_detected_stable_release_from_uv_canary(self, tmp_path, monkeypatch, capsys):
         home_dir = tmp_path / "home"
@@ -4144,12 +4149,10 @@ args = ["workspace-skill.js", "--changed"]
 
         assert rc == 0
         assert output["installer"] == "pipx"
-        assert commands == [["pipx", "upgrade", "hol-guard"]]
+        assert commands == []
         assert output["status"] == "current"
+        assert output["changed"] is False
         assert output["message"] == "HOL Guard is already current."
-        assert output["notes"] == ["upgrading shared libraries...", "upgrading hol-guard..."]
-        assert output["stdout"].startswith("hol-guard is already at latest version 2.0.36")
-        assert output["stderr"] == "upgrading shared libraries...\nupgrading hol-guard..."
 
     def test_guard_update_treats_first_install_as_updated_when_only_dependencies_are_current(
         self, tmp_path, monkeypatch, capsys
@@ -4192,7 +4195,7 @@ args = ["workspace-skill.js", "--changed"]
         home_dir = tmp_path / "home"
         monkeypatch.setattr(guard_update_commands_module, "_direct_url_payload", lambda: None)
 
-        rc = main(["guard", "update", "--home", str(home_dir), "--dry-run", "--json"])
+        rc = main(["guard", "update", "--home", str(home_dir), "--alpha", "--dry-run", "--json"])
         output = json.loads(capsys.readouterr().out)
 
         assert rc == 0
@@ -4209,7 +4212,7 @@ args = ["workspace-skill.js", "--changed"]
             lambda _guard_home: (_ for _ in ()).throw(OSError("db unavailable")),
         )
 
-        rc = main(["guard", "update", "--home", str(home_dir), "--dry-run", "--json"])
+        rc = main(["guard", "update", "--home", str(home_dir), "--alpha", "--dry-run", "--json"])
         output = json.loads(capsys.readouterr().out)
 
         assert rc == 0
@@ -5430,7 +5433,14 @@ curl --data-binary @"$1" http://127.0.0.1:8787/guard-canary
         assert rc == 0
         assert captured.out == ""
         pending = store.list_approval_requests(limit=5)
-        assert pending == []
+        assert len(pending) == 1
+        assert pending[0]["policy_action"] == "require-reapproval"
+        assert pending[0]["scanner_evidence"][-1] == {
+            "source": "observe_mode_inbox",
+            "observed_policy_action": "block",
+            "queued_policy_action": "require-reapproval",
+            "authoritative_action": "allow",
+        }
 
     def test_guard_codex_pretooluse_returns_without_browser_wait_for_secret_exfil(self, tmp_path, monkeypatch, capsys):
         home_dir = tmp_path / "home"
@@ -6909,7 +6919,15 @@ url = http://127.0.0.1:8787/guard-canary
             {
                 "current_version": "2.2.1",
                 "installer": "pipx",
-                "command": ["pipx", "install", "--force", "hol-guard==2.2.3"],
+                "command": [
+                    "pipx",
+                    "runpip",
+                    "hol-guard",
+                    "install",
+                    "--upgrade",
+                    "--force-reinstall",
+                    "hol-guard==2.2.3",
+                ],
                 "dry_run": False,
                 "resulting_version": "2.2.1",
                 "status": "deferred",
@@ -9664,7 +9682,7 @@ url = http://127.0.0.1:8787/guard-canary
             lambda _context: HarnessContext(home_dir=home_dir, workspace_dir=workspace_dir, guard_home=home_dir),
         )
 
-        def _fake_sync_receipts(_store: GuardStore, **kwargs: object) -> dict[str, object]:
+        def _fake_sync_local_guard_cloud_proof(_store: GuardStore, **kwargs: object) -> dict[str, object]:
             captured_receipt_kwargs.append(dict(kwargs))
             auth_context = kwargs.get("auth_context")
             assert isinstance(auth_context, dict)
@@ -9689,7 +9707,7 @@ url = http://127.0.0.1:8787/guard-canary
                 },
             }
 
-        monkeypatch.setattr(guard_commands_module, "sync_receipts", _fake_sync_receipts)
+        monkeypatch.setattr(guard_commands_module, "sync_local_guard_cloud_proof", _fake_sync_local_guard_cloud_proof)
         monkeypatch.setattr(
             guard_commands_module,
             "sync_supply_chain_cloud_state",
@@ -9727,14 +9745,14 @@ url = http://127.0.0.1:8787/guard-canary
             lambda _context: HarnessContext(home_dir=home_dir, workspace_dir=workspace_dir, guard_home=home_dir),
         )
 
-        def _fake_sync_receipts(_store: GuardStore, **kwargs: object) -> dict[str, object]:
+        def _fake_sync_local_guard_cloud_proof(_store: GuardStore, **kwargs: object) -> dict[str, object]:
             captured_receipt_kwargs.append(dict(kwargs))
             return {
                 "synced_at": "2026-06-18T22:00:00Z",
                 "receipts_stored": 2,
             }
 
-        monkeypatch.setattr(guard_commands_module, "sync_receipts", _fake_sync_receipts)
+        monkeypatch.setattr(guard_commands_module, "sync_local_guard_cloud_proof", _fake_sync_local_guard_cloud_proof)
         monkeypatch.setattr(
             guard_commands_module,
             "sync_supply_chain_cloud_state",

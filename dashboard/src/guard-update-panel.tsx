@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
-import { HiMiniAdjustmentsHorizontal, HiMiniArrowPath, HiMiniBeaker } from "react-icons/hi2";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import { HiMiniArrowPath } from "react-icons/hi2";
 
 import {
   fetchGuardUpdateStatus,
@@ -21,6 +21,7 @@ import type {
   GuardUpdateStatus,
 } from "./guard-types";
 import { GuardModalLayer } from "./guard-modal-layer";
+import { GuardUpdateChannelSummary } from "./guard-update-channel-summary";
 
 const UPDATE_STATUS_POLL_MS = 60_000;
 const RECONNECT_POLL_MS = 1_500;
@@ -30,6 +31,7 @@ export type GuardUpdatePanelProps = {
   guardVersion?: string | null;
   updateStatus?: GuardUpdateStatus | null;
   updatePhase?: GuardUpdatePhase;
+  updateError?: string | null;
   onUpdateGuard?: () => void;
   onReinstallGuard?: () => void;
   approvalGate?: GuardApprovalGatePublicConfig | null;
@@ -69,7 +71,11 @@ function recoveryReinstallHelpCopy(status: GuardUpdateStatus | null | undefined)
   return "This install came from a local folder, so automatic updates are off. Reinstall from PyPI to switch it back to a normal package; Guard restarts briefly and saved approvals stay.";
 }
 
-function updateHelpCopy(status: GuardUpdateStatus | null | undefined, phase: GuardUpdatePhase): string | null {
+function updateHelpCopy(
+  status: GuardUpdateStatus | null | undefined,
+  phase: GuardUpdatePhase,
+  errorMessage?: string | null,
+): string | null {
   if (phase === "updating") {
     return "Guard is installing the update. The dashboard will pause briefly and reopen when ready.";
   }
@@ -77,7 +83,7 @@ function updateHelpCopy(status: GuardUpdateStatus | null | undefined, phase: Gua
     return "Reconnecting to Guard after the update…";
   }
   if (phase === "error") {
-    return "The update did not finish. Try again or run hol-guard update from your terminal.";
+    return errorMessage?.trim() || "The update did not finish. The installed version stays in place. Try again, or run hol-guard update from your terminal.";
   }
   if (status?.update_suppressed) {
     if (status.retry_command) {
@@ -103,7 +109,7 @@ function updateHelpCopy(status: GuardUpdateStatus | null | undefined, phase: Gua
 export function GuardUpdatePanel(props: GuardUpdatePanelProps) {
   const version = props.guardVersion ?? props.updateStatus?.current_version ?? null;
   const phase = props.updatePhase ?? "idle";
-  const helpCopy = updateHelpCopy(props.updateStatus, phase);
+  const helpCopy = updateHelpCopy(props.updateStatus, phase, props.updateError);
   const showUpdateButton =
     props.updateStatus?.update_available === true &&
     props.updateStatus.auto_updatable &&
@@ -166,49 +172,32 @@ export function GuardUpdatePanel(props: GuardUpdatePanelProps) {
     setAlphaApprovalTotpCode(event.target.value);
   }, []);
 
+  let updateChannelSummary: ReactNode = null;
+  if (props.onSetUpdateChannel) {
+    updateChannelSummary = (
+      <GuardUpdateChannelSummary
+        version={version}
+        useAlpha={useAlpha}
+        busy={busy}
+        onManage={handleOpenAlphaModal}
+      />
+    );
+  } else if (version) {
+    updateChannelSummary = (
+      <p className="font-mono text-[10px] text-brand-dark/70" aria-label={`Guard version ${version}`}>
+        v{version}
+      </p>
+    );
+  }
+
   return (
     <div className={props.compact ? "space-y-1" : "space-y-2"}>
-      {version ? (
-        <p className="font-mono text-[10px] text-brand-dark/60" aria-label={`Guard version ${version}`}>
-          v{version}
-        </p>
-      ) : null}
+      {updateChannelSummary}
       {props.updateStatus?.update_available ? (
         <p className="text-[11px] leading-relaxed text-brand-dark/75">{updateStatusLabel(props.updateStatus)}</p>
       ) : null}
       {helpCopy ? (
         <p className="text-[11px] leading-relaxed text-brand-dark/70">{helpCopy}</p>
-      ) : null}
-      {props.onSetUpdateChannel && useAlpha ? (
-        <div
-          className="flex items-center justify-between gap-2 rounded-md border border-brand-blue/20 bg-brand-blue/[0.06] px-2 py-1.5"
-          role="status"
-          aria-label="Alpha updates enabled"
-        >
-          <span className="inline-flex min-w-0 items-center gap-1.5 text-[11px] font-semibold text-brand-blue">
-            <HiMiniBeaker className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            Alpha updates
-          </span>
-          <button
-            type="button"
-            onClick={handleOpenAlphaModal}
-            disabled={busy}
-            aria-label="Manage alpha updates"
-            title="Manage alpha updates"
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-brand-blue transition-colors hover:bg-brand-blue/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-blue/40 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <HiMiniAdjustmentsHorizontal className="h-4 w-4" aria-hidden="true" />
-          </button>
-        </div>
-      ) : props.onSetUpdateChannel ? (
-        <button
-          type="button"
-          onClick={handleOpenAlphaModal}
-          disabled={busy}
-          className="inline-flex min-h-9 w-full items-center justify-center rounded-lg border border-brand-blue/25 bg-white px-3 py-2 text-xs font-semibold text-brand-blue transition-colors hover:bg-brand-blue/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-blue/40 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          Try alpha updates
-        </button>
       ) : null}
       {showUpdateButton && props.onUpdateGuard ? (
         <button
@@ -260,6 +249,7 @@ export function useGuardUpdate(options?: { onReconnected?: () => void; enabled?:
   const enabled = options?.enabled !== false;
   const [updateStatus, setUpdateStatus] = useState<GuardUpdateStatus | null>(null);
   const [updatePhase, setUpdatePhase] = useState<GuardUpdatePhase>(enabled ? "checking" : "idle");
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const reconnectStartedAt = useRef<number | null>(null);
   const updatePhaseRef = useRef<GuardUpdatePhase>("checking");
   const updateStatusEpoch = useRef(0);
@@ -395,6 +385,7 @@ export function useGuardUpdate(options?: { onReconnected?: () => void; enabled?:
       expectedLatestVersion: string | null;
     }): Promise<void> => {
       setUpdatePhase("updating");
+      setUpdateError(null);
       try {
         const reconnectAuthorization = await prepareGuardDaemonReconnect();
         const scheduleResult = await scheduleGuardUpdate(
@@ -413,7 +404,9 @@ export function useGuardUpdate(options?: { onReconnected?: () => void; enabled?:
           return;
         }
         if (scheduleResult.scheduled !== true) {
-          throw new Error(scheduleResult.message ?? scheduleResult.error ?? "Guard update was not scheduled.");
+          throw new Error(
+            scheduleResult.message ?? scheduleResult.error ?? "Guard update was not scheduled. The installed version stays in place.",
+          );
         }
         setUpdatePhase("reconnecting");
         const redirected = await waitForReconnect(
@@ -424,8 +417,9 @@ export function useGuardUpdate(options?: { onReconnected?: () => void; enabled?:
         if (!redirected) {
           window.location.reload();
         }
-      } catch {
+      } catch (error) {
         setUpdatePhase("error");
+        setUpdateError(error instanceof Error ? error.message : "The update did not finish. The installed version stays in place.");
       }
     },
     [waitForReconnect],
@@ -478,6 +472,7 @@ export function useGuardUpdate(options?: { onReconnected?: () => void; enabled?:
     guardVersion: updateStatus?.current_version ?? null,
     updateStatus,
     updatePhase,
+    updateError,
     onUpdateGuard,
     onReinstallGuard,
     onSetUpdateChannel,

@@ -1,5 +1,6 @@
 import { cloudPolicyRecoveryHint } from "./fleet-protection-recovery";
-import { resolveFleetHeroCopy } from "./fleet-workspace";
+import { activeFailedHarnesses, ProtectionRepairFlowError } from "./protection-repair-flow";
+import { repairHarnessesFor, resolveFleetHeroCopy } from "./fleet-workspace";
 import type { FleetHeroCopy } from "./fleet-workspace";
 
 function assert(condition: boolean, message: string): void {
@@ -7,6 +8,16 @@ function assert(condition: boolean, message: string): void {
     throw new Error(message);
   }
 }
+
+const targetedRepairError = new ProtectionRepairFlowError("App hooks need repair.", ["codex", "grok"]);
+assert(
+  targetedRepairError.failedHarnesses.length === 2,
+  "repair failures retain every app needed for the next actions",
+);
+assert(
+  activeFailedHarnesses(["codex", "codex", "grok"], ["grok"])[0] === "grok",
+  "resolved and duplicate app failures do not leave stale repair actions",
+);
 
 const urls = {
   fleet_url: "https://hol.org/guard/protect",
@@ -71,6 +82,7 @@ const localCloudProof = cloudPolicyRecoveryHint({
   connectUrl: urls.connect_url,
 });
 assert(localCloudProof?.actionLabel === "Connect Guard Cloud", "local Cloud proof uses the separate connect action");
+assert(localCloudProof?.startsOAuth === true, "disconnected Cloud proof starts the local OAuth flow");
 assert(
   localCloudProof?.detail.includes("Local Guard remains active") === true,
   "missing Cloud proof must not degrade local Guard copy",
@@ -94,7 +106,8 @@ const pendingCloudProof = cloudPolicyRecoveryHint({
 });
 assert(
   pendingCloudProof?.actionLabel === "Open Guard Cloud" &&
-    pendingCloudProof.detail.includes("separate from local repair"),
+    pendingCloudProof.detail.includes("separate from local repair") &&
+    pendingCloudProof.startsOAuth === false,
   "incomplete Cloud proof remains an independent Cloud action",
 );
 
@@ -102,6 +115,55 @@ const degradedWithApps = resolveFleetHeroCopy("paired_active", 2, "degraded", ur
 assert(degradedWithApps.status === "degraded", "active installs cannot imply protected fleet health");
 assert(degradedWithApps.headline === "App protection is degraded", "degraded fleet copy is explicit");
 assert(pairedActiveNoApps.status === "setup_gap", "F5: paired_active no apps status should be setup_gap");
+
+const checkingWithApps = resolveFleetHeroCopy("paired_active", 2, "checking", urls);
+assert(checkingWithApps.status === "checking", "unproven fleet health must not look degraded");
+assert(checkingWithApps.headline === "Checking app protection", "checking fleet copy is explicit");
+assert(
+  !checkingWithApps.headline.toLowerCase().includes("degraded"),
+  "checking fleet copy must not use degraded language",
+);
+
+const targetedRepairs = repairHarnessesFor(
+  [
+    { harness: "codex", active: true },
+    { harness: "grok", active: true },
+    { harness: "cursor", active: false },
+  ],
+  {
+    schema_version: "guard.protection-health.v1",
+    state: "degraded",
+    label: "Degraded",
+    detail: "One app needs repair.",
+    evidence_gap: false,
+    checks: [],
+    reason_codes: [],
+    apps: [
+      {
+        harness: "codex",
+        state: "protected",
+        label: "Protected",
+        detail: "Hooks verified.",
+        evidence_gap: false,
+        checks: [{ check_id: "harness_hooks", status: "pass", reason_code: "hooks_verified" }],
+        reason_codes: ["hooks_verified"],
+      },
+      {
+        harness: "grok",
+        state: "degraded",
+        label: "Degraded",
+        detail: "Hooks need repair.",
+        evidence_gap: false,
+        checks: [{ check_id: "harness_hooks", status: "fail", reason_code: "hook_verification_failed" }],
+        reason_codes: ["hook_verification_failed"],
+      },
+    ],
+  },
+);
+assert(
+  targetedRepairs.length === 2 && targetedRepairs[0] === "grok" && targetedRepairs[1] === "cursor",
+  "F8: fleet repair must reinstall inactive apps and active apps with failed hook proof",
+);
 
 const allStates: FleetHeroCopy[] = [localOnlyWithApps, pairedWaitingWithApps, pairedActiveWithApps];
 for (const state of allStates) {

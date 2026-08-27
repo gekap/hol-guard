@@ -13,15 +13,40 @@ EXCLUDED_DIRS = {"node_modules", ".git", "dist", ".next", "coverage", "__pycache
 
 EVAL_RE = re.compile(r"\beval\s*\(")
 FUNCTION_RE = re.compile(r"new\s+Function\s*\(")
-SHELL_INJECT_RE = re.compile(
-    r"`[^`]*\$\{[^}]+\}[^`]*`"
-    r"[\s\S]{0,30}"
-    r"\b(exec|spawn|execSync|spawnSync|os\.system|subprocess)\b"
+INTERPOLATED_TEMPLATE_PATTERN = r"`[^`]*\$\{[^}]+\}[^`]*`"
+TS_TEMPLATE_SUFFIX_PATTERN = r"(?:[ \t]+(?:as|satisfies)[ \t]+[^;\n]+)?"
+SHELL_CALL_PATTERN = r"(?:execSync|spawnSync|exec|spawn)"
+SHELL_RECEIVER_PATTERN = (
+    r"(?<![\w$])(?:child_process|childProcess|cp|"
+    r"require\s*\(\s*['\"](?:node:)?child_process['\"]\s*\))"
+)
+DIRECT_SHELL_TEMPLATE_RE = re.compile(
+    rf"(?<![\w.]){SHELL_CALL_PATTERN}\s*\(\s*{INTERPOLATED_TEMPLATE_PATTERN}",
+    re.S,
+)
+MEMBER_SHELL_TEMPLATE_RE = re.compile(
+    rf"{SHELL_RECEIVER_PATTERN}\s*\.\s*{SHELL_CALL_PATTERN}\s*\(\s*{INTERPOLATED_TEMPLATE_PATTERN}",
+    re.S,
+)
+INTERPOLATED_TEMPLATE_ASSIGNMENT_RE = re.compile(
+    rf"\b(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)"
+    rf"(?:\s*:\s*[^=;\n]+)?\s*=\s*{INTERPOLATED_TEMPLATE_PATTERN}"
+    rf"{TS_TEMPLATE_SUFFIX_PATTERN}[ \t]*;?",
+    re.S,
 )
 
 
-def _find_code_files(plugin_dir: Path) -> list[Path]:
-    files = []
+def _find_code_files(plugin_dir: Path, files: tuple[Path, ...] | None = None) -> list[Path]:
+    if files is not None:
+        return [
+            path
+            for path in files
+            if path.is_file()
+            and not path.is_symlink()
+            and path.suffix in CODE_EXTS
+            and resolves_within_root(plugin_dir, path, require_exists=True)
+        ]
+    discovered: list[Path] = []
     for p in plugin_dir.rglob("*"):
         if not p.is_file() or p.suffix not in CODE_EXTS:
             continue
@@ -29,13 +54,34 @@ def _find_code_files(plugin_dir: Path) -> list[Path]:
             continue
         if not resolves_within_root(plugin_dir, p, require_exists=True):
             continue
-        files.append(p)
-    return files
+        discovered.append(p)
+    return discovered
 
 
-def check_no_eval(plugin_dir: Path) -> CheckResult:
+def _shell_call_uses_variable(content: str, variable: str) -> bool:
+    escaped_variable = re.escape(variable)
+    variable_boundary = r"(?![\w$])"
+    direct_call = re.compile(rf"(?<![\w.]){SHELL_CALL_PATTERN}\s*\(\s*{escaped_variable}{variable_boundary}")
+    member_call = re.compile(
+        rf"{SHELL_RECEIVER_PATTERN}\s*\.\s*{SHELL_CALL_PATTERN}\s*\(\s*"
+        rf"{escaped_variable}{variable_boundary}"
+    )
+    return bool(direct_call.search(content) or member_call.search(content))
+
+
+def _has_shell_injection_pattern(content: str) -> bool:
+    if DIRECT_SHELL_TEMPLATE_RE.search(content) or MEMBER_SHELL_TEMPLATE_RE.search(content):
+        return True
+
+    for assignment in INTERPOLATED_TEMPLATE_ASSIGNMENT_RE.finditer(content):
+        if _shell_call_uses_variable(content[assignment.end() :], assignment.group("name")):
+            return True
+    return False
+
+
+def check_no_eval(plugin_dir: Path, files: tuple[Path, ...] | None = None) -> CheckResult:
     findings: list[str] = []
-    for fpath in _find_code_files(plugin_dir):
+    for fpath in _find_code_files(plugin_dir, files):
         try:
             content = fpath.read_text(encoding="utf-8", errors="ignore")
         except OSError:
@@ -73,14 +119,14 @@ def check_no_eval(plugin_dir: Path) -> CheckResult:
     )
 
 
-def check_no_shell_injection(plugin_dir: Path) -> CheckResult:
+def check_no_shell_injection(plugin_dir: Path, files: tuple[Path, ...] | None = None) -> CheckResult:
     findings: list[str] = []
-    for fpath in _find_code_files(plugin_dir):
+    for fpath in _find_code_files(plugin_dir, files):
         try:
             content = fpath.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        if SHELL_INJECT_RE.search(content):
+        if _has_shell_injection_pattern(content):
             findings.append(str(fpath.relative_to(plugin_dir)))
     if not findings:
         return CheckResult(

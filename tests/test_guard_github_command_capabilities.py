@@ -53,6 +53,11 @@ GITHUB_CAPABILITY_CASES = (
     (("ssh-key", "delete", "123"), "access_remote", "github.command.access-mutation"),
     (("run", "cancel", "--help"), "workflow_remote", "github.command.workflow-mutation"),
     (
+        ("run", "rerun", "31707639186", "--repo", "hashgraph-online/hol-guard", "--failed"),
+        "routine_workflow_remote",
+        "github.command.routine-failed-run-rerun",
+    ),
+    (
         ("--repo", "example/project", "workflow", "view", "release.yml"),
         "read_remote",
         "github.command.proven-read",
@@ -116,7 +121,11 @@ GITHUB_CAPABILITY_CASES = (
         "routine_review_thread_remote",
         "github.graphql.routine-review-thread-resolution",
     ),
-    (("pr", "merge", "17", "--squash", "--delete-branch"), "delete_remote", "github.command.pr-merge"),
+    (
+        ("pr", "merge", "17", "--squash", "--delete-branch"),
+        "routine_merge_remote",
+        "github.command.pr-routine-squash-merge",
+    ),
     (("pr", "merge", "17", "--admin"), "admin_merge_remote", "github.command.pr-admin-merge"),
     (("pr", "edit", "17", "--title", "updated"), "content_remote", "github.command.content-mutation"),
     (("issue", "close", "17"), "content_remote", "github.command.content-mutation"),
@@ -320,7 +329,6 @@ GITHUB_REVIEW_FLOORS: Final[tuple[tuple[str, str], ...]] = (
     ("gh issue close 17", "GitHub content mutation command"),
     ("gh release create v1.2.3 --notes 'release notes'", "GitHub release publication command"),
     ("gh api repos/example/project/issues/17/comments -f body='looks good'", "GitHub content mutation command"),
-    ("gh pr merge 17 --repo example/project --squash --delete-branch", "GitHub delete command"),
     ("gh pr merge 17 --admin", "GitHub administrator pull-request merge command"),
     ("gh workflow run ci.yml", "GitHub workflow mutation command"),
     ("gh repo sync --force", "GitHub force mutation command"),
@@ -478,8 +486,6 @@ GITHUB_REVIEW_FLOORS: Final[tuple[tuple[str, str], ...]] = (
 )
 
 
-
-
 @pytest.mark.parametrize(
     ("args", "capability", "reason_code"),
     (
@@ -548,7 +554,11 @@ GITHUB_REVIEW_FLOORS: Final[tuple[tuple[str, str], ...]] = (
             "maintain_remote",
             "github.graphql.maintain",
         ),
-        (("pr", "merge", "17", "--squash", "--delete-branch"), "delete_remote", "github.command.pr-merge"),
+        (
+            ("pr", "merge", "17", "--squash", "--delete-branch"),
+            "routine_merge_remote",
+            "github.command.pr-routine-squash-merge",
+        ),
         (("pr", "merge", "17", "--admin"), "admin_merge_remote", "github.command.pr-admin-merge"),
         (("pr", "edit", "17", "--title", "updated"), "content_remote", "github.command.content-mutation"),
         (("issue", "close", "17"), "content_remote", "github.command.content-mutation"),
@@ -758,16 +768,99 @@ def test_classify_github_cli_rejects_ambiguous_graphql_inputs(args: tuple[str, .
     assert assessment.capability == "unknown"
 
 
+@pytest.mark.parametrize("selection", ("id", "isResolved", "id isResolved", "isResolved id"))
+def test_guard_keeps_routine_review_thread_resolution_prompt_free(selection: str) -> None:
+    command = (
+        "gh api graphql -f "
+        f"'query=mutation($threadId:ID!){{resolveReviewThread(input:{{threadId:$threadId}})"
+        f"{{thread{{{selection}}}}}}}' -f threadId=PRRT_kwDOQGomAs6T6b-G"
+    )
+
+    match = extract_sensitive_tool_action_request("Bash", {"command": command})
+
+    assert match is None
+
+
+@pytest.mark.parametrize("jq_arguments", (("--jq", ".data"), ("--jq=.data",)))
+def test_guard_keeps_routine_review_thread_resolution_with_data_projection_prompt_free(
+    jq_arguments: tuple[str, ...],
+) -> None:
+    args = (
+        "api",
+        "graphql",
+        "-f",
+        'query=mutation { resolveReviewThread(input: { threadId: "PRRT_kwDOQGomAs6ZjyNl" }) '
+        "{ thread { isResolved } } }",
+        *jq_arguments,
+    )
+
+    assessment = classify_github_cli(args)
+
+    assert assessment.capability == "routine_review_thread_remote"
+    assert (
+        extract_sensitive_tool_action_request(
+            "Bash",
+            {
+                "command": (
+                    "gh api graphql -f query='mutation { resolveReviewThread(input: { threadId: "
+                    '"PRRT_kwDOQGomAs6ZjyNl" }) { thread { isResolved } } }\' --jq ".data"'
+                )
+            },
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "jq_arguments",
+    (("--jq", ".data.viewer"), ("--jq=@filter.jq",), ("--jq", ".data", "--jq", ".data")),
+)
+def test_guard_reviews_routine_review_thread_resolution_with_other_jq_projections(
+    jq_arguments: tuple[str, ...],
+) -> None:
+    assessment = classify_github_cli(
+        (
+            "api",
+            "graphql",
+            "-f",
+            'query=mutation { resolveReviewThread(input: { threadId: "PRRT_kwDOQGomAs6ZjyNl" }) '
+            "{ thread { isResolved } } }",
+            *jq_arguments,
+        )
+    )
+
+    assert assessment.capability == "maintain_remote"
+
+
+@pytest.mark.parametrize(
+    "selection",
+    ("id repository { name }", "id: isResolved", "...ThreadFields"),
+)
+def test_guard_reviews_unbounded_review_thread_response_selections(selection: str) -> None:
+    command = (
+        "gh api graphql -f "
+        f"'query=mutation($threadId:ID!){{resolveReviewThread(input:{{threadId:$threadId}})"
+        f"{{thread{{{selection}}}}}}}' -f threadId=PRRT_kwDOQGomAs6T6b-G"
+    )
+
+    match = extract_sensitive_tool_action_request("Bash", {"command": command})
+
+    assert match is not None
+
+
 @pytest.mark.parametrize(
     "command",
     (
         "gh pr view 17",
-        "gh pr view ${PR_NUMBER}",
+        "gh pr view $'17'",
         "gh issue list --limit 10",
-        "gh issue list --repo ${REPO}",
         "gh ssh-key list",
         "gh gpg-key list",
         "gh api repos/example/project -X GET -f per_page=1 --jq '.name'",
+        (
+            "gh api -H 'Accept: application/vnd.github.raw+json' "
+            "'repos/example/project/contents/ci/baseline.json?ref=main'"
+        ),
         "gh api graphql -f 'query=query { viewer { login } }' | jq -r '.data.viewer.login'",
         (
             "gh api graphql -f 'query=query { viewer { login } }' 2>&1 | "
@@ -811,7 +904,6 @@ def test_guard_keeps_proven_github_reads_prompt_free(tmp_path: Path, command: st
         ("gh issue close 17", "GitHub content mutation command"),
         ("gh release create v1.2.3 --notes 'release notes'", "GitHub release publication command"),
         ("gh api repos/example/project/issues/17/comments -f body='looks good'", "GitHub content mutation command"),
-        ("gh pr merge 17 --repo example/project --squash --delete-branch", "GitHub delete command"),
         ("gh pr merge 17 --admin", "GitHub administrator pull-request merge command"),
         ("gh workflow run ci.yml", "GitHub workflow mutation command"),
         ("gh repo sync --force", "GitHub force mutation command"),

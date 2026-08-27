@@ -19,6 +19,7 @@ from ..false_positive_rules import (
 from ..github_capability_interaction import github_capability_requires_confirmation
 from ..shell_command_wrappers import is_trusted_absolute_command_path
 from ..shell_execution_context import ShellExecutionContext, model_shell_execution_context
+from . import local_read_operands
 from .constants_core import (
     _FIND_EXEC_ACTION_FLAGS,
     _FIND_EXEC_PLACEHOLDER_TARGET,
@@ -31,15 +32,16 @@ from .constants_core import (
 from .constants_patterns import _FIND_PATH_VALUE_PREDICATES
 from .docker_requests import _which_for_execution_cwd, shell_execution_context_starts_with_literal_cd
 from .github_shell_capabilities import classify_github_shell_capabilities
-from .local_read_operands import _local_read_operands_resolve_safely, _search_file_operand_tokens
 from .read_only_filters import (
     _read_only_lookup_arg_is_redirection,
     _read_only_lookup_filter_segment_is_safe,
     _read_only_lookup_head_tail_args_are_safe,
+    _read_only_lookup_may_be_primary,
     _read_only_lookup_sed_args_are_safe,
     _read_only_lookup_target_is_safe,
 )
 from .shell_static_safety import (
+    _github_jq_filter_args_are_safe,
     _is_python_interpreter_command,
     _leading_literal_cd_workspace_root,
     _path_text_is_within_root,
@@ -52,6 +54,15 @@ from .shell_static_safety import (
     _without_safe_inspection_redirections,
 )
 from .shell_tokenization import _shell_segment_primary_command
+
+_READ_ONLY_SEARCH_FILE_INPUT_FLAGS = frozenset({"-f", "--file", "--ignore-file"})
+_GREP_SHORT_VALUE_FLAGS = frozenset({"A", "B", "C", "D", "d", "e", "f", "m"})
+_READ_ONLY_SEARCH_SHORT_VALUE_FLAGS = {
+    "grep": _GREP_SHORT_VALUE_FLAGS,
+    "egrep": _GREP_SHORT_VALUE_FLAGS,
+    "fgrep": _GREP_SHORT_VALUE_FLAGS,
+    "rg": frozenset({"A", "B", "C", "E", "M", "T", "d", "e", "f", "g", "j", "m", "r", "t"}),
+}
 
 
 class DeveloperShellEffect(str, Enum):
@@ -134,17 +145,15 @@ def _compound_developer_effect_graph(
         return None
     if is_low_risk_compound_git_inspection(context):
         return _known_context_effect_graph(context, DeveloperShellEffect.LOCAL_READ)
-    typescript_context = direct_local_typescript_execution_context(
-        command_text,
-        cwd=cwd,
-        home_dir=home_dir,
-    )
+    typescript_context = direct_local_typescript_execution_context(command_text, cwd=cwd, home_dir=home_dir)
     if typescript_context is not None and typescript_context.complete:
         return _known_context_effect_graph(typescript_context, DeveloperShellEffect.SYNTAX_CHECK)
     github_assessment = classify_github_shell_capabilities(command_text, home_dir=home_dir)
     github_is_low_risk = github_assessment is not None and not github_capability_requires_confirmation(
         github_assessment
     )
+    if github_assessment is not None and not github_is_low_risk:
+        return None
     inspection_root = context.workspace_root or home_dir
     effects: list[DeveloperShellSegmentEffect] = []
     first_inspection_segment = 1 if starts_with_literal_cd else 0
@@ -168,7 +177,7 @@ def _compound_developer_effect_graph(
             and _read_only_lookup_filter_segment_is_safe(command_name, args, home_dir=segment_root)
         )
         root_checked_args = (
-            list(_search_file_operand_tokens(command_name, args))
+            list(local_read_operands._search_file_operand_tokens(command_name, args))
             if safe_pipe_filter and command_name in {"grep", "egrep", "fgrep"}
             else args
         )
@@ -185,11 +194,32 @@ def _compound_developer_effect_graph(
         if command_name == "gh" and github_is_low_risk:
             effects.append(DeveloperShellSegmentEffect(index, command_name, DeveloperShellEffect.REMOTE_READ))
             continue
-        if _safe_cli_metadata_segment_is_safe(command_name, args, cwd=segment_root):
+        if (
+            command_name == "jq"
+            and segment.control_before == ("|",)
+            and github_is_low_risk
+            and _github_jq_filter_args_are_safe(args)
+        ):
+            effects.append(DeveloperShellSegmentEffect(index, command_name, DeveloperShellEffect.STREAM_FILTER))
+            continue
+        if _safe_cli_metadata_segment_is_safe(
+            command_name,
+            args,
+            cwd=segment_root,
+            command_token=segment.tokens[command_index],
+            command_index=command_index,
+        ):
             effects.append(DeveloperShellSegmentEffect(index, command_name, DeveloperShellEffect.LOCAL_READ))
             continue
         if (
-            command_name in _READ_ONLY_LOOKUP_COMMANDS
+            _read_only_lookup_may_be_primary(
+                command_name in _READ_ONLY_LOOKUP_COMMANDS, segment.control_before, safe_pipe_filter
+            )
+            and not (
+                command_name == "rg"
+                and not _ripgrep_config_is_disabled(args)
+                and any(token.startswith("RIPGREP_CONFIG_PATH=") for token in segment.tokens[:command_index])
+            )
             and _read_only_lookup_primary_segment_is_safe(
                 command_name,
                 args,
@@ -204,7 +234,7 @@ def _compound_developer_effect_graph(
                     home_dir=home_dir,
                 )
             )
-            and _local_read_operands_resolve_safely(
+            and local_read_operands._local_read_operands_resolve_safely(
                 command_name,
                 args,
                 cwd=segment_root,
@@ -357,10 +387,45 @@ def _read_only_lookup_search_args_are_safe(
     execution_flags = _READ_ONLY_SEARCH_EXECUTION_FLAGS.get(command, frozenset())
     if any(arg in execution_flags or any(arg.startswith(f"{flag}=") for flag in execution_flags) for arg in args):
         return False
-    targets = [arg for arg in args if arg and not arg.startswith("-")]
-    return len(targets) < 2 or all(
-        _read_only_lookup_target_is_safe(target, allow_dirs=True, home_dir=home_dir) for target in targets[1:]
-    )
+    if _read_only_lookup_search_uses_file_input(command, args):
+        return False
+    if command == "rg" and os.environ.get("RIPGREP_CONFIG_PATH") and not _ripgrep_config_is_disabled(args):
+        return False
+    return local_read_operands.search_operands_are_safe(command, args, root=home_dir)
+
+
+def _read_only_lookup_search_uses_file_input(command: str, args: list[str]) -> bool:
+    value_flags = _READ_ONLY_SEARCH_SHORT_VALUE_FLAGS.get(command, frozenset())
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--":
+            break
+        if arg in _READ_ONLY_SEARCH_FILE_INPUT_FLAGS:
+            return True
+        if arg.startswith(("--file=", "--ignore-file=")):
+            return True
+        if not arg.startswith("-") or arg.startswith("--") or arg == "-":
+            continue
+        cluster = arg[1:]
+        for index, flag in enumerate(cluster):
+            if flag == "f":
+                return True
+            if flag in value_flags:
+                skip_next = index == len(cluster) - 1
+                break
+    return False
+
+
+def _ripgrep_config_is_disabled(args: list[str]) -> bool:
+    for arg in args:
+        if arg == "--":
+            return False
+        if arg == "--no-config":
+            return True
+    return False
 
 
 def _read_only_lookup_fd_args_are_safe(args: list[str], *, home_dir: Path | None = None) -> bool:

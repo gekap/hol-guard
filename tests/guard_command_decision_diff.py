@@ -51,6 +51,13 @@ def _install_evaluator_packages() -> None:
             }
         )
         sys.modules[name] = package
+        # Bind the stub onto its parent package the way a real submodule
+        # import would, so later dotted-path monkeypatch resolution in the
+        # same test process can find it regardless of import order.
+        parent_name, _, leaf = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is not None and parent_name:
+            setattr(parent, leaf, package)
 
 
 _install_evaluator_packages()
@@ -91,6 +98,7 @@ _EVIDENCE_SOURCE_PATHS: Final = (
     REPO_ROOT / "src" / "codex_plugin_scanner" / "guard" / "contained_package_script_execution.py",
     REPO_ROOT / "src" / "codex_plugin_scanner" / "guard" / "contained_workspace_write_execution.py",
     REPO_ROOT / "src" / "codex_plugin_scanner" / "guard" / "package_shim_gate.py",
+    REPO_ROOT / "src" / "codex_plugin_scanner" / "guard" / "package_shim_frozen.py",
     REPO_ROOT / "src" / "codex_plugin_scanner" / "guard" / "shims.py",
     *(REPO_ROOT / "src" / "codex_plugin_scanner" / "guard" / "runtime").glob("*.py"),
     *REPO_ROOT.joinpath("tests").glob("guard_command_corpus*.py"),

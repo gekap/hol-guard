@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import shutil
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 from ..aibom_detection import extend_detection_with_workspace_aibom
+from ..codex_config import read_toml_payload
 from ..models import GuardArtifact, HarnessDetection
 from ..shims import install_guard_shim, remove_guard_shim
 from .base import (
@@ -26,9 +25,12 @@ from .bounded_cli_hook_bridge import bounded_cli_hook_command
 from .grok_config import (
     GROK_CONFIG_FILE,
     GROK_DIR,
+    GROK_HOOK_INTERNAL_TIMEOUT_SECONDS,
     GROK_HOOKS_DIR,
     GROK_MANAGED_CONFIG_FILE,
+    GROK_PROJECT_SURFACE_RELATIVES,
     GROK_REQUIREMENTS_FILE,
+    GROK_SURFACE_RELATIVES,
     GUARD_HOOK_PRETOOL_FILE,
     GUARD_HOOK_PROMPT_FILE,
     GUARD_MANAGED_BEGIN,
@@ -39,6 +41,7 @@ from .grok_config import (
     append_mcp_artifacts,
     append_permission_artifacts,
     build_managed_config_block,
+    build_observe_hook_json,
     build_pretool_hook_json,
     degraded_mode_warnings,
     remove_managed_block,
@@ -50,14 +53,8 @@ from .grok_executable import (
     sanitized_grok_launch_environment,
 )
 
-tomllib: Any
-try:
-    import tomllib as tomllib  # pyright: ignore[reportMissingImports]
-except ModuleNotFoundError:
-    tomllib = importlib.import_module("tomli")
-
 _GROK_HOME_ENV_VAR = "GROK_HOME"
-_GUARD_HOOK_INTERNAL_TIMEOUT_SECONDS = 25
+_GUARD_HOOK_INTERNAL_TIMEOUT_SECONDS = GROK_HOOK_INTERNAL_TIMEOUT_SECONDS
 
 
 class GrokHarnessAdapter(HarnessAdapter):
@@ -69,12 +66,12 @@ class GrokHarnessAdapter(HarnessAdapter):
     launcher_name = "grok"
     approval_tier = "approval-center"
     approval_summary = (
-        "Guard intercepts Grok tool calls through native PreToolUse hooks and routes blocked "
-        "actions to the local approval center."
+        "Guard intercepts every Grok tool call, including subagent and MCP tools, through a "
+        "catch-all PreToolUse hook and routes blocked actions to the local approval center."
     )
     fallback_hint = (
-        "Grok receives plain-language allow or deny responses from Guard hooks. "
-        "Use the Guard approval center when native prompting is unavailable."
+        "Grok prompt hooks are observe-only; enforcement happens on PreToolUse. "
+        "Use the Guard approval center when a tool call is denied."
     )
 
     @staticmethod
@@ -116,16 +113,7 @@ class GrokHarnessAdapter(HarnessAdapter):
             return project_root / GROK_CONFIG_FILE
         return self._config_path(context)
 
-    @staticmethod
-    def _read_toml(path: Path) -> dict[str, object]:
-        if not path.is_file():
-            return {}
-        try:
-            with path.open("rb") as handle:
-                payload = tomllib.load(handle)
-        except (OSError, tomllib.TOMLDecodeError):
-            return {}
-        return payload if isinstance(payload, dict) else {}
+    _read_toml = staticmethod(read_toml_payload)
 
     @staticmethod
     def _version_probe(
@@ -272,13 +260,13 @@ class GrokHarnessAdapter(HarnessAdapter):
                     )
                 )
 
-        for relative in ("skills", "plugins", "plugins/marketplaces", "plugins/known_marketplaces.json", "sessions"):
+        for relative in GROK_SURFACE_RELATIVES:
             candidate = grok_root / relative
             if candidate.exists():
                 append_found_path(found_paths, candidate)
 
         if project_root is not None:
-            for relative in ("skills", "plugins", "hooks"):
+            for relative in GROK_PROJECT_SURFACE_RELATIVES:
                 candidate = project_root / relative
                 if candidate.exists():
                     append_found_path(found_paths, candidate)
@@ -381,7 +369,7 @@ class GrokHarnessAdapter(HarnessAdapter):
         grok_root = self._grok_root(context)
         managed_config_path = self._managed_config_path(context)
         hooks_dir = self._hooks_dir(context)
-        _ensure_path_within_root(context.home_dir, managed_config_path, label="Grok")
+        _ensure_path_within_root(self._grok_home_dir(context), managed_config_path, label="Grok")
         grok_root.mkdir(parents=True, exist_ok=True)
         hooks_dir.mkdir(parents=True, exist_ok=True)
         state_dir = self._managed_state_dir(context)
@@ -399,26 +387,11 @@ class GrokHarnessAdapter(HarnessAdapter):
 
         pretool_payload = build_pretool_hook_json(hook_command)
         pretool_path.write_text(json.dumps(pretool_payload, indent=2) + "\n", encoding="utf-8")
-        prompt_payload = {
-            "hooks": {
-                "UserPromptSubmit": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": hook_command,
-                                "timeout": 30,
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-        prompt_path.write_text(json.dumps(prompt_payload, indent=2) + "\n", encoding="utf-8")
+        prompt_path.write_text(json.dumps(build_observe_hook_json(hook_command), indent=2) + "\n", encoding="utf-8")
 
         existing_text = managed_config_path.read_text(encoding="utf-8") if managed_config_path.is_file() else ""
         cleaned_text = remove_managed_block(existing_text)
-        managed_block = build_managed_config_block()
+        managed_block = build_managed_config_block(hook_command)
         managed_config_path.write_text(f"{cleaned_text.rstrip()}\n\n{managed_block}\n".lstrip(), encoding="utf-8")
 
         self._state_path(context).write_text(
@@ -441,11 +414,16 @@ class GrokHarnessAdapter(HarnessAdapter):
         return {
             "harness": self.harness,
             "active": True,
-            "config_path": str(managed_config_path),
             **shim_manifest,
+            "config_path": str(managed_config_path),
+            "managed_config_path": str(managed_config_path),
+            "managed_hooks_path": str(pretool_path),
+            "pretool_hook_path": str(pretool_path),
+            "prompt_hook_path": str(prompt_path),
             "notes": [
-                "Guard hooks installed in .grok/hooks/hol-guard-*.json",
-                "Guard permission rules installed in .grok/managed_config.toml",
+                "Guard catch-all PreToolUse hook installed in .grok/hooks/hol-guard-pretooluse.json",
+                "Guard observe hooks installed for prompts, session start, and subagent start",
+                "Guard permission rules and backup hooks installed in .grok/managed_config.toml",
                 *shim_notes,
             ],
         }
@@ -460,7 +438,7 @@ class GrokHarnessAdapter(HarnessAdapter):
         managed_config_path = self._managed_config_path(context)
         hooks_dir = self._hooks_dir(context)
         if managed_config_path.is_file():
-            _ensure_path_within_root(context.home_dir, managed_config_path, label="Grok")
+            _ensure_path_within_root(self._grok_home_dir(context), managed_config_path, label="Grok")
             existing_text = managed_config_path.read_text(encoding="utf-8")
             managed_config_path.write_text(remove_managed_block(existing_text).rstrip() + "\n", encoding="utf-8")
 

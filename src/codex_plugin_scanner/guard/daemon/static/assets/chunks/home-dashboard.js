@@ -1,4 +1,4 @@
-import { g as getHeatmapLevel, j as jsxRuntimeExports, S as SectionLabel, E as EvidenceInsightsShareButton, G as GuardStatMetric, H as HomeInsightsMetrics, a as EvidenceActivityHeatmapMini, r as reactExports, h as homeCommandActivityModel, b as HiMiniCommandLine, c as HiMiniChevronRight, d as createCommandActivityClient, f as fetchCommandActivityApi, u as useReceiptAnalytics, e as harnessDisplayName, p as protectionHealthFor, i as EmptyState, A as ActionButton, k as EvidenceInsightsShareModal, l as HiMiniCheckCircle, m as GuardHero, O as OperatorHealthCard, n as formatNumber, o as HiMiniShieldCheck, D as DeviceProofCard, q as guardActionDisposition, s as formatRelativeTime, t as guardActionActivityCopy, v as HiMiniSparkles, w as HiMiniXMark, x as HiMiniChevronUp, y as HiMiniChevronDown, z as resolveCloudIntelCopy, B as HiMiniCloud, C as HiMiniQuestionMarkCircle, F as useFocusTrap, I as approvalProofRequiresPassword, J as HiMiniExclamationTriangle, K as HiMiniBolt, L as Badge, M as HiMiniMinusCircle } from "../guard-dashboard.js";
+import { g as getHeatmapLevel, j as jsxRuntimeExports, S as SectionLabel, E as EvidenceInsightsShareButton, G as GuardStatMetric, H as HomeInsightsMetrics, a as EvidenceActivityHeatmapMini, r as reactExports, h as homeCommandActivityModel, b as HiMiniCommandLine, c as HiMiniChevronRight, d as createCommandActivityClient, f as fetchCommandActivityApi, u as useReceiptAnalytics, e as updateSettings, i as harnessDisplayName, k as useProtectionPresentationState, p as protectionHealthFor, l as unavailableProtectionHealth, m as EmptyState, A as ActionButton, W as WatchProtectionBanner, n as EvidenceInsightsShareModal, o as HiMiniCheckCircle, q as GuardHero, O as OperatorHealthCard, s as formatNumber, t as HiMiniShieldCheck, D as DeviceProofCard, v as guardActionDisposition, w as formatRelativeTime, x as guardActionActivityCopy, y as HiMiniSparkles, z as HiMiniXMark, B as HiMiniChevronUp, C as HiMiniChevronDown, F as resolveCloudIntelCopy, I as HiMiniCloud, J as HiMiniQuestionMarkCircle, K as useFocusTrap, L as approvalProofRequiresPassword, M as HiMiniExclamationTriangle, N as HiMiniBolt, P as Badge, Q as HiMiniMinusCircle } from "../guard-dashboard.js";
 import { H as HomeProtectionModule } from "./home-protection-module.js";
 import { i as isConnectableAppHarness } from "./harness-setup-target.js";
 function HomeInsightsSkeleton() {
@@ -197,6 +197,16 @@ function HomeWorkspace(props) {
   const handleClearPolicies = reactExports.useCallback((scope) => {
     props.onClearPolicies(scope);
   }, [props.onClearPolicies]);
+  const handleTurnProtectionOn = reactExports.useCallback(() => {
+    void updateSettings({ protection_posture: "protected" }).then(async () => {
+      await props.onRefreshRuntime?.();
+      props.onOpenSettings();
+    }).catch((error) => {
+      const message = error instanceof Error ? error.message : "Unable to turn protection on.";
+      showToast(message);
+      props.onOpenSettings();
+    });
+  }, [props.onOpenSettings, props.onRefreshRuntime, showToast]);
   const handleClearPasswordChange = reactExports.useCallback((event) => {
     setClearPassword(event.target.value);
     setClearError(null);
@@ -228,7 +238,10 @@ function HomeWorkspace(props) {
     }
   }, [clearPassword, clearTotpCode, props.clearConfirm, props.onConfirmClear, showToast]);
   const snapshot = props.runtime.kind === "ready" ? props.runtime.snapshot : null;
-  const queuedCount = props.requests.kind === "ready" ? props.requests.items.length : 0;
+  const queuedCount = resolveHomeQueuedCount({
+    pendingCount: snapshot?.pending_count ?? null,
+    requestCount: props.requests.kind === "ready" ? props.requests.items.length : null
+  });
   const policyItems = props.policies.kind === "ready" ? props.policies.items : [];
   const managedInstalls = (snapshot?.managed_installs ?? []).filter((item) => isConnectableAppHarness(item.harness));
   const activeInstalls = managedInstalls.filter((item) => item.active);
@@ -241,7 +254,9 @@ function HomeWorkspace(props) {
   ).sort() : [];
   const clearHarnesses = activeInstalls.length > 0 ? activeInstalls.map((i) => i.harness) : observedHarnesses;
   const watchedAppsCount = activeInstalls.length > 0 ? activeInstalls.length : observedHarnesses.length;
-  const protectionState = snapshot ? protectionHealthFor(snapshot).state : "degraded";
+  const protectionState = useProtectionPresentationState(
+    snapshot ? protectionHealthFor(snapshot) : unavailableProtectionHealth()
+  );
   const state = reactExports.useMemo(
     () => deriveHomeState({
       hasActiveInstalls: activeInstalls.length > 0,
@@ -290,6 +305,7 @@ function HomeWorkspace(props) {
   }
   if (!snapshot) return null;
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-6", children: [
+    snapshot.protection_posture === "watch" ? /* @__PURE__ */ jsxRuntimeExports.jsx(WatchProtectionBanner, { onTurnProtectionOn: handleTurnProtectionOn }) : null,
     shareOpen && analyticsState.kind === "ready" ? /* @__PURE__ */ jsxRuntimeExports.jsx(
       EvidenceInsightsShareModal,
       {
@@ -379,7 +395,8 @@ function HomeWorkspace(props) {
                   ]
                 },
                 s.label
-              )) })
+              )) }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(ActionButton, { className: "mt-4", variant: "secondary", onClick: props.onOpenTodayEvidence, children: "Review today's activity" })
             ]
           }
         )
@@ -500,6 +517,9 @@ function ClearConfirmDialog(props) {
     ] })
   ] }) });
 }
+function resolveHomeQueuedCount(input) {
+  return Math.max(input.pendingCount ?? 0, input.requestCount ?? 0);
+}
 function deriveHomeState(input) {
   const { hasActiveInstalls, hasObservedHarnesses, protectionState, queuedCount, watchedAppsCount } = input;
   if (queuedCount > 0) {
@@ -525,6 +545,15 @@ function deriveHomeState(input) {
       heroStatus: "setup_gap",
       headline: "Finish setup",
       subheadline: "Guard detected apps but they need setup to be fully protected.",
+      ctaLabel: "Open Protect",
+      ctaTarget: "protect"
+    };
+  }
+  if (protectionState === "checking") {
+    return {
+      heroStatus: "checking",
+      headline: "Checking protection",
+      subheadline: "Guard is confirming local protection. This takes a moment.",
       ctaLabel: "Open Protect",
       ctaTarget: "protect"
     };
@@ -933,6 +962,7 @@ export {
   deriveHomeState,
   redactHomeArtifactLabel,
   resolveCloudUpsellVisible,
+  resolveHomeQueuedCount,
   resolveNewAppDiscoveries,
   safeLocalStorage
 };

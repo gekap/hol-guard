@@ -4,7 +4,35 @@
 
 from __future__ import annotations
 
-from typing import Literal, cast
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Literal, cast
+
+from .managed_controls_policy_bundle import (
+    MANAGED_CONTROLS_ACTIVE_STATE_KEY,
+    MANAGED_CONTROLS_LAST_GOOD_STATE_KEY,
+    MANAGED_CONTROLS_NEGOTIATED_CAPABILITIES_STATE_KEY,
+    MANAGED_CONTROLS_REVISION_STATE_KEY,
+    build_managed_controls_activation_state,
+    build_managed_controls_revision_state,
+    managed_controls_layers_from_activation_state,
+    managed_controls_revision_from_state,
+)
+from .policy_bundle_activation import (
+    PolicyBundleActivationRejectionError,
+    composed_managed_authority,
+    encoded_delivery_acknowledgement,
+    managed_delivery_matches_base,
+    published_managed_authority,
+)
+from .runtime.extension_control_authority import (
+    AuthorityHealth,
+    ExtensionControlAuthorityError,
+    ExtensionControlAuthorityView,
+)
+from .runtime.extension_control_contract import ControlLayerKind
+
+if TYPE_CHECKING:
+    from .managed_controls_policy_fields import ParsedManagedControlsPolicy
 
 # ruff: noqa: F403,F405
 from .action_lattice import guard_action_severity
@@ -196,6 +224,7 @@ def _bounded_non_consuming_policy_rows(
     artifact_id: str | None,
     artifact_hash: str | None,
     runtime_exact_match_key: str | None,
+    global_runtime_exact_match_key: str | None,
     workspace_key: str | None,
     workspace: str | None,
     publisher: str | None,
@@ -291,7 +320,7 @@ def _bounded_non_consuming_policy_rows(
                 _hash_partition_probes(
                     base_predicate="scope = 'global' and harness = ? and artifact_id = ?",
                     base_parameters=(harness_selector, artifact_selector),
-                    exact_hashes=(artifact_hash, runtime_exact_match_key),
+                    exact_hashes=(artifact_hash, global_runtime_exact_match_key),
                     exact_index="idx_policy_decisions_lookup_global",
                     legacy_index="idx_policy_decisions_lookup_global_legacy",
                     exact_first=True,
@@ -301,7 +330,7 @@ def _bounded_non_consuming_policy_rows(
             _hash_partition_probes(
                 base_predicate="scope = 'global' and harness = ? and artifact_id is null",
                 base_parameters=(harness_selector,),
-                exact_hashes=(artifact_hash, runtime_exact_match_key),
+                exact_hashes=(artifact_hash, global_runtime_exact_match_key),
                 exact_index="idx_policy_decisions_lookup_global",
                 legacy_index="idx_policy_decisions_lookup_global_legacy",
                 exact_first=True,
@@ -835,9 +864,14 @@ class StorePolicyMixin:
         policy_bundle_checkpoint: Mapping[str, object],
         update_last_good: bool,
         policy_bundle_last_error: Mapping[str, object] | None = None,
+        managed_controls_policy: ParsedManagedControlsPolicy | None = None,
+        managed_controls_negotiated_capabilities: frozenset[str] = frozenset(),
+        managed_controls_delivery: Mapping[str, object] | None = None,
+        managed_controls_publish: (Callable[[ExtensionControlAuthorityView, Callable[[], None]], object] | None) = None,
+        raise_on_rejection: bool = False,
         approval_gate_grant: ApprovalGateGrant | None = None,
         remote_write_authorized: bool = False,
-    ) -> bool:
+    ) -> dict[str, object] | None:
         """Atomically activate one authenticated policy bundle and its rows.
 
         The cached bundle is itself enforcement authority because policy
@@ -849,6 +883,16 @@ class StorePolicyMixin:
         partially activated bundle behind.
         """
 
+        def reject(
+            reason: str,
+            connection: sqlite3.Connection | None = None,
+        ) -> None:
+            if connection is not None:
+                connection.rollback()
+            if raise_on_rejection:
+                raise PolicyBundleActivationRejectionError(reason)
+            return None
+
         normalized_now, rows = self._prepared_remote_policy_rows(
             decisions,
             now,
@@ -859,7 +903,7 @@ class StorePolicyMixin:
 
         normalized_checkpoint = policy_bundle_acceptance_checkpoint(dict(policy_bundle))
         if dict(policy_bundle_checkpoint) != normalized_checkpoint:
-            return False
+            return reject("policy_bundle_checkpoint_mismatch")
         state_payloads: dict[str, object] = {
             "cloud_exceptions": [dict(item) for item in cloud_exceptions],
             "policy": {},
@@ -875,8 +919,34 @@ class StorePolicyMixin:
         encoded_payloads = {
             state_key: json.dumps(payload, allow_nan=False) for state_key, payload in state_payloads.items()
         }
-        with self._connect() as connection:
+        from .runtime.command_extensions import BUILT_IN_COMMAND_EXTENSION_REGISTRY
+
+        with self._extension_control_authority_lock(), self._connect() as connection:
             connection.execute("begin immediate")
+            managed_base_authority = self._read_extension_control_authority_locked(
+                BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest,
+            )
+            authority_row = connection.execute(
+                "select revision, snapshot_digest from extension_control_authority_snapshot where singleton = 1"
+            ).fetchone()
+            managed_base_snapshot = (
+                None
+                if authority_row is None
+                else (
+                    int(authority_row["revision"]),
+                    str(authority_row["snapshot_digest"]),
+                )
+            )
+            managed_authority_key: bytes | None = None
+            managed_revision = 0
+            if managed_controls_policy is not None:
+                if managed_base_authority.health is not AuthorityHealth.PROTECTED:
+                    return reject("managed_controls_authority_unprotected", connection)
+                if managed_base_snapshot is None:
+                    return reject("managed_controls_authority_snapshot_missing", connection)
+                managed_authority_key = self._authority_key(required=True)
+                if managed_authority_key is None:
+                    return reject("managed_controls_authority_key_unavailable", connection)
             checkpoint_row = connection.execute(
                 "select payload_json from sync_state where state_key = ?",
                 ("policy_bundle_acceptance_checkpoint",),
@@ -885,16 +955,143 @@ class StorePolicyMixin:
                 try:
                     existing_checkpoint = json.loads(str(checkpoint_row["payload_json"]))
                 except json.JSONDecodeError:
-                    connection.rollback()
-                    return False
+                    return reject("policy_bundle_checkpoint_invalid", connection)
                 if not isinstance(existing_checkpoint, dict) or not existing_checkpoint:
-                    connection.rollback()
-                    return False
+                    return reject("policy_bundle_checkpoint_invalid", connection)
                 from .policy_bundle_parser import policy_bundle_is_version_downgrade
 
                 if policy_bundle_is_version_downgrade(existing_checkpoint, dict(policy_bundle)):
-                    connection.rollback()
-                    return False
+                    return reject("bundle_version_downgrade", connection)
+            active_row = connection.execute(
+                "select payload_json from sync_state where state_key = ?",
+                (MANAGED_CONTROLS_ACTIVE_STATE_KEY,),
+            ).fetchone()
+            revision_row = connection.execute(
+                "select payload_json from sync_state where state_key = ?",
+                (MANAGED_CONTROLS_REVISION_STATE_KEY,),
+            ).fetchone()
+            if (active_row is not None or revision_row is not None) and managed_authority_key is None:
+                managed_authority_key = self._authority_key(required=True)
+                if managed_authority_key is None:
+                    return reject("managed_controls_authority_key_unavailable", connection)
+            previous_revision = 0
+            previous_bundle_hash: object = None
+            active_managed_layers = ()
+            if revision_row is not None:
+                assert managed_authority_key is not None
+                try:
+                    revision_state = json.loads(str(revision_row["payload_json"]))
+                    previous_revision = managed_controls_revision_from_state(
+                        revision_state,
+                        authority_key=managed_authority_key,
+                    )
+                except (json.JSONDecodeError, ExtensionControlAuthorityError):
+                    return reject("managed_controls_revision_state_invalid", connection)
+            if active_row is not None:
+                assert managed_base_authority is not None
+                assert managed_authority_key is not None
+                try:
+                    previous_active = json.loads(str(active_row["payload_json"]))
+                    active_managed_layers, active_revision = managed_controls_layers_from_activation_state(
+                        previous_active,
+                        catalog_digest=managed_base_authority.catalog_digest,
+                        authority_key=managed_authority_key,
+                    )
+                except (json.JSONDecodeError, ExtensionControlAuthorityError):
+                    return reject("managed_controls_activation_state_invalid", connection)
+                if revision_row is not None and active_revision != previous_revision:
+                    return reject("managed_controls_revision_state_mismatch", connection)
+                previous_revision = active_revision
+                previous_bundle_hash = previous_active.get("bundleHash")
+            if managed_controls_delivery is not None:
+                if managed_controls_policy is None or managed_base_authority is None:
+                    return reject("managed_controls_delivery_policy_missing", connection)
+                current_authority = composed_managed_authority(
+                    managed_base_authority,
+                    managed_layers=active_managed_layers,
+                    managed_revision=previous_revision,
+                )
+                if not managed_delivery_matches_base(
+                    managed_controls_delivery,
+                    policy_bundle=policy_bundle,
+                    policy=managed_controls_policy,
+                    base_authority=current_authority,
+                ):
+                    return reject("managed_controls_delivery_mismatch", connection)
+            if managed_controls_policy is not None:
+                assert managed_base_authority is not None
+                assert managed_base_snapshot is not None
+                assert managed_authority_key is not None
+                managed_revision = (
+                    previous_revision
+                    if previous_bundle_hash == policy_bundle.get("bundleHash") and previous_revision > 0
+                    else previous_revision + 1
+                )
+                managed_state = build_managed_controls_activation_state(
+                    dict(policy_bundle),
+                    managed_controls_policy,
+                    base_authority=managed_base_authority,
+                    managed_revision=managed_revision,
+                    negotiated_capabilities=managed_controls_negotiated_capabilities,
+                    authority_key=managed_authority_key,
+                    base_snapshot_digest=managed_base_snapshot[1],
+                )
+                encoded_payloads[MANAGED_CONTROLS_ACTIVE_STATE_KEY] = json.dumps(
+                    managed_state,
+                    allow_nan=False,
+                )
+                encoded_payloads[MANAGED_CONTROLS_NEGOTIATED_CAPABILITIES_STATE_KEY] = json.dumps(
+                    sorted(managed_controls_negotiated_capabilities),
+                    allow_nan=False,
+                )
+                encoded_payloads[MANAGED_CONTROLS_REVISION_STATE_KEY] = json.dumps(
+                    build_managed_controls_revision_state(
+                        managed_revision,
+                        authority_key=managed_authority_key,
+                    ),
+                    allow_nan=False,
+                )
+                if update_last_good:
+                    encoded_payloads[MANAGED_CONTROLS_LAST_GOOD_STATE_KEY] = json.dumps(
+                        managed_state,
+                        allow_nan=False,
+                    )
+            else:
+                managed_revision = previous_revision + 1 if active_row is not None else previous_revision
+                if managed_revision > 0:
+                    assert managed_authority_key is not None
+                    encoded_payloads[MANAGED_CONTROLS_REVISION_STATE_KEY] = json.dumps(
+                        build_managed_controls_revision_state(
+                            managed_revision,
+                            authority_key=managed_authority_key,
+                        ),
+                        allow_nan=False,
+                    )
+                connection.execute(
+                    "delete from sync_state where state_key in (?, ?)",
+                    (MANAGED_CONTROLS_ACTIVE_STATE_KEY, MANAGED_CONTROLS_NEGOTIATED_CAPABILITIES_STATE_KEY),
+                )
+            published_authority = None
+            if managed_controls_policy is not None or managed_controls_publish is not None:
+                assert managed_base_authority is not None
+                published_authority = published_managed_authority(
+                    managed_base_authority,
+                    policy=managed_controls_policy,
+                    managed_revision=managed_revision,
+                )
+            if managed_controls_delivery is not None:
+                if published_authority is None:
+                    return reject("managed_controls_delivery_authority_missing", connection)
+                try:
+                    encoded_payloads["policy_bundle_ack"] = encoded_delivery_acknowledgement(
+                        connection,
+                        delivery=managed_controls_delivery,
+                        policy_bundle=policy_bundle,
+                        published_authority=published_authority,
+                        observed_at=normalized_now,
+                    )
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    return reject("managed_controls_delivery_ack_invalid", connection)
             self._replace_remote_policy_rows_locked(connection, rows)
             for state_key, payload_json in encoded_payloads.items():
                 connection.execute(
@@ -907,13 +1104,21 @@ class StorePolicyMixin:
                     """,
                     (state_key, payload_json, normalized_now),
                 )
-        return True
+            if managed_controls_publish is not None:
+                assert published_authority is not None
+                managed_controls_publish(
+                    published_authority,
+                    connection.commit,
+                )
+        persisted_acknowledgement = json.loads(encoded_payloads["policy_bundle_ack"])
+        return persisted_acknowledgement if isinstance(persisted_acknowledgement, dict) else None
 
     def clear_policy_bundle_authority(
         self,
         now: str,
         *,
         policy_bundle_last_error: Mapping[str, object],
+        managed_controls_publish: (Callable[[ExtensionControlAuthorityView, Callable[[], None]], object] | None) = None,
     ) -> None:
         """Atomically remove all cached and materialized remote authority."""
 
@@ -927,10 +1132,101 @@ class StorePolicyMixin:
         encoded_payloads = {
             state_key: json.dumps(payload, allow_nan=False) for state_key, payload in state_payloads.items()
         }
+        managed_base_authority = None
+        managed_base_snapshot: tuple[int, str] | None = None
+        managed_base_snapshot_captured = False
+        from .runtime.command_extensions import BUILT_IN_COMMAND_EXTENSION_REGISTRY
+
+        managed_base_authority = self.read_extension_control_authority(
+            catalog_digest=BUILT_IN_COMMAND_EXTENSION_REGISTRY.catalog_digest,
+        )
+        with self._connect() as authority_connection:
+            authority_row = authority_connection.execute(
+                "select revision, snapshot_digest from extension_control_authority_snapshot where singleton = 1"
+            ).fetchone()
+        managed_base_snapshot_captured = True
+        if authority_row is not None:
+            managed_base_snapshot = (
+                int(authority_row["revision"]),
+                str(authority_row["snapshot_digest"]),
+            )
         with self._connect() as connection:
             connection.execute("begin immediate")
+            if managed_base_snapshot_captured:
+                authority_row = connection.execute(
+                    "select revision, snapshot_digest from extension_control_authority_snapshot where singleton = 1"
+                ).fetchone()
+                observed_base_snapshot = (
+                    None
+                    if authority_row is None
+                    else (
+                        int(authority_row["revision"]),
+                        str(authority_row["snapshot_digest"]),
+                    )
+                )
+                if observed_base_snapshot != managed_base_snapshot:
+                    connection.rollback()
+                    raise ExtensionControlAuthorityError("extension control authority changed during clear")
+            active_row = connection.execute(
+                "select payload_json from sync_state where state_key = ?",
+                (MANAGED_CONTROLS_ACTIVE_STATE_KEY,),
+            ).fetchone()
+            revision_row = connection.execute(
+                "select payload_json from sync_state where state_key = ?",
+                (MANAGED_CONTROLS_REVISION_STATE_KEY,),
+            ).fetchone()
+            managed_revision = 0
+            managed_authority_key = None
+            if active_row is not None or revision_row is not None:
+                managed_authority_key = self._authority_key(required=True)
+                if managed_authority_key is None:
+                    raise ExtensionControlAuthorityError("managed controls authority key is unavailable")
+            if revision_row is not None:
+                assert managed_authority_key is not None
+                try:
+                    revision_state = json.loads(str(revision_row["payload_json"]))
+                    managed_revision = managed_controls_revision_from_state(
+                        revision_state,
+                        authority_key=managed_authority_key,
+                    )
+                except (json.JSONDecodeError, ExtensionControlAuthorityError) as exc:
+                    connection.rollback()
+                    raise ExtensionControlAuthorityError("invalid managed controls revision") from exc
+            if active_row is not None:
+                assert managed_authority_key is not None
+                try:
+                    previous_active = json.loads(str(active_row["payload_json"]))
+                    _, active_revision = managed_controls_layers_from_activation_state(
+                        previous_active,
+                        catalog_digest=managed_base_authority.catalog_digest,
+                        authority_key=managed_authority_key,
+                    )
+                except (json.JSONDecodeError, ExtensionControlAuthorityError) as exc:
+                    connection.rollback()
+                    raise ExtensionControlAuthorityError("invalid managed controls activation") from exc
+                if revision_row is not None and active_revision != managed_revision:
+                    connection.rollback()
+                    raise ExtensionControlAuthorityError("managed controls revision mismatch")
+                managed_revision = active_revision + 1
+            if managed_revision > 0:
+                assert managed_authority_key is not None
+                encoded_payloads[MANAGED_CONTROLS_REVISION_STATE_KEY] = json.dumps(
+                    build_managed_controls_revision_state(
+                        managed_revision,
+                        authority_key=managed_authority_key,
+                    ),
+                    allow_nan=False,
+                )
             self._replace_remote_policy_rows_locked(connection, ())
-            connection.execute("delete from sync_state where state_key in ('policy_bundle', 'policy_bundle_ack')")
+            connection.execute(
+                "delete from sync_state where state_key in (?, ?, ?, ?)",
+                (
+                    "policy_bundle",
+                    "policy_bundle_ack",
+                    MANAGED_CONTROLS_ACTIVE_STATE_KEY,
+                    MANAGED_CONTROLS_NEGOTIATED_CAPABILITIES_STATE_KEY,
+                ),
+            )
             for state_key, payload_json in encoded_payloads.items():
                 connection.execute(
                     """
@@ -941,6 +1237,21 @@ class StorePolicyMixin:
                       updated_at = excluded.updated_at
                     """,
                     (state_key, payload_json, normalized_now),
+                )
+            if managed_controls_publish is not None:
+                assert managed_base_authority is not None
+                local_layers = tuple(
+                    layer for layer in managed_base_authority.layers if layer.kind is ControlLayerKind.LOCAL_ADMIN
+                )
+                managed_controls_publish(
+                    ExtensionControlAuthorityView(
+                        managed_base_authority.health,
+                        managed_base_authority.revision,
+                        managed_base_authority.catalog_digest,
+                        local_layers,
+                        managed_revision,
+                    ),
+                    connection.commit,
                 )
 
     def _prepared_remote_policy_rows(
@@ -1153,6 +1464,14 @@ class StorePolicyMixin:
             if artifact_hash is not None and runtime_exact_match_context is not None
             else None
         )
+        global_runtime_exact_match_key = (
+            _global_runtime_scoped_exact_match_key(
+                artifact_id,
+                runtime_tool_action_portable_match_context(runtime_exact_match_context),
+            )
+            if artifact_hash is not None and runtime_exact_match_context is not None
+            else None
+        )
         events: list[tuple[str, dict[str, object]]] = []
         selected_payload: dict[str, object] | None = None
         ignored_local_integrity: dict[str, object] | None = None
@@ -1283,6 +1602,7 @@ class StorePolicyMixin:
                     artifact_id=artifact_id,
                     artifact_hash=artifact_hash,
                     runtime_exact_match_key=runtime_exact_match_key,
+                    global_runtime_exact_match_key=global_runtime_exact_match_key,
                     workspace_key=workspace_key,
                     workspace=workspace,
                     publisher=publisher,
@@ -1372,8 +1692,8 @@ class StorePolicyMixin:
                         artifact_id,
                         action_family_key,
                         artifact_hash,
-                        runtime_exact_match_key,
-                        runtime_exact_match_key,
+                        global_runtime_exact_match_key,
+                        global_runtime_exact_match_key,
                         current_time,
                         _NON_CONSUMING_POLICY_MATCH_LIMIT + 1 if not consume_one_shot else -1,
                     ),
@@ -1456,6 +1776,7 @@ class StorePolicyMixin:
                         requested_artifact_hash=artifact_hash,
                         requested_runtime_exact_match_key=runtime_exact_match_key,
                         requested_portable_exact_match_key=portable_runtime_exact_match_key,
+                        requested_global_exact_match_key=global_runtime_exact_match_key,
                     ):
                         continue
                     integrity_result = self._policy_integrity_result_for_row(
@@ -1552,6 +1873,7 @@ class StorePolicyMixin:
                     requested_artifact_hash=artifact_hash,
                     requested_runtime_exact_match_key=runtime_exact_match_key,
                     requested_portable_exact_match_key=portable_runtime_exact_match_key,
+                    requested_global_exact_match_key=global_runtime_exact_match_key,
                 ):
                     continue
                 integrity_result = self._policy_integrity_result_for_row(

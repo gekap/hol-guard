@@ -7,7 +7,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from ..compound_git_inspection import is_low_risk_standalone_git_routine
+from ..compound_git_inspection import (
+    canonical_home_git_c_path,
+    is_low_risk_standalone_git_routine,
+    is_safe_standalone_git_object_existence_query,
+)
 from ..git_execution_safety import (
     git_binary_path_is_trusted,
     git_config_routing_environment_is_clean,
@@ -22,7 +26,12 @@ from .tool_action_requests import (
 )
 
 
-def _looks_like_safe_standalone_git_routine(command_text: str, *, cwd: Path | None) -> bool:
+def _looks_like_safe_standalone_git_routine(
+    command_text: str,
+    *,
+    cwd: Path | None,
+    home_dir: Path | None = None,
+) -> bool:
     if any(marker in command_text for marker in ("$(", "`", "<(", ">(", ";", "|", "\n")):
         return False
     if "&" in command_text:
@@ -33,12 +42,15 @@ def _looks_like_safe_standalone_git_routine(command_text: str, *, cwd: Path | No
         execution_cwd = cwd.resolve()
     except (OSError, RuntimeError):
         return False
+    if is_safe_standalone_git_object_existence_query(command_text, cwd=execution_cwd):
+        return True
     context = model_shell_execution_context(
         command_text,
         cwd=execution_cwd,
         workspace_root=execution_cwd,
     )
-    return is_low_risk_standalone_git_routine(context)
+    trusted_home = home_dir if canonical_home_git_c_path(command_text) is not None else None
+    return is_low_risk_standalone_git_routine(context, home_dir=trusted_home)
 
 
 def _looks_like_safe_git_status_command(

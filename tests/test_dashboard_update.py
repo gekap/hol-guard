@@ -18,6 +18,7 @@ import pytest
 
 from codex_plugin_scanner.guard.adapters.base import HarnessContext
 from codex_plugin_scanner.guard.approval_gate import update_settings as update_approval_gate_settings
+from codex_plugin_scanner.guard.cli import update_commands
 from codex_plugin_scanner.guard.cli.update_commands import build_guard_update_status_payload
 from codex_plugin_scanner.guard.config import load_guard_config
 from codex_plugin_scanner.guard.daemon import GuardDaemonServer
@@ -144,6 +145,89 @@ def test_build_guard_update_status_payload_shape(monkeypatch: pytest.MonkeyPatch
     assert payload["latest_version"] == "1.2.4"
     assert payload["auto_updatable"] is True
     assert payload["update_available"] is True
+
+
+@pytest.mark.parametrize(
+    ("installer_root", "marker_name", "expected_installer"),
+    [
+        ("pipx/venvs/hol-guard", "pipx_metadata.json", "pipx"),
+        ("uv/tools/hol-guard", "pyvenv.cfg", "uv"),
+    ],
+)
+def test_installer_kind_uses_authenticated_runtime_path_when_prefix_isolated(
+    installer_root: str,
+    marker_name: str,
+    expected_installer: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_prefix = tmp_path / "python-runtime"
+    base_prefix.mkdir()
+    runtime_root = tmp_path / installer_root
+    runtime_path = runtime_root / "lib/python3/site-packages/guard/update_commands.py"
+    runtime_path.parent.mkdir(parents=True)
+    (runtime_root / marker_name).write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(update_commands.sys, "prefix", str(base_prefix))
+    monkeypatch.setattr(update_commands, "_runtime_package_path", lambda: runtime_path)
+
+    assert update_commands._installer_kind() == expected_installer
+
+
+def test_installer_kind_rejects_unmarked_runtime_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_prefix = tmp_path / "python-runtime"
+    base_prefix.mkdir()
+    runtime_path = tmp_path / "pipx/venvs/hol-guard/lib/python3/site-packages/guard/update_commands.py"
+    runtime_path.parent.mkdir(parents=True)
+    monkeypatch.setattr(update_commands.sys, "prefix", str(base_prefix))
+    monkeypatch.setattr(update_commands, "_runtime_package_path", lambda: runtime_path)
+
+    assert update_commands._installer_kind() == "pip"
+
+
+def test_update_status_recovers_pipx_authority_from_isolated_daemon_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_prefix = tmp_path / "python-runtime"
+    base_prefix.mkdir()
+    runtime_root = tmp_path / "pipx/venvs/hol-guard"
+    runtime_path = runtime_root / "lib/python3/site-packages/guard/update_commands.py"
+    runtime_path.parent.mkdir(parents=True)
+    (runtime_root / "pipx_metadata.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(update_commands.sys, "prefix", str(base_prefix))
+    monkeypatch.setattr(update_commands, "_runtime_package_path", lambda: runtime_path)
+
+    def status_distribution(**kwargs: object) -> update_commands.InstalledDistribution:
+        assert kwargs["installer"] == "pipx"
+        return update_commands.InstalledDistribution(
+            name="hol-guard",
+            version="3.0.0a160",
+            root=runtime_root,
+        )
+
+    monkeypatch.setattr(update_commands, "_status_installed_distribution", status_distribution)
+    monkeypatch.setattr(
+        update_commands,
+        "_version_check_payload",
+        lambda current_version, **_kwargs: {
+            "source": "pypi",
+            "status": "current",
+            "current_version": current_version,
+            "latest_version": current_version,
+            "update_available": False,
+        },
+    )
+
+    payload = build_guard_update_status_payload(guard_home=tmp_path / "guard-home")
+
+    assert payload["installer"] == "pipx"
+    assert payload["current_version"] == "3.0.0a160"
+    assert payload["auto_updatable"] is True
+    assert payload["blocked_reason"] is None
+    assert "reason_code" not in payload
 
 
 def test_update_status_uses_persisted_alpha_channel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -947,7 +1031,10 @@ def test_dashboard_update_runner_preserves_state_for_trusted_successful_restart(
         assert state_path.read_text(encoding="utf-8") == state_text
         calls.append("run_update")
         update_kwargs.update(kwargs)
-        return {"status": "updated", "daemon_refresh": {"status": "restarted"}}, 0
+        return {
+            "status": "updated",
+            "daemon_refresh": {"status": "restarted", "runtime_verified": True},
+        }, 0
 
     monkeypatch.setattr(runner_module.update_commands, "run_guard_update", fake_run_guard_update)
     isolated_refresh = MagicMock()
@@ -993,6 +1080,59 @@ def test_dashboard_update_runner_preserves_state_for_trusted_successful_restart(
     ]
 
 
+def test_dashboard_update_runner_accepts_verified_retained_newer_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from codex_plugin_scanner.guard.daemon import dashboard_update_runner as runner_module
+
+    guard_home = tmp_path / "guard-home"
+    guard_home.mkdir()
+    update_token = "d" * 64
+    written_payload: dict[str, object] = {}
+    monkeypatch.setattr(runner_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runner_module, "claim_dashboard_update_lock", lambda _home, *, token: True)
+    monkeypatch.setattr(runner_module, "retire_all_guard_daemons_for_home", lambda _home: [])
+    monkeypatch.setattr(runner_module, "_retire_guard_daemon_pid", lambda _pid, **_kwargs: True)
+    monkeypatch.setattr(runner_module, "guard_daemon_retirement_is_complete", lambda _home: True)
+    monkeypatch.setattr(
+        runner_module.update_commands,
+        "run_guard_update",
+        lambda **_kwargs: (
+            {
+                "status": "updated",
+                "daemon_refresh": {
+                    "status": "retained_newer_runtime",
+                    "runtime_verified": True,
+                },
+            },
+            0,
+        ),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "write_dashboard_update_outcome",
+        lambda _home, payload: written_payload.update(payload),
+    )
+    monkeypatch.setattr(runner_module, "clear_dashboard_update_lock", MagicMock(return_value=True))
+
+    exit_code = runner_module.main(
+        [
+            "--guard-home",
+            str(guard_home),
+            "--daemon-pid",
+            "5151",
+            "--daemon-port",
+            "5474",
+            "--update-token",
+            update_token,
+        ]
+    )
+
+    assert exit_code == 0
+    assert written_payload["status"] == "updated"
+
+
 def test_dashboard_update_runner_blocks_install_when_daemon_retirement_is_unproven(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1004,7 +1144,7 @@ def test_dashboard_update_runner_blocks_install_when_daemon_retirement_is_unprov
     update_token = "9" * 64
     written_payload: dict[str, object] = {}
     run_update = MagicMock()
-    isolated_refresh = MagicMock(return_value=({"status": "restarted"}, None))
+    isolated_refresh = MagicMock(return_value=({"status": "restarted", "runtime_verified": True}, None))
 
     monkeypatch.setattr(runner_module.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(runner_module, "claim_dashboard_update_lock", lambda _home, *, token: True)
@@ -1060,7 +1200,7 @@ def test_dashboard_update_runner_exit_zero_requires_embedded_daemon_restart(
         "run_guard_update",
         lambda **kwargs: ({"status": "skipped"}, 0),
     )
-    isolated_refresh = MagicMock(return_value=({"status": "restarted"}, "restarted"))
+    isolated_refresh = MagicMock(return_value=({"status": "restarted", "runtime_verified": True}, "restarted"))
     legacy_restart = MagicMock()
     monkeypatch.setattr(runner_module.update_commands, "refresh_guard_daemon_after_update", isolated_refresh)
     monkeypatch.setattr(runner_module, "ensure_guard_daemon_after_update", legacy_restart)
@@ -1174,7 +1314,7 @@ def test_dashboard_update_runner_failure_stderr_never_renders_payload_details(
         "run_guard_update",
         lambda **kwargs: ({"status": "failed", **failure_detail}, 1),
     )
-    isolated_refresh = MagicMock(return_value=({"status": "restarted"}, "restarted"))
+    isolated_refresh = MagicMock(return_value=({"status": "restarted", "runtime_verified": True}, "restarted"))
     legacy_restart = MagicMock()
     clear_lock = MagicMock(return_value=True)
     monkeypatch.setattr(runner_module.update_commands, "refresh_guard_daemon_after_update", isolated_refresh)
@@ -1320,7 +1460,7 @@ def test_status_payload_blocks_python_incompatible_latest_release(
     )
     monkeypatch.setattr(
         "codex_plugin_scanner.guard.cli.update_commands._latest_compatible_release_version",
-        lambda current, runtime: None,
+        lambda current, runtime, **_kwargs: None,
     )
     monkeypatch.setattr(
         "codex_plugin_scanner.guard.cli.update_commands._runtime_python_version",

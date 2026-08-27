@@ -9,7 +9,7 @@ import hashlib
 import hmac
 import sqlite3
 import sys
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,7 +26,12 @@ from .runtime.extension_control_authority import (
     anchor_to_json,
     layers_from_json,
 )
-from .runtime.extension_control_contract import ControlLayerKind, ExtensionControlLayer
+from .runtime.extension_control_contract import (
+    ControlLayerKind,
+    ControlState,
+    ExtensionControl,
+    ExtensionControlLayer,
+)
 from .runtime.extension_control_resolver import compose_control_layers
 from .store_base import (
     EncryptedFileSecretStore,
@@ -43,14 +48,31 @@ _MAX_CONTROLS_PER_LAYER = 512
 _MAX_SERIALIZED_LAYERS_BYTES = 256 * 1024
 
 
+def preserve_migrated_extension_control(
+    control: ExtensionControl,
+    *,
+    previous_manifest: Mapping[str, str],
+    current_manifest: Mapping[str, str],
+) -> bool:
+    """Keep disabled controls and unchanged/unknown enabled allows across catalog upgrades."""
+
+    key_name = f"{control.target.kind.value}:{control.target.target_id}"
+    if key_name not in current_manifest:
+        return False
+    previous_fingerprint = previous_manifest.get(key_name)
+    return control.state is ControlState.DISABLED or previous_fingerprint in {None, current_manifest[key_name]}
+
+
 class _ExtensionControlAuthoritySupportMixin:
+    def _require_compatible_extension_control_schema(self) -> None:
+        with self._connect() as connection:
+            ensure_extension_control_authority_schema(connection)
+
     def _authority_key(self, *, required: bool) -> bytes | None:
         try:
             value = self._secret_store().get_secret(self._key_ref())
         except Exception as exc:
-            if required:
-                raise ExtensionControlAuthorityError("extension control credential store unavailable") from exc
-            raise
+            raise ExtensionControlAuthorityError("extension control credential store unavailable") from exc
         if value is None:
             if required:
                 raise ExtensionControlAuthorityError("extension control authentication key missing")
@@ -77,20 +99,19 @@ class _ExtensionControlAuthoritySupportMixin:
     def _secret_store(self) -> SecretStore:
         current = self._extension_control_authority_secret_store
         if current is None:
-            if sys.platform == "darwin":
-                fallback = EncryptedFileSecretStore(cast(Path, self.guard_home))
-                if bool(getattr(self, "_allow_system_keyring", False)):
-                    current = MigratingFallbackSecretStore(
-                        SystemKeyringSecretStore(service_name="hol-guard.extension-control-authority"),
-                        fallback,
-                    )
-                else:
-                    current = fallback
+            fallback = EncryptedFileSecretStore(cast(Path, self.guard_home))
+            system = SystemKeyringSecretStore(service_name="hol-guard.extension-control-authority")
+            if sys.platform == "darwin" and not bool(getattr(self, "_allow_system_keyring", False)):
+                # Passive macOS reads must never trigger Keychain UI. Explicit account
+                # actions opt in to the migrating wrapper below.
+                current = fallback
             else:
-                current = SystemKeyringSecretStore(service_name="hol-guard.extension-control-authority")
+                # Persist every new authority secret in Guard's owner-only vault while
+                # retaining the OS keyring as a best-effort legacy source. This makes
+                # daemon, hook, and terminal processes converge on one prompt-free copy
+                # instead of flapping when a session keyring is temporarily unavailable.
+                current = MigratingFallbackSecretStore(system, fallback)
             self._extension_control_authority_secret_store = current
-        if isinstance(current, SystemKeyringSecretStore) and not current._is_available():
-            raise RuntimeError("extension control credential store unavailable")
         return current
 
     def legacy_extension_control_authority_secret_migration_required(self) -> bool:

@@ -171,6 +171,45 @@ def test_fresh_local_allow_satisfies_current_reapproval_once() -> None:
     assert result.should_claim is True
 
 
+def test_durable_exact_allow_satisfies_identical_current_reapproval() -> None:
+    result = evaluate_approval_reuse(
+        "require-reapproval",
+        "allow",
+        durable_exact_approval=True,
+    )
+
+    assert result.action == "allow"
+    assert result.status == "accepted"
+    assert result.reason_code == APPROVAL_REUSE_ACCEPTED
+    assert result.should_claim is True
+
+
+def test_changed_durable_exact_allow_cannot_satisfy_reapproval() -> None:
+    result = evaluate_approval_reuse(
+        "require-reapproval",
+        "allow",
+        validation_reason="approval_reuse_content_changed",
+        durable_exact_approval=True,
+    )
+
+    assert result.action == "require-reapproval"
+    assert result.status == "rejected"
+    assert result.reason_code == "approval_reuse_content_changed"
+
+
+@pytest.mark.parametrize("current_action", ("sandbox-required", "block"))
+def test_durable_exact_allow_never_lowers_terminal_enforcement(current_action: str) -> None:
+    result = evaluate_approval_reuse(
+        current_action,
+        "allow",
+        durable_exact_approval=True,
+    )
+
+    assert result.action == current_action
+    assert result.status == "rejected"
+    assert result.should_claim is False
+
+
 @pytest.mark.parametrize("current_action", ("sandbox-required", "block"))
 def test_fresh_local_allow_never_lowers_enforcement(current_action: str) -> None:
     result = evaluate_approval_reuse(
@@ -1278,6 +1317,7 @@ def test_non_consuming_policy_lookup_is_bounded_and_fails_closed_on_match_overfl
             artifact_id="codex:project:tool-action:bounded",
             artifact_hash=_approval_context_token(content="sha256:bounded"),
             runtime_exact_match_key=None,
+            global_runtime_exact_match_key=None,
             workspace_key=None,
             workspace=None,
             publisher=None,
@@ -1343,6 +1383,7 @@ def test_non_consuming_policy_lookup_miss_uses_only_fully_constrained_scope_prob
             artifact_id="codex:project:tool-action:bounded-miss",
             artifact_hash=current_hash,
             runtime_exact_match_key="runtime-exact:current",
+            global_runtime_exact_match_key="runtime-global-exact:current",
             workspace_key="workspace:sha256:current",
             workspace="/workspace/current",
             publisher="publisher-current",
@@ -1470,6 +1511,7 @@ def test_non_consuming_policy_probe_partitions_preserve_every_scope_selector(tmp
             artifact_id=artifact_id,
             artifact_hash=context_hash,
             runtime_exact_match_key=runtime_hash,
+            global_runtime_exact_match_key=runtime_hash,
             workspace_key="workspace:sha256:current",
             workspace="/workspace/current",
             publisher="publisher-current",

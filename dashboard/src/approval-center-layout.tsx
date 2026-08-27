@@ -1,15 +1,14 @@
-import { lazy, Suspense, useCallback, useState } from "react";
+import { Suspense, useCallback, useState } from "react";
 import type { ReactNode } from "react";
-import { ShellFooter } from "./shell-footer";
-import { ShellHeader, ShellSidebar } from "./approval-center-primitives";
+
 import type { AppView } from "./approval-center-primitives";
+import { ShellFooter } from "./shell-footer";
+import { ShellNavigation } from "./shell-navigation";
 import { ReceiptsWorkspace } from "./receipts-workspace";
 import { ReviewWorkspace } from "./review-workspace";
 import { QueueConnectionError } from "./queue-connection-error";
-
-const McpPolicyRequestPanel = lazy(() =>
-  import("./mcp-policy-request-panel").then((m) => ({ default: m.McpPolicyRequestPanel })),
-);
+import { ErrorBoundary } from "./error-boundary";
+import { lazyWorkspace } from "./lazy-workspace";
 import type { BulkGateCredentials } from "./approval-gate-utils";
 import type {
   GuardApprovalGatePublicConfig,
@@ -23,6 +22,12 @@ import type {
   DecisionScope,
 } from "./guard-types";
 import { useGuardUpdate } from "./guard-update-panel";
+import { updateSettings } from "./guard-api";
+import { WatchProtectionBanner } from "./watch-protection-banner";
+
+const McpPolicyRequestPanel = lazyWorkspace("mcp-policy-request-panel", () =>
+  import("./mcp-policy-request-panel").then((m) => ({ default: m.McpPolicyRequestPanel })),
+);
 
 type RequestState =
   | { kind: "loading" }
@@ -97,6 +102,19 @@ type LayoutProps = {
   onGuardReconnected?: () => void;
   enableUpdateStatus?: boolean;
 };
+
+function InboxWatchBanner(props: { onRestored?: () => void; onOpenSettings: () => void }) {
+  const handleTurnOn = useCallback(() => {
+    void updateSettings({ protection_posture: "protected" })
+      .then(() => {
+        props.onRestored?.();
+      })
+      .catch(() => {
+        props.onOpenSettings();
+      });
+  }, [props.onOpenSettings, props.onRestored]);
+  return <WatchProtectionBanner onTurnProtectionOn={handleTurnOn} />;
+}
 
 function renderInboxContent(props: LayoutProps): ReactNode {
   if (props.requests.kind === "loading") {
@@ -217,23 +235,24 @@ export function ApprovalCenterLayout(props: LayoutProps) {
     }
   });
   const queuedItems = props.requests.kind === "ready" ? props.requests.items : [];
-  const needsFullQueue = props.view === "inbox";
   let queuedCount = 0;
-  if (needsFullQueue && props.requests.kind === "ready") {
-    queuedCount = queuedItems.length;
-  } else if (props.runtime.kind === "ready") {
+  if (props.runtime.kind === "ready") {
     queuedCount = props.runtime.snapshot.pending_count;
   } else {
     queuedCount = queuedItems.length;
   }
 
+  const handleOpenSettings = useCallback(() => {
+    props.onNavigate("/settings");
+  }, [props.onNavigate]);
+
   const handleToggleSidebar = useCallback(() => {
-    setSidebarCollapsed((prev) => {
-      const next = !prev;
+    setSidebarCollapsed((previous) => {
+      const next = !previous;
       try {
         localStorage.setItem("guard-sidebar-collapsed", String(next));
       } catch {
-        // ignore
+        // Local storage is optional in hardened browser contexts.
       }
       return next;
     });
@@ -243,32 +262,26 @@ export function ApprovalCenterLayout(props: LayoutProps) {
     guardVersion,
     updateStatus,
     updatePhase,
+    updateError,
     onUpdateGuard,
     onReinstallGuard,
   } = useGuardUpdate({ onReconnected: props.onGuardReconnected, enabled: props.enableUpdateStatus });
 
   return (
     <div className="min-h-screen bg-white text-brand-dark">
-      <ShellHeader
-        queuedCount={queuedCount}
-        view={props.view}
-        onNavigate={props.onNavigate}
-        guardVersion={guardVersion}
-        updateStatus={updateStatus}
-        updatePhase={updatePhase}
-        onUpdateGuard={onUpdateGuard}
-        onReinstallGuard={onReinstallGuard}
-      />
-      <ShellSidebar
+      <ShellNavigation
         queuedCount={queuedCount}
         view={props.view}
         collapsed={sidebarCollapsed}
         onToggleCollapse={handleToggleSidebar}
+        onNavigate={props.onNavigate}
         guardVersion={guardVersion}
         updateStatus={updateStatus}
         updatePhase={updatePhase}
+        updateError={updateError}
         onUpdateGuard={onUpdateGuard}
         onReinstallGuard={onReinstallGuard}
+        approvalGate={props.approvalGate ?? null}
         cloudUserProfile={
           props.runtime.kind === "ready"
             ? props.runtime.snapshot.cloud_user_profile
@@ -286,11 +299,24 @@ export function ApprovalCenterLayout(props: LayoutProps) {
         }
       />
       <div
-        className={`flex flex-col transition-all duration-200 lg:min-h-screen ${sidebarCollapsed ? "lg:pl-20" : "lg:pl-64"}`}
+        className="guard-shell-content flex flex-col"
+        data-sidebar-collapsed={sidebarCollapsed ? "true" : "false"}
       >
-        <main id="main-content" className="flex-1 p-4 sm:p-6 lg:p-8" tabIndex={-1}>
-          <div className={props.view === "inbox" ? "mx-auto max-w-none" : "mx-auto max-w-6xl"}>
-            {renderViewContent(props)}
+        <main id="main-content" className="guard-shell-main flex-1" tabIndex={-1}>
+          <div className="guard-shell-workspace" data-view={props.view}>
+            {props.view === "inbox"
+              && props.runtime.kind === "ready"
+              && props.runtime.snapshot.protection_posture === "watch" ? (
+              <div className="mb-4">
+                <InboxWatchBanner
+                  onRestored={props.onGuardReconnected}
+                  onOpenSettings={handleOpenSettings}
+                />
+              </div>
+            ) : null}
+            <ErrorBoundary key={props.view} onReset={props.onGoHome}>
+              {renderViewContent(props)}
+            </ErrorBoundary>
           </div>
         </main>
         <ShellFooter />

@@ -1,4 +1,4 @@
-import { r as reactExports, j as jsxRuntimeExports, aq as fetchApprovalPage, ar as fetchPolicy, q as guardActionDisposition, p as protectionHealthFor, as as HiMiniArrowLeft, c as HiMiniChevronRight, e as harnessDisplayName, m as GuardHero, Q as ProofStrip, at as HiMiniHome, K as HiMiniBolt, $ as HiMiniAdjustmentsHorizontal, S as SectionLabel, A as ActionButton, o as HiMiniShieldCheck, s as formatRelativeTime, J as HiMiniExclamationTriangle, au as guardActionPresentation, L as Badge, av as DEFAULT_FILTER_STATE, aw as filterEvidence, ax as sortEvidence, ay as computeMetrics, az as CommandActivityWorkspace, i as EmptyState, aA as EvidenceFilterBar, aB as EvidenceInsightStrip, aC as EvidenceActionList, aD as EvidenceActionDetail, F as useFocusTrap, aE as policyIdentityKey, B as HiMiniCloud, aF as HiMiniChartBar, aj as Tag, l as HiMiniCheckCircle, T as HiMiniXCircle, aG as runHarnessAction, aH as GuardHarnessActionError, aI as HiMiniRocketLaunch, ao as HiMiniArrowPath, aJ as HiMiniTrash, aK as clearLabelForScope, aL as formatHarnessCommand } from "../guard-dashboard.js";
+import { r as reactExports, j as jsxRuntimeExports, aU as fetchApprovalPage, aV as fetchPolicy, v as guardActionDisposition, p as protectionHealthFor, k as useProtectionPresentationState, aP as HiMiniArrowLeft, c as HiMiniChevronRight, i as harnessDisplayName, q as GuardHero, _ as ProofStrip, aW as HiMiniHome, N as HiMiniBolt, aa as HiMiniAdjustmentsHorizontal, S as SectionLabel, A as ActionButton, t as HiMiniShieldCheck, w as formatRelativeTime, M as HiMiniExclamationTriangle, aX as guardActionPresentation, P as Badge, aY as DEFAULT_FILTER_STATE, aZ as filterEvidence, a_ as sortEvidence, a$ as computeMetrics, b0 as CommandActivityWorkspace, m as EmptyState, b1 as EvidenceFilterBar, b2 as EvidenceInsightStrip, b3 as EvidenceActionList, b4 as EvidenceActionDetail, K as useFocusTrap, b5 as policyIdentityKey, I as HiMiniCloud, b6 as HiMiniChartBar, ax as Tag, o as HiMiniCheckCircle, a0 as HiMiniXCircle, b7 as runHarnessAction, b8 as GuardHarnessActionError, b9 as HiMiniRocketLaunch, aC as HiMiniArrowPath, ba as HiMiniTrash, bb as clearLabelForScope, bc as formatHarnessCommand } from "../guard-dashboard.js";
 import { a as appSetupTarget } from "./harness-setup-target.js";
 function ActivityModeButton(props) {
   const active = props.mode === props.value;
@@ -78,16 +78,22 @@ function resolveHeroStatus(status, protectionState) {
   if (status === "needs_setup") return "setup_gap";
   return "needs_review";
 }
-function resolveHeroHeadline(status, harness, isObserved, protectionState) {
+function resolveHeroHeadline(status, harness, isObserved, protectionState, limited) {
+  if (status === "active" && protectionState === "protected" && limited) {
+    return `${harnessDisplayName(harness)} is limited`;
+  }
   if (status === "active" && protectionState === "protected") return `${harnessDisplayName(harness)} is protected`;
+  if (status === "active" && protectionState === "checking") return `Checking ${harnessDisplayName(harness)} protection`;
   if (status === "active" && protectionState === "partial") return `${harnessDisplayName(harness)} is partially protected`;
   if (status === "active") return `${harnessDisplayName(harness)} protection is degraded`;
   if (status === "needs_setup") return `${harnessDisplayName(harness)} needs setup`;
   if (isObserved) return `${harnessDisplayName(harness)} is observed`;
   return harnessDisplayName(harness);
 }
-function resolveHeroSubheadline(status, isObserved, protectionState) {
+function resolveHeroSubheadline(status, isObserved, protectionState, honestySentence) {
+  if (status === "active" && honestySentence) return honestySentence;
   if (status === "active" && protectionState === "protected") return "All required protection checks have current proof.";
+  if (status === "active" && protectionState === "checking") return "Guard is confirming local protection. This takes a moment.";
   if (status === "active" && protectionState === "partial") return "Core protection passes, but decision-stream evidence is incomplete.";
   if (status === "active") return "One or more required protection checks failed or remain unproven.";
   if (status === "needs_setup") return "Finish setup so Guard can protect this app.";
@@ -102,7 +108,7 @@ function resolveHeroCta(opts) {
       " pending"
     ] });
   }
-  if (opts.status === "needs_setup" || opts.status === "active" && opts.protectionState !== "protected") {
+  if (opts.status === "needs_setup" || opts.status === "active" && opts.protectionState !== "protected" && opts.protectionState !== "checking") {
     return /* @__PURE__ */ jsxRuntimeExports.jsx(ActionButton, { onClick: opts.onGoSettings, "data-primary": "true", children: "Open Settings" });
   }
   return /* @__PURE__ */ jsxRuntimeExports.jsx(ActionButton, { onClick: opts.onGoActivity, "data-primary": "true", children: "View Activity" });
@@ -210,10 +216,12 @@ function AppDetailWorkspace(props) {
   const policyError = harnessPolicy.kind === "error" ? harnessPolicy.message : null;
   const status = isActive ? "active" : install !== void 0 ? "needs_setup" : isObserved ? "observed" : "unknown";
   const appProtection = protectionHealthFor(runtime, harness);
-  const protectionState = appProtection.state;
+  const protectionState = useProtectionPresentationState(appProtection);
+  const capability = runtime.protection_capabilities?.find((item) => item.harness === harness);
+  const limited = capability?.limited === true;
   const heroStatus = resolveHeroStatus(status, protectionState);
-  const heroHeadline = resolveHeroHeadline(status, harness, isObserved, protectionState);
-  const heroSub = resolveHeroSubheadline(status, isObserved, protectionState);
+  const heroHeadline = resolveHeroHeadline(status, harness, isObserved, protectionState, limited);
+  const heroSub = resolveHeroSubheadline(status, isObserved, protectionState, capability?.honesty_sentence);
   const handleTabChange = reactExports.useCallback((next) => {
     const currentIndex = tabOrder.indexOf(activeTab);
     const nextIndex = tabOrder.indexOf(next);

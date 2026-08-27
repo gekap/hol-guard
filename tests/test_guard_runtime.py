@@ -57,6 +57,7 @@ from codex_plugin_scanner.guard.models import (
     PolicyDecision,
 )
 from codex_plugin_scanner.guard.policy import decide_action, decide_action_with_v2
+from codex_plugin_scanner.guard.policy_bundle_delivery import policy_bundle_acknowledgement_payload
 from codex_plugin_scanner.guard.policy_bundle_parser import (
     payload_hash_for_policy_bundle,
     validated_policy_bundle_payload,
@@ -4016,6 +4017,9 @@ clearer UX and an implementation plan with technical references.
         store = GuardStore(tmp_path / "guard-home")
         call_order: list[str] = []
 
+        def managed_controls_publish(_view: object, _commit: object) -> object:
+            return object()
+
         shared_auth_context = {
             "sync_url": "https://hol.org/api/guard/receipts/sync",
             "access_token": "oauth-access-token-1",
@@ -4082,6 +4086,8 @@ clearer UX and an implementation plan with technical references.
             assert persist_connect_state is False
             call_order.append("receipts")
             assert auth_context is shared_auth_context
+            assert _kwargs["managed_controls_publish"] is managed_controls_publish
+            assert _kwargs["force_aibom"] is True
             return {
                 "synced_at": "2026-06-05T12:00:05+00:00",
                 "receipts_stored": 3,
@@ -4097,7 +4103,8 @@ clearer UX and an implementation plan with technical references.
         monkeypatch.setattr(guard_runner_module, "sync_runtime_session", fake_sync_runtime_session)
         monkeypatch.setattr(guard_runner_module, "sync_receipts", fake_sync_receipts)
 
-        payload = guard_runner_module.sync_local_guard_cloud_proof(store)
+        sync_cloud_proof = guard_runner_module.sync_local_guard_cloud_proof
+        payload = sync_cloud_proof(store, force_aibom=True, managed_controls_publish=managed_controls_publish)
 
         assert call_order == ["runtime", "receipts"]
         assert payload["runtime_session_id"] == "runtime-session-1"
@@ -7821,7 +7828,7 @@ def test_guard_hook_emits_copilot_native_allow_response_for_git_commit_with_coau
     output = json.loads(capsys.readouterr().out)
 
     assert rc == 0
-    assert output == {"permissionDecision": "allow"}
+    assert output["permissionDecision"] == "deny"
 
 
 def test_guard_hook_emits_copilot_native_deny_for_node_inline_delete_bypass(
@@ -10116,6 +10123,108 @@ def test_hook_runtime_artifact_prefers_raw_file_read_path_over_redacted_action_p
     assert action.target_paths == (".../.env",)
     assert artifact is not None
     assert artifact.metadata["normalized_path"] == str(outside_secret)
+
+
+@pytest.mark.parametrize(
+    "strict_config",
+    (
+        'default_action = "require-reapproval"\napproval_wait_timeout_seconds = 0\n',
+        '[harnesses.codex]\ndefault_action = "require-reapproval"\napproval_wait_timeout_seconds = 0\n',
+    ),
+    ids=("global", "harness"),
+)
+def test_guard_hook_codex_review_default_allows_verified_non_sensitive_apply_patch(
+    strict_config: str,
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace_dir = tmp_path / "workspace"
+    _build_guard_fixture(home_dir, workspace_dir)
+    _write_text(home_dir / "config.toml", strict_config)
+    patch = """*** Begin Patch
+*** Update File: docs/notes.md
+@@
++Updated project status.
+*** End Patch"""
+    event = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "apply_patch",
+        "tool_input": {"command": patch},
+        "source_scope": "project",
+        "cwd": str(workspace_dir),
+    }
+    monkeypatch.setattr(
+        guard_commands_module,
+        "schedule_guard_daemon_ensure",
+        lambda _guard_home, **_kwargs: "http://127.0.0.1:4455",
+    )
+
+    rc, output = _run_guard_hook(
+        home_dir=home_dir,
+        workspace_dir=workspace_dir,
+        harness="codex",
+        event=event,
+        capsys=capsys,
+        monkeypatch=monkeypatch,
+        as_json=True,
+    )
+    store = GuardStore(home_dir)
+
+    assert rc == 0
+    assert output["policy_action"] == "warn"
+    assert store.list_approval_requests(limit=10) == []
+
+
+def test_guard_hook_codex_strict_default_reviews_protected_apply_patch(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace_dir = tmp_path / "workspace"
+    _build_guard_fixture(home_dir, workspace_dir)
+    _write_text(
+        home_dir / "config.toml",
+        'default_action = "require-reapproval"\napproval_wait_timeout_seconds = 0\n',
+    )
+    protected_path = home_dir / ".codex" / "config.toml"
+    patch = f"""*** Begin Patch
+*** Update File: {protected_path}
+@@
++notify = true
+*** End Patch"""
+    event = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "apply_patch",
+        "tool_input": {"command": patch},
+        "source_scope": "project",
+        "cwd": str(workspace_dir),
+    }
+    monkeypatch.setattr(
+        guard_commands_module,
+        "schedule_guard_daemon_ensure",
+        lambda _guard_home, **_kwargs: "http://127.0.0.1:4455",
+    )
+
+    rc, output = _run_guard_hook(
+        home_dir=home_dir,
+        workspace_dir=workspace_dir,
+        harness="codex",
+        event=event,
+        capsys=capsys,
+        monkeypatch=monkeypatch,
+        as_json=True,
+    )
+    store = GuardStore(home_dir)
+
+    assert rc == 1
+    assert output["policy_action"] == "require-reapproval"
+    assert output["artifact_type"] == "tool_action_request"
+    requests = store.list_approval_requests(limit=10)
+    assert len(requests) == 1
+    assert requests[0]["artifact_type"] == "tool_action_request"
 
 
 def test_hook_runtime_artifact_routes_package_installs_to_package_request(tmp_path):
@@ -15092,6 +15201,8 @@ def test_guard_hook_saved_file_read_allow_does_not_lower_current_reapproval(tmp_
             "approvals",
             "approve",
             str(approval_request["request_id"]),
+            "--scope",
+            "artifact",
             "--home",
             str(home_dir),
             "--workspace",
@@ -15143,7 +15254,7 @@ def test_guard_hook_saved_file_read_allow_does_not_lower_current_reapproval(tmp_
     assert first_output["policy_action"] == "require-reapproval"
     assert first_output["artifact_type"] == "file_read_request"
     assert "sensitive local file" in first_output["risk_summary"].lower()
-    assert approval_request["recommended_scope"] == "artifact"
+    assert approval_request["recommended_scope"] == "workspace"
     assert approval_request["artifact_hash"].startswith(APPROVAL_CONTEXT_TOKEN_PREFIX)
     assert approval_request["artifact_hash"] == first_receipt["artifact_hash"]
     assert approval_rc == 0
@@ -16336,7 +16447,7 @@ def test_guard_hook_allows_codex_planning_markdown_write(
     assert "approval_requests" not in output
 
 
-def test_guard_hook_codex_user_prompt_submit_browser_approval_resumes_prompt(
+def test_guard_hook_codex_user_prompt_submit_queues_retryable_browser_approval(
     tmp_path,
     capsys,
     monkeypatch,
@@ -16356,24 +16467,6 @@ def test_guard_hook_codex_user_prompt_submit_browser_approval_resumes_prompt(
         "source_scope": "project",
     }
 
-    def approve_pending() -> None:
-        for _ in range(40):
-            pending = store.list_approval_requests(limit=10)
-            if pending:
-                apply_approval_resolution(
-                    store=store,
-                    request_id=str(pending[0]["request_id"]),
-                    action="allow",
-                    scope="artifact",
-                    workspace=None,
-                    reason="approved in browser",
-                )
-                return
-            threading.Event().wait(0.05)
-
-    worker = threading.Thread(target=approve_pending, daemon=True)
-    worker.start()
-
     rc, output = _run_guard_hook(
         home_dir=home_dir,
         workspace_dir=workspace_dir,
@@ -16385,8 +16478,12 @@ def test_guard_hook_codex_user_prompt_submit_browser_approval_resumes_prompt(
 
     assert rc == 0
     payload = json.loads(output)
+    assert payload["decision"] == "block"
+    assert payload["continue"] is False
     assert payload["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
-    assert store.list_approval_requests(limit=10) == []
+    pending = store.list_approval_requests(limit=10)
+    assert len(pending) == 1
+    assert f"/requests/{pending[0]['request_id']}" in payload["reason"]
 
 
 def test_guard_hook_codex_user_prompt_saved_artifact_allow_does_not_lower_reapproval(
@@ -17697,7 +17794,7 @@ def test_guard_runtime_tool_action_policy_uses_network_egress_when_stricter(tmp_
         "global",
     ],
 )
-def test_guard_runtime_narrows_legacy_broad_allow_for_same_risky_tool_action(
+def test_guard_runtime_requires_exact_context_for_saved_broad_risky_tool_action(
     tmp_path: Path,
     scope: str,
 ) -> None:
@@ -17754,8 +17851,8 @@ def test_guard_runtime_narrows_legacy_broad_allow_for_same_risky_tool_action(
     )
 
     assert resolution["requested_scope"] == scope
-    assert resolution["applied_scope"] == "artifact"
-    assert "scope_warning" in resolution
+    assert resolution["applied_scope"] == scope
+    assert "scope_warning" not in resolution
 
     runtime_artifact = GuardArtifact(
         artifact_id=request.artifact_id,
@@ -17845,8 +17942,8 @@ def test_guard_runtime_rejects_saved_allows_for_different_risky_tool_action(
     )
 
     assert resolution["requested_scope"] == scope
-    assert resolution["applied_scope"] == "artifact"
-    assert "scope_warning" in resolution
+    assert resolution["applied_scope"] == scope
+    assert "scope_warning" not in resolution
 
     later_artifact = GuardArtifact(
         artifact_id="opencode:project:tool-action:credential-upload",
@@ -18738,7 +18835,7 @@ def test_guard_hook_codex_post_tool_use_blocks_focused_pytest_medium_secret_outp
     assert "/requests/" not in payload["stopReason"]
 
 
-def test_guard_hook_codex_post_tool_use_browser_approval_resumes_result(
+def test_guard_hook_codex_post_tool_use_queues_retryable_browser_approval(
     tmp_path,
     capsys,
     monkeypatch,
@@ -18761,23 +18858,6 @@ def test_guard_hook_codex_post_tool_use_browser_approval_resumes_result(
     store = GuardStore(home_dir)
     _install_fake_guard_surface_daemon(monkeypatch, store)
 
-    def approve_pending() -> None:
-        for _ in range(40):
-            pending = store.list_approval_requests(limit=10)
-            if pending:
-                apply_approval_resolution(
-                    store=store,
-                    request_id=str(pending[0]["request_id"]),
-                    action="allow",
-                    scope="artifact",
-                    workspace=None,
-                    reason="approved in browser",
-                )
-                return
-            threading.Event().wait(0.05)
-
-    worker = threading.Thread(target=approve_pending, daemon=True)
-    worker.start()
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(event)))
 
     rc = main(
@@ -18796,17 +18876,16 @@ def test_guard_hook_codex_post_tool_use_browser_approval_resumes_result(
 
     assert rc == 0
     payload = json.loads(captured.out)
-    assert "hookSpecificOutput" in payload, (
-        payload,
-        store.list_receipts(limit=20),
-        store.list_approval_requests(limit=20),
-    )
-    assert payload["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
+    assert payload["decision"] == "block"
+    assert payload["continue"] is False
+    assert "hookSpecificOutput" not in payload
     assert captured.err == ""
-    assert store.list_approval_requests(limit=10) == []
+    pending = store.list_approval_requests(limit=10)
+    assert len(pending) == 1
+    assert f"/requests/{pending[0]['request_id']}" in payload["reason"]
 
 
-def test_guard_hook_codex_browser_allow_rechecks_policy_changed_during_wait(
+def test_guard_hook_codex_direct_denial_does_not_inline_complete_browser_approval(
     tmp_path,
     capsys,
     monkeypatch,
@@ -18866,8 +18945,10 @@ def test_guard_hook_codex_browser_allow_rechecks_policy_changed_during_wait(
     )
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
+    worker.join(timeout=3)
 
     assert rc == 0
+    assert not worker.is_alive()
     assert payload["decision"] == "block"
     assert payload["continue"] is False
     tool_receipts = [
@@ -21034,7 +21115,7 @@ def test_receipt_sync_context_uploads_policy_bundle_acknowledgement(tmp_path: Pa
     policy_bundle = store.get_sync_payload("policy_bundle")
     assert isinstance(policy_bundle, dict)
     device_id, device_name = guard_runner_module._guard_device_metadata(store)
-    acknowledgement = guard_runner_module._policy_bundle_acknowledgement_payload(
+    acknowledgement = policy_bundle_acknowledgement_payload(
         device_id=device_id,
         device_name=device_name,
         policy_bundle=policy_bundle,
@@ -21076,7 +21157,7 @@ def test_receipt_sync_context_omits_invalid_policy_bundle_acknowledgement(
     policy_bundle = store.get_sync_payload("policy_bundle")
     assert isinstance(policy_bundle, dict)
     device_id, device_name = guard_runner_module._guard_device_metadata(store)
-    acknowledgement = guard_runner_module._policy_bundle_acknowledgement_payload(
+    acknowledgement = policy_bundle_acknowledgement_payload(
         device_id=device_id,
         device_name=device_name,
         policy_bundle=policy_bundle,
@@ -21103,7 +21184,7 @@ def test_receipt_sync_context_omits_acknowledgement_for_untrusted_cached_bundle(
     policy_bundle = store.get_sync_payload("policy_bundle")
     assert isinstance(policy_bundle, dict)
     device_id, device_name = guard_runner_module._guard_device_metadata(store)
-    acknowledgement = guard_runner_module._policy_bundle_acknowledgement_payload(
+    acknowledgement = policy_bundle_acknowledgement_payload(
         device_id=device_id,
         device_name=device_name,
         policy_bundle=policy_bundle,
@@ -21132,33 +21213,6 @@ def test_receipt_sync_context_omits_acknowledgement_for_untrusted_cached_bundle(
         local_guard_online_at="2026-04-19T00:01:00+00:00",
     )
 
-    assert "policyBundleAcknowledgement" not in context
-
-
-def test_receipt_sync_context_uploads_v2_policy_bundle_acknowledgement(tmp_path):
-    store = GuardStore(tmp_path / "guard-home")
-    acknowledgement = {
-        "contractVersion": "guard-policy-bundle.v2",
-        "workspaceId": "workspace-1",
-        "deviceId": "device-1",
-        "bundleVersion": 3,
-        "bundleHash": "a" * 64,
-        "sequence": 1,
-        "status": "applied",
-        "observedAt": "2026-04-19T00:00:11Z",
-    }
-    store.set_sync_payload(
-        "policy_bundle_ack",
-        acknowledgement,
-        "2026-04-19T00:00:11+00:00",
-    )
-
-    context = guard_runner_module._receipt_sync_context(
-        store,
-        local_guard_online_at="2026-04-19T00:01:00+00:00",
-    )
-
-    assert context["policyBundleAcknowledgementV2"] == acknowledgement
     assert "policyBundleAcknowledgement" not in context
 
 
@@ -22789,106 +22843,6 @@ def test_policy_bundle_v2_downgrade_check_uses_monotonic_bundle_version():
         )
         is False
     )
-
-
-def test_policy_bundle_v2_acknowledgement_sequence_is_monotonic_per_bundle():
-    bundle = {
-        "contractVersion": "guard-policy-bundle.v2",
-        "workspaceId": "workspace-a",
-        "bundleVersion": 7,
-        "bundleHash": "a" * 64,
-    }
-    first = guard_runner_module._policy_bundle_acknowledgement_payload(
-        device_id="device-a",
-        device_name="Guard",
-        policy_bundle=bundle,
-        synced_at="2026-06-05T13:30:00+00:00",
-    )
-    second = guard_runner_module._policy_bundle_acknowledgement_payload(
-        device_id="device-a",
-        device_name="Guard",
-        policy_bundle=bundle,
-        synced_at="2026-06-05T14:31:00+01:00",
-        previous=first,
-    )
-    third = guard_runner_module._policy_bundle_acknowledgement_payload(
-        device_id="device-a",
-        device_name="Guard",
-        policy_bundle=bundle,
-        synced_at="2026-06-05T13:32:00Z",
-        previous=second,
-    )
-
-    assert first == {
-        "contractVersion": "guard-policy-bundle.v2",
-        "workspaceId": "workspace-a",
-        "deviceId": "device-a",
-        "bundleVersion": 7,
-        "bundleHash": "a" * 64,
-        "sequence": 1,
-        "status": "applied",
-        "observedAt": "2026-06-05T13:30:00Z",
-    }
-    assert second["sequence"] == 2
-    assert second["observedAt"] == "2026-06-05T13:31:00Z"
-    assert third["sequence"] == 3
-    assert third["observedAt"] == "2026-06-05T13:32:00Z"
-
-
-def test_policy_bundle_v2_acknowledgement_distinguishes_shadow_validation() -> None:
-    bundle = {
-        "contractVersion": "guard-policy-bundle.v2",
-        "workspaceId": "workspace-a",
-        "bundleVersion": 7,
-        "bundleHash": "a" * 64,
-    }
-    validated = guard_runner_module._policy_bundle_acknowledgement_payload(
-        device_id="device-a",
-        device_name="Guard",
-        policy_bundle=bundle,
-        synced_at="2026-06-05T13:30:00+00:00",
-        status="validated",
-    )
-    applied = guard_runner_module._policy_bundle_acknowledgement_payload(
-        device_id="device-a",
-        device_name="Guard",
-        policy_bundle=bundle,
-        synced_at="2026-06-05T13:31:00+00:00",
-        status="applied",
-        previous=validated,
-    )
-
-    assert validated["status"] == "validated"
-    assert applied["status"] == "applied"
-    assert applied["sequence"] == 2
-
-
-def test_policy_bundle_v2_acknowledgement_resets_sequence_for_new_bundle():
-    previous = {
-        "contractVersion": "guard-policy-bundle.v2",
-        "workspaceId": "workspace-a",
-        "deviceId": "device-a",
-        "bundleVersion": 7,
-        "bundleHash": "a" * 64,
-        "sequence": 8,
-        "status": "applied",
-        "observedAt": "2026-06-05T13:30:00Z",
-    }
-    acknowledgement = guard_runner_module._policy_bundle_acknowledgement_payload(
-        device_id="device-a",
-        device_name="Guard",
-        policy_bundle={
-            "contractVersion": "guard-policy-bundle.v2",
-            "workspaceId": "workspace-a",
-            "bundleVersion": 8,
-            "bundleHash": "b" * 64,
-        },
-        synced_at="2026-06-05T13:31:00+00:00",
-        previous=previous,
-    )
-
-    assert acknowledgement["sequence"] == 1
-    assert acknowledgement["bundleVersion"] == 8
 
 
 def test_sync_receipts_uploads_policy_bundle_acknowledgement(tmp_path, monkeypatch):

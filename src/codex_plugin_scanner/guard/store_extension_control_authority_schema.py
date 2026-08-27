@@ -8,12 +8,32 @@ from typing import Final, cast
 
 from .runtime.extension_control_authority import ExtensionControlAuthorityError
 
-EXTENSION_CONTROL_SCHEMA_VERSION: Final = 2
+EXTENSION_CONTROL_SCHEMA_VERSION: Final = 4
 _SCHEMA_CHECKSUM_V1: Final = hashlib.sha256(b"hol-guard.extension-control-authority.schema.v1").hexdigest()
-_SCHEMA_CHECKSUM: Final = hashlib.sha256(b"hol-guard.extension-control-authority.schema.v2").hexdigest()
+_SCHEMA_CHECKSUM_V2: Final = hashlib.sha256(b"hol-guard.extension-control-authority.schema.v2").hexdigest()
+_SCHEMA_CHECKSUM_V3: Final = hashlib.sha256(b"hol-guard.extension-control-authority.schema.v3").hexdigest()
+_SCHEMA_CHECKSUM: Final = hashlib.sha256(b"hol-guard.extension-control-authority.schema.v4").hexdigest()
 
 
-def ensure_extension_control_authority_schema(connection: sqlite3.Connection) -> None:
+def extension_control_schema_marker_is_compatible(
+    version: object,
+    checksum: object,
+) -> bool:
+    if type(version) is not int or not isinstance(checksum, str):
+        return False
+    return (version, checksum) in {
+        (1, _SCHEMA_CHECKSUM_V1),
+        (2, _SCHEMA_CHECKSUM_V2),
+        (3, _SCHEMA_CHECKSUM_V3),
+        (EXTENSION_CONTROL_SCHEMA_VERSION, _SCHEMA_CHECKSUM),
+    }
+
+
+def ensure_extension_control_authority_schema(
+    connection: sqlite3.Connection,
+    *,
+    require_compatible: bool = True,
+) -> bool:
     _ = connection.execute(
         """
         create table if not exists extension_control_schema_migration (
@@ -41,21 +61,21 @@ def ensure_extension_control_authority_schema(connection: sqlite3.Connection) ->
         elif isinstance(row, tuple):
             row_values = cast(tuple[object, ...], row)
             if len(row_values) != 2:
-                raise ExtensionControlAuthorityError("invalid extension control schema marker")
+                if require_compatible:
+                    raise ExtensionControlAuthorityError("invalid extension control schema marker")
+                return False
             version_raw, checksum_raw = row_values
         else:
             raise ExtensionControlAuthorityError("invalid extension control schema marker")
-        if type(version_raw) is not int or not isinstance(checksum_raw, str):
-            raise ExtensionControlAuthorityError("invalid extension control schema marker")
-        version = version_raw
-        checksum = checksum_raw
-        if version == 1 and checksum == _SCHEMA_CHECKSUM_V1:
+        if not extension_control_schema_marker_is_compatible(version_raw, checksum_raw):
+            if require_compatible:
+                raise ExtensionControlAuthorityError("unsupported or invalid extension control schema")
+            return False
+        if type(version_raw) is int and version_raw != EXTENSION_CONTROL_SCHEMA_VERSION:
             _ = connection.execute(
                 "update extension_control_schema_migration set version = ?, checksum = ? where singleton = 1",
                 (EXTENSION_CONTROL_SCHEMA_VERSION, _SCHEMA_CHECKSUM),
             )
-        elif version != EXTENSION_CONTROL_SCHEMA_VERSION or checksum != _SCHEMA_CHECKSUM:
-            raise ExtensionControlAuthorityError("unsupported or invalid extension control schema")
 
     _ = connection.execute(
         """
@@ -69,6 +89,32 @@ def ensure_extension_control_authority_schema(connection: sqlite3.Connection) ->
             snapshot_digest text not null,
             snapshot_mac text not null,
             committed_at text not null
+        )
+        """
+    )
+    _ = connection.execute(
+        """
+        create table if not exists extension_control_catalog_manifest (
+            catalog_digest text primary key,
+            manifest_json text not null,
+            record_json text not null,
+            record_digest text not null,
+            record_mac text not null,
+            recorded_at text not null
+        )
+        """
+    )
+    _ = connection.execute(
+        """
+        create table if not exists extension_control_authority_recovery_archive (
+            archive_id text primary key,
+            reason text not null,
+            archived_at text not null,
+            previous_revision integer,
+            previous_catalog_digest text,
+            snapshot_row_json text,
+            transition_rows_json text not null,
+            proof_rows_json text not null
         )
         """
     )
@@ -105,3 +151,4 @@ def ensure_extension_control_authority_schema(connection: sqlite3.Connection) ->
         )
         """
     )
+    return True

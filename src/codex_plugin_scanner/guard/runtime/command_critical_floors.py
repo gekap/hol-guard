@@ -86,12 +86,15 @@ _MAX_LAUNCHER_CHILDREN = 256
 def command_critical_floor_factors(
     command: CanonicalCommand,
     authorization: GitHubWorkflowAuthorization | None = None,
+    *,
+    explicitly_allowed_github_capabilities: frozenset[str] = frozenset(),
 ) -> tuple[DecisionFactor, ...]:
     """Return monotonic floors derived only from the canonical parsed command."""
 
     factors = _command_critical_floor_factors(
         command,
         authorization=authorization,
+        explicitly_allowed_github_capabilities=explicitly_allowed_github_capabilities,
         depth=0,
         remaining_launcher_children=[_MAX_LAUNCHER_CHILDREN],
     )
@@ -102,6 +105,7 @@ def _command_critical_floor_factors(
     command: CanonicalCommand,
     *,
     authorization: GitHubWorkflowAuthorization | None,
+    explicitly_allowed_github_capabilities: frozenset[str],
     depth: int,
     remaining_launcher_children: list[int],
 ) -> tuple[DecisionFactor, ...]:
@@ -136,7 +140,9 @@ def _command_critical_floor_factors(
             index,
             executable,
             authorized_action_class=authorized_action_class,
-            indirect=depth > 0 or str(segment.executable or "").lower().endswith(".exe"),
+            explicitly_allowed_capabilities=explicitly_allowed_github_capabilities,
+            indirect=depth > 0 or bool(command.wrapper_chain),
+            windows_executable=str(segment.executable or "").lower().endswith(".exe"),
         )
         if github_factor is not None:
             factors.append(github_factor)
@@ -155,6 +161,7 @@ def _command_critical_floor_factors(
                     _command_critical_floor_factors(
                         child,
                         authorization=None,
+                        explicitly_allowed_github_capabilities=frozenset(),
                         depth=depth + 1,
                         remaining_launcher_children=remaining_launcher_children,
                     )
@@ -171,21 +178,33 @@ def _github_factor(
     executable: str,
     *,
     authorized_action_class: str | None,
+    explicitly_allowed_capabilities: frozenset[str],
     indirect: bool,
+    windows_executable: bool,
 ) -> DecisionFactor | None:
     if executable != "gh":
         return None
     assessment = classify_github_cli(segment.arguments)
+    if (
+        not indirect
+        and assessment.action_floor != "block"
+        and "unknown" not in assessment.capabilities
+        and set(assessment.capabilities).issubset(explicitly_allowed_capabilities)
+    ):
+        return None
     if (
         authorized_action_class is not None
         and assessment.action_floor != "allow"
         and github_capability_action_class(assessment) == authorized_action_class
     ):
         return None
-    if assessment.action_floor == "allow" and not (indirect and "routine_merge_remote" in assessment.capabilities):
+    indirect_routine_mutation = (indirect or windows_executable) and bool(
+        {"routine_merge_remote", "routine_workflow_remote"}.intersection(assessment.capabilities)
+    )
+    if assessment.action_floor == "allow" and not indirect_routine_mutation:
         return None
     action_floor = assessment.action_floor
-    if indirect and action_floor != "block":
+    if (indirect or windows_executable) and action_floor != "block":
         action_floor = "require-reapproval"
     return _factor(command, index, action_floor, "critical.github-cli")
 

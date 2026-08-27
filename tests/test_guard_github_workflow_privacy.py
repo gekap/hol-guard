@@ -54,7 +54,7 @@ def _digest(purpose: str, payload: object) -> str:
 def _descriptor(executable: Path, *, command: str | None = None) -> GitHubWorkflowDescriptor:
     command = command or (
         f"{executable} api graphql -f "
-        "query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id}}}' "
+        "query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id __typename}}}' "
         f"-f threadId={_THREAD}"
     )
     operation = parse_github_workflow_operation(
@@ -251,6 +251,9 @@ def test_full_launch_environment_drift_changes_binding(
         f"command {Path(sys.executable).resolve()} issue lock 17 --repo {_REPOSITORY}",
         f"{Path(sys.executable).resolve()} issue lock 17 --repo {_REPOSITORY} &",
     ),
+    # Stable ids keep the pytest node ids free of the interpreter's absolute
+    # path, which differs between the shard-planning and test-running CI jobs.
+    ids=("bare-gh", "dot-slash-gh", "relative-bin-gh", "command-interpreter", "interpreter-background"),
 )
 def test_noncanonical_launch_forms_are_ineligible(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
@@ -318,7 +321,7 @@ def test_executable_byte_drift_does_not_consume_capability(tmp_path: Path) -> No
     )
     command = (
         f"{executable} api graphql -f "
-        "query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id}}}' "
+        "query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id __typename}}}' "
         f"-f threadId={_THREAD}"
     )
     executable.write_bytes(b"#!/bin/sh\nexit 1\n")

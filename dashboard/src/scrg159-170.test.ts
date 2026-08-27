@@ -24,6 +24,7 @@ const makeProtection = (
   shell_profile_path: "/mock-home/.zshrc",
   shim_dir: "/usr/local/hol-guard/shims",
   supported_managers: [...protected_managers, ...unprotected_managers],
+  detected_managers: [...protected_managers, ...unprotected_managers],
   installed_managers: protected_managers,
   active_managers: protected_managers,
   missing_shims: [],
@@ -216,6 +217,7 @@ const restartRequiredStats = buildSupplyChainStats({
       active_managers: [],
       protected_managers: [],
       supported_managers: ["pnpm", "npm", "pip"],
+      detected_managers: ["pnpm", "npm", "pip"],
       unprotected_managers: ["npm", "pip"],
       missing_shims: [],
     },
@@ -338,7 +340,7 @@ assert(grouped.get("cursor")?.length === 1, "SCRG164-B: 1 cursor policy");
 
 const strictCopy = resolveSecurityModeCopy("strict");
 assert(strictCopy.tone === "attention", "SCRG164-C: strict mode is attention tone");
-assert(strictCopy.label.toLowerCase().includes("protect"), "SCRG164-D: strict mode shows Protect label");
+assert(strictCopy.label.toLowerCase().includes("careful"), "SCRG164-D: strict mode maps to Extra careful");
 
 const balancedCopy = resolveSecurityModeCopy("balanced");
 assert(balancedCopy.tone === "green", "SCRG164-E: balanced is green tone");

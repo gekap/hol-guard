@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NoReturn
 
+from .codex_hook_compatibility import compatible_bridge_argv_hashes
 from .codex_hook_file_integrity import (
     CodexHookIntegrityError,
     canonical_path,
@@ -31,8 +32,19 @@ from .codex_hook_integrity import (
     load_or_create_hook_secret,
     sign_hook_manifest,
 )
+from .codex_hook_package_identity import (
+    assert_package_reauthentication_is_safe as assert_package_reauthentication_is_safe,
+)
 
 MANAGED_CODEX_HOOK_EVENTS = ("PreToolUse", "PermissionRequest", "UserPromptSubmit", "PostToolUse")
+_TRANSPORT_PACKAGE_ROLES = (
+    "bridge",
+    "bridge_resume",
+    "bridge_runtime",
+    "launch_runtime",
+    "runtime_trust",
+    "windows_job",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +65,11 @@ class CodexHookManifestSpec:
     workspace_rebinding_allowed: bool = False
 
 
-def build_authenticated_hook_manifest(spec: CodexHookManifestSpec) -> dict[str, object]:
+def build_authenticated_hook_manifest(
+    spec: CodexHookManifestSpec,
+    *,
+    previous_manifest: Mapping[str, object] | None = None,
+) -> dict[str, object]:
     secret = load_or_create_hook_secret(spec.guard_home)
     interpreter = describe_executable_file(spec.interpreter_path, role="interpreter")
     packaged_files = [
@@ -62,18 +78,9 @@ def build_authenticated_hook_manifest(spec: CodexHookManifestSpec) -> dict[str, 
     packaged_by_role = {
         identity.get("role"): identity for identity in packaged_files if isinstance(identity.get("role"), str)
     }
-    bridge = packaged_by_role.get("bridge")
-    bridge_runtime = packaged_by_role.get("bridge_runtime")
-    launch_runtime = packaged_by_role.get("launch_runtime")
-    runtime_trust = packaged_by_role.get("runtime_trust")
-    windows_job = packaged_by_role.get("windows_job")
-    if (
-        not isinstance(bridge, dict)
-        or not isinstance(bridge_runtime, dict)
-        or not isinstance(launch_runtime, dict)
-        or not isinstance(runtime_trust, dict)
-        or not isinstance(windows_job, dict)
-        or len(packaged_by_role) != len(spec.packaged_file_paths)
+    transport = {role: packaged_by_role.get(role) for role in _TRANSPORT_PACKAGE_ROLES}
+    if any(not isinstance(identity, dict) for identity in transport.values()) or len(packaged_by_role) != len(
+        spec.packaged_file_paths
     ):
         raise CodexHookIntegrityError(
             "codex_hook_manifest_packaged_files_invalid",
@@ -82,6 +89,7 @@ def build_authenticated_hook_manifest(spec: CodexHookManifestSpec) -> dict[str, 
     generated_at = datetime.now(timezone.utc).isoformat()
     unsigned_manifest: dict[str, object] = {
         "config": {"scope": "global", "target": canonical_path(spec.config_path)},
+        "compatible_bridge_argv_sha256": compatible_bridge_argv_hashes(previous_manifest),
         "context": _expected_context(spec),
         "daemon_start": {
             "argv": list(spec.daemon_start_argv),
@@ -101,14 +109,7 @@ def build_authenticated_hook_manifest(spec: CodexHookManifestSpec) -> dict[str, 
         "package_version": spec.package_version,
         "packaged_files": packaged_files,
         "schema_version": HOOK_MANIFEST_SCHEMA_VERSION,
-        "transport": {
-            "bridge": bridge,
-            "bridge_runtime": bridge_runtime,
-            "launch_runtime": launch_runtime,
-            "runtime_trust": runtime_trust,
-            "windows_job": windows_job,
-            "wrapper": None,
-        },
+        "transport": {**transport, "wrapper": None},
     }
     return sign_hook_manifest(unsigned_manifest, secret)
 
@@ -146,56 +147,6 @@ def authenticated_manifest_for_ownership(spec: CodexHookManifestSpec) -> dict[st
     except (CodexHookIntegrityError, OSError):
         return None
     return manifest if _manifest_has_owned_installation_context(manifest, spec) else None
-
-
-def assert_package_reauthentication_is_safe(
-    previous_manifest: Mapping[str, object] | None,
-    replacement_manifest: Mapping[str, object],
-) -> None:
-    """Allow interpreter relocation only when the managed package bytes match."""
-
-    if previous_manifest is None or previous_manifest.get("schema_version") != HOOK_MANIFEST_SCHEMA_VERSION:
-        return
-    if previous_manifest.get("package_version") != replacement_manifest.get("package_version"):
-        return
-    previous_identity = _package_content_identity(previous_manifest)
-    replacement_identity = _package_content_identity(replacement_manifest)
-    if previous_identity is not None and previous_identity == replacement_identity:
-        return
-    raise CodexHookIntegrityError(
-        "codex_hook_package_reauthentication_refused",
-        "Guard refused to authenticate changed same-version hook code or interpreter bytes. "
-        "Reinstall hol-guard from a trusted package, then run `hol-guard install codex` again.",
-    )
-
-
-def _package_content_identity(manifest: Mapping[str, object]) -> tuple[tuple[str, str, int, int, bool], ...] | None:
-    packaged_files = manifest.get("packaged_files")
-    if not isinstance(packaged_files, list) or not packaged_files:
-        return None
-    identities: list[tuple[str, str, int, int, bool]] = []
-    for file_identity in packaged_files:
-        if not isinstance(file_identity, Mapping):
-            return None
-        role = file_identity.get("role")
-        digest = file_identity.get("sha256")
-        size = file_identity.get("size")
-        mode = file_identity.get("mode")
-        executable_required = file_identity.get("executable_required")
-        if (
-            not isinstance(role, str)
-            or not isinstance(digest, str)
-            or not isinstance(size, int)
-            or isinstance(size, bool)
-            or not isinstance(mode, int)
-            or isinstance(mode, bool)
-            or not isinstance(executable_required, bool)
-        ):
-            return None
-        identities.append((role, digest, size, mode, executable_required))
-    if len({identity[0] for identity in identities}) != len(identities):
-        return None
-    return tuple(sorted(identities))
 
 
 def manifest_bindings(manifest: object) -> list[dict[str, object]]:
@@ -413,11 +364,7 @@ def _verify_launch_identities(
     if (
         not isinstance(transport, dict)
         or transport.get("wrapper") is not None
-        or transport.get("bridge") != packaged_by_role.get("bridge")
-        or transport.get("bridge_runtime") != packaged_by_role.get("bridge_runtime")
-        or transport.get("launch_runtime") != packaged_by_role.get("launch_runtime")
-        or transport.get("runtime_trust") != packaged_by_role.get("runtime_trust")
-        or transport.get("windows_job") != packaged_by_role.get("windows_job")
+        or any(transport.get(role) != packaged_by_role.get(role) for role in _TRANSPORT_PACKAGE_ROLES)
     ):
         _raise_manifest_failure(
             "codex_hook_manifest_transport_invalid",

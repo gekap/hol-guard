@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..adapters import get_adapter, list_adapters
 from ..adapters.base import HarnessAdapter, HarnessContext
+from ..adapters.cline import ClineHarnessAdapter
 from ..adapters.contracts import contract_for
 from ..adapters.cursor import CursorHarnessAdapter
 from ..agent_safety_guidance import install_agent_safety_guidance, uninstall_agent_safety_guidance
@@ -30,6 +31,40 @@ _HARNESS_OBSERVED_COPY = {
 }
 
 
+def _apply_adapter_management(
+    adapter: HarnessAdapter,
+    context: HarnessContext,
+    *,
+    active: bool,
+    surface: str | None,
+) -> dict[str, object]:
+    """Apply one adapter mutation while honoring declared surface capabilities."""
+
+    if surface is None:
+        if isinstance(adapter, CursorHarnessAdapter):
+            selected_surface = cursor_install_surface(None)
+            return (
+                adapter.install(context, surface=selected_surface)
+                if active
+                else adapter.uninstall(context, surface=selected_surface)
+            )
+        return adapter.install(context) if active else adapter.uninstall(context)
+
+    setup_contract = adapter.setup_contract()
+    if surface not in setup_contract.surface_capabilities:
+        raise ValueError(f"Unsupported {setup_contract.display_name} surface: {surface}")
+    if isinstance(adapter, CursorHarnessAdapter):
+        selected_surface = cursor_install_surface(surface)
+        return (
+            adapter.install(context, surface=selected_surface)
+            if active
+            else adapter.uninstall(context, surface=selected_surface)
+        )
+    if isinstance(adapter, ClineHarnessAdapter):
+        return adapter.install(context, surface=surface) if active else adapter.uninstall(context, surface=surface)
+    raise ValueError(f"Unsupported {setup_contract.display_name} surface: {surface}")
+
+
 def apply_managed_install(
     command: str,
     requested_harness: str | None,
@@ -47,15 +82,12 @@ def apply_managed_install(
     for harness in targets:
         adapter = get_adapter(harness)
         canonical_harness = adapter.harness
-        if isinstance(adapter, CursorHarnessAdapter):
-            selected_surface = cursor_install_surface(surface)
-            manifest = (
-                adapter.install(context, surface=selected_surface)
-                if active
-                else adapter.uninstall(context, surface=selected_surface)
-            )
-        else:
-            manifest = adapter.install(context) if active else adapter.uninstall(context)
+        manifest = _apply_adapter_management(
+            adapter,
+            context,
+            active=active,
+            surface=surface,
+        )
         if active:
             manifest = bind_managed_install_proof(manifest, context)
         store.set_managed_install(canonical_harness, active, workspace, manifest, now)
@@ -216,6 +248,21 @@ def build_harness_verification(
         verification.update(_opencode_protection_checks(context, store))
     if adapter.harness == "grok":
         verification.update(_grok_protection_checks(context))
+    if isinstance(adapter, ClineHarnessAdapter):
+        runtime_probe = adapter.runtime_probe(context)
+        verification["runtime"] = runtime_probe or {}
+        verification["warnings"] = adapter.diagnostic_warnings(adapter.detect(context), runtime_probe)
+        active_transport = runtime_probe.get("active_transport") if isinstance(runtime_probe, dict) else None
+        requested_transport = surface if surface in {"hooks", "plugin"} else active_transport
+        state_key = "plugin" if requested_transport == "plugin" else "native_hooks"
+        runtime_state = runtime_probe.get(state_key) if isinstance(runtime_probe, dict) else None
+        verification["active_transport"] = active_transport
+        verification["requested_transport"] = requested_transport
+        verification["ready"] = bool(
+            requested_transport == active_transport
+            and isinstance(runtime_state, dict)
+            and runtime_state.get("ready") is True
+        )
     payload: dict[str, object] = {
         "harness": adapter.harness,
         "safe": True,
@@ -324,6 +371,115 @@ def _opencode_protection_checks(context: HarnessContext, store: GuardStore | Non
     }
 
 
+def _grok_pretool_is_catchall(pretool_hook: Path) -> bool:
+    if not pretool_hook.is_file():
+        return False
+    try:
+        payload = json.loads(pretool_hook.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    hooks = payload.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    entries = hooks.get("PreToolUse")
+    if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
+        return False
+    matcher = entries[0].get("matcher")
+    if matcher not in {None, ""}:
+        return False
+    nested = entries[0].get("hooks")
+    if not isinstance(nested, list) or len(nested) != 1 or not isinstance(nested[0], dict):
+        return False
+    command = nested[0].get("command")
+    return nested[0].get("type") == "command" and isinstance(command, str) and _grok_hook_command_is_guard(command)
+
+
+def _grok_hook_command_is_guard(command: str) -> bool:
+    lowered = command.lower()
+    tokens = lowered.replace("=", " ").replace(",", " ").split()
+    if not tokens:
+        return False
+    first = tokens[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if first in {"echo", "true", "false", "printf", ":"}:
+        return False
+    return "hook" in lowered and (
+        "hol-guard" in tokens
+        or any(token.endswith("/hol-guard") or token.endswith("\\hol-guard") for token in tokens)
+        or "__guard-bounded-hook" in lowered
+        or "bounded_cli_hook_bridge" in lowered
+        or "codex_plugin_scanner.guard" in lowered
+    )
+
+
+def _grok_prompt_hook_is_observe(prompt_hook: Path) -> bool:
+    if not prompt_hook.is_file():
+        return False
+    try:
+        payload = json.loads(prompt_hook.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    hooks = payload.get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    required = ("UserPromptSubmit", "SubagentStart", "SessionStart")
+    return all(_grok_event_has_command_hook(hooks.get(event_name)) for event_name in required)
+
+
+def _grok_event_has_command_hook(entries: object) -> bool:
+    if not isinstance(entries, list) or not entries:
+        return False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        nested = entry.get("hooks")
+        if not isinstance(nested, list):
+            continue
+        for hook_entry in nested:
+            if not isinstance(hook_entry, dict) or hook_entry.get("type") != "command":
+                continue
+            command = hook_entry.get("command")
+            if isinstance(command, str) and _grok_hook_command_is_guard(command):
+                return True
+    return False
+
+
+def _grok_managed_config_is_active(managed_text: str) -> bool:
+    from ..adapters.grok_config import GUARD_MANAGED_BEGIN, GUARD_MANAGED_END
+
+    start = managed_text.find(GUARD_MANAGED_BEGIN)
+    stop = managed_text.find(GUARD_MANAGED_END)
+    if start < 0 or stop <= start:
+        return False
+    for line in managed_text[start:stop].splitlines():
+        active = line.split("#", 1)[0].strip()
+        if "Read(**/.grok/auth/**)" in active:
+            return True
+    return False
+
+
+def grok_hooks_protection_ready(context: HarnessContext) -> bool:
+    """Return whether live Grok hook files and managed permission rules are active."""
+
+    checks = _grok_protection_checks(context)
+    warnings = checks.get("warnings")
+    warning_items = warnings if isinstance(warnings, list) else []
+    hook_warnings = [
+        warning
+        for warning in warning_items
+        if isinstance(warning, str) and "shim" not in warning.lower() and "launcher" not in warning.lower()
+    ]
+    return (
+        checks.get("pretool_catchall_installed") is True
+        and checks.get("prompt_hook_installed") is True
+        and checks.get("managed_config_installed") is True
+        and not hook_warnings
+    )
+
+
 def _grok_protection_checks(context: HarnessContext) -> dict[str, object]:
     from ..adapters.grok import GrokHarnessAdapter
 
@@ -335,10 +491,25 @@ def _grok_protection_checks(context: HarnessContext) -> dict[str, object]:
     warnings: list[str] = []
     if not pretool_hook.is_file() or not prompt_hook.is_file():
         warnings.append("Grok Guard hook files are missing from ~/.grok/hooks/. Re-run `hol-guard apps connect grok`.")
-    if not managed_config.is_file() or "BEGIN HOL GUARD MANAGED GROK" not in managed_config.read_text(encoding="utf-8"):
+    elif not _grok_pretool_is_catchall(pretool_hook):
+        warnings.append(
+            "Grok Guard pre-tool hook still uses a stale per-tool matcher list. Re-run `hol-guard apps repair grok`."
+        )
+    elif not _grok_prompt_hook_is_observe(prompt_hook):
+        warnings.append(
+            "Grok Guard observe hooks are missing prompt, session, or subagent events. "
+            "Re-run `hol-guard apps repair grok`."
+        )
+    managed_text = managed_config.read_text(encoding="utf-8") if managed_config.is_file() else ""
+    if not managed_config.is_file() or not _grok_managed_config_is_active(managed_text):
         warnings.append(
             "Grok managed permission rules are missing from ~/.grok/managed_config.toml. "
             "Re-run `hol-guard apps connect grok`."
+        )
+    elif "Read(~/" in managed_text or "Read(~/" in managed_text:
+        warnings.append(
+            "Grok managed deny rules still use literal home prefixes that Grok does not expand. "
+            "Re-run `hol-guard apps repair grok`."
         )
     shim_path = context.guard_home / "bin" / "guard-grok"
     if not shim_path.is_file():
@@ -349,6 +520,7 @@ def _grok_protection_checks(context: HarnessContext) -> dict[str, object]:
     return {
         "pretool_hook_installed": pretool_hook.is_file(),
         "prompt_hook_installed": prompt_hook.is_file(),
+        "pretool_catchall_installed": _grok_pretool_is_catchall(pretool_hook),
         "managed_config_installed": managed_config.is_file(),
         "launch_shim_installed": shim_path.is_file(),
         "warnings": warnings,

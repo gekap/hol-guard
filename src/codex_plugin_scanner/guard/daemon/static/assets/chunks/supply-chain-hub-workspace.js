@@ -1,5 +1,6 @@
-const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/chunks/supply-chain-workspace.js","assets/guard-dashboard.js","assets/index.css","assets/chunks/feed-health-workspace.js","assets/chunks/home-protection-module.js","assets/chunks/supply-chain-protection-stats.js","assets/chunks/audit-workspace.js"])))=>i.map(i=>d[i]);
-import { aM as isSupplyChainAuditIncomplete, aN as isSupplyChainAuditEvidence, r as reactExports, aO as buildApprovalProofCredentials, aP as isApprovalProofSubmitDisabled, j as jsxRuntimeExports, S as SectionLabel, aQ as ApprovalProofFieldInputs, A as ActionButton, aH as GuardHarnessActionError, aR as readString$1, aS as isRecord$1, l as HiMiniCheckCircle, ao as HiMiniArrowPath, J as HiMiniExclamationTriangle, aj as Tag, s as formatRelativeTime, aT as HiMiniClock, aU as IconActionButton, T as HiMiniXCircle, aJ as HiMiniTrash, o as HiMiniShieldCheck, N as HiMiniWrenchScrewdriver, aV as HiMiniBeaker, aW as ActivationSummary, aX as ActionResultPanel, ak as HiMiniMagnifyingGlass, i as EmptyState, aY as HiMiniBugAnt, a3 as fetchSettings, w as HiMiniXMark, aZ as GuardModalLayer, a_ as ConnectFlowCard, a$ as ApprovalProofInline, b0 as HiMiniArrowTopRightOnSquare, b1 as HiMiniCloudArrowDown, b2 as fetchPackageFirewallStatus, b3 as runPackageAudit, b4 as resolveSupplyChainAuditFailure, b5 as runPackageSync, b6 as startPackageFirewallConnect, b7 as openPackageFirewallAuthorizeFallback, b8 as PACKAGE_FIREWALL_CONNECT_POPUP_BLOCKED_MESSAGE, b9 as repairSupplyChainProtection, ba as runPackageFirewallAction, bb as parseInterceptProofSnapshot, bc as activatePackageFirewallRuntime, bd as EntitlementNotice, be as fetchReceipts, bf as WorkspacePageHeader, bg as __vitePreload } from "../guard-dashboard.js";
+const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/chunks/supply-chain-workspace.js","assets/guard-dashboard.js","assets/index.css","assets/chunks/feed-health-workspace.js","assets/chunks/home-protection-module.js","assets/chunks/supply-chain-protection-stats.js","assets/chunks/approval-proof-modal.js","assets/chunks/audit-workspace.js"])))=>i.map(i=>d[i]);
+import { bd as isSupplyChainAuditIncomplete, be as isSupplyChainAuditEvidence, b8 as GuardHarnessActionError, bf as readString$1, bg as isRecord$1, r as reactExports, j as jsxRuntimeExports, o as HiMiniCheckCircle, aC as HiMiniArrowPath, M as HiMiniExclamationTriangle, ax as Tag, w as formatRelativeTime, bh as HiMiniClock, bi as IconActionButton, a0 as HiMiniXCircle, ba as HiMiniTrash, t as HiMiniShieldCheck, Y as HiMiniWrenchScrewdriver, bj as HiMiniBeaker, bk as ActivationSummary, bl as ActionResultPanel, au as HiMiniMagnifyingGlass, m as EmptyState, A as ActionButton, bm as HiMiniBugAnt, z as HiMiniXMark, aG as buildApprovalProofCredentials, bn as GuardModalLayer, bo as ConnectFlowCard, bp as ApprovalProofInline, aS as HiMiniArrowTopRightOnSquare, bq as HiMiniCloudArrowDown, aB as useResolvedApprovalGate, br as fetchPackageFirewallStatus, bs as runPackageAudit, bt as resolveSupplyChainAuditFailure, bu as runPackageSync, bv as startPackageFirewallConnect, V as openPackageFirewallAuthorizeFallback, bw as PACKAGE_FIREWALL_CONNECT_POPUP_BLOCKED_MESSAGE, bx as repairSupplyChainProtection, by as runPackageFirewallAction, bz as parseInterceptProofSnapshot, bA as activatePackageFirewallRuntime, S as SectionLabel, bB as EntitlementNotice, bC as fetchReceipts, at as WorkspacePageHeader, bD as lazyWorkspace, bE as __vitePreload } from "../guard-dashboard.js";
+import { A as ApprovalProofModal } from "./approval-proof-modal.js";
 const SEVERITY_RANK = {
   critical: 4,
   high: 3,
@@ -377,44 +378,6 @@ function packageWorkbenchEcosystems(findings) {
   return Array.from(new Set(findings.map((finding) => finding.ecosystem))).sort();
 }
 const SUPPLY_CHAIN_WORKSPACE_SHELL_CLASS = "min-w-0 max-w-full space-y-6 overflow-x-hidden";
-function ApprovalProofModal(props) {
-  const { title, detail, confirmLabel, approvalGate, onCancel, onConfirm } = props;
-  const [password, setPassword] = reactExports.useState("");
-  const [totpCode, setTotpCode] = reactExports.useState("");
-  const handlePasswordChange = reactExports.useCallback((event) => {
-    setPassword(event.target.value);
-  }, []);
-  const handleTotpChange = reactExports.useCallback((event) => {
-    setTotpCode(event.target.value);
-  }, []);
-  const handleConfirm = reactExports.useCallback(() => {
-    onConfirm(buildApprovalProofCredentials(approvalGate, { approvalPassword: password, approvalTotpCode: totpCode }));
-  }, [approvalGate, onConfirm, password, totpCode]);
-  const confirmDisabled = isApprovalProofSubmitDisabled(
-    approvalGate,
-    { approvalPassword: password, approvalTotpCode: totpCode },
-    false
-  );
-  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 px-4", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-xl", children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsx(SectionLabel, { children: "Approval required" }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { className: "mt-2 text-base font-semibold text-brand-dark", children: title }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "mt-1 text-sm text-slate-500", children: detail }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "mt-4", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-      ApprovalProofFieldInputs,
-      {
-        approvalGate,
-        approvalPassword: password,
-        approvalTotpCode: totpCode,
-        onApprovalPasswordChange: handlePasswordChange,
-        onApprovalTotpCodeChange: handleTotpChange
-      }
-    ) }),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-5 flex justify-end gap-2", children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx(ActionButton, { variant: "outline", onClick: onCancel, children: "Cancel" }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(ActionButton, { onClick: handleConfirm, disabled: confirmDisabled, children: confirmLabel })
-    ] })
-  ] }) });
-}
 const APPROVAL_GATE_REQUIRED_CODES = /* @__PURE__ */ new Set([
   "approval_gate_required",
   "approval_gate_password_required",
@@ -691,7 +654,7 @@ function supplyChainAuditConnectUserMessage(error) {
 function supplyChainAuditUserMessage(error) {
   if (error instanceof GuardHarnessActionError) {
     if (error.payload?.error === "workspace_dir_required") {
-      return error.payload.message ?? "Guard needs a connected app project folder with package manifests before it can run the workspace audit.";
+      return "Open Guard from the project you want to audit, or run `hol-guard supply-chain audit --json` from that project folder. The folder must contain a supported package manifest or lockfile.";
     }
     return supplyChainAuditConnectUserMessage(error);
   }
@@ -1082,26 +1045,6 @@ function FirewallControlsView({
       );
     }) })
   ] });
-}
-function useResolvedApprovalGate(initialGate) {
-  const [resolvedApprovalGate, setResolvedApprovalGate] = reactExports.useState(initialGate);
-  reactExports.useEffect(() => {
-    setResolvedApprovalGate(initialGate);
-  }, [initialGate]);
-  const resolveApprovalGate = reactExports.useCallback(async () => {
-    if (resolvedApprovalGate !== null) {
-      return resolvedApprovalGate;
-    }
-    try {
-      const payload = await fetchSettings();
-      const gate = payload.settings.approval_gate ?? null;
-      setResolvedApprovalGate(gate);
-      return gate;
-    } catch {
-      return null;
-    }
-  }, [resolvedApprovalGate]);
-  return { resolvedApprovalGate, resolveApprovalGate };
 }
 function ManagerProofRow({
   manager,
@@ -1532,11 +1475,46 @@ const IDLE_SUPPLY_CHAIN_FIX_ALL_STATE = {
   completedSteps: [],
   failedSteps: []
 };
-function supplyChainFixAllButtonLabel(phase) {
+function supplyChainFixAllWorkingState() {
+  return {
+    phase: "working",
+    message: "Repairing package tools and turning on routing…",
+    completedSteps: [],
+    failedSteps: []
+  };
+}
+function supplyChainFixAllNeedsCloudConnect(state) {
+  return state.remainingAction === "connect" && state.failedSteps.length === 0;
+}
+function supplyChainFixAllStateFromRepair(result) {
+  const remainingAction = result.remaining_steps.some((step) => step.action === "connect") ? "connect" : null;
+  return {
+    phase: result.repaired ? "success" : "incomplete",
+    message: result.message,
+    completedSteps: result.completed_steps,
+    failedSteps: result.failed_steps.map((failure) => failure.message),
+    remainingAction,
+    remainingSteps: result.remaining_steps.map((step) => step.message)
+  };
+}
+function supplyChainFixAllConnectState(phase, message, remainingSteps = []) {
+  return {
+    phase,
+    message,
+    completedSteps: [],
+    failedSteps: [],
+    remainingAction: "connect",
+    remainingSteps
+  };
+}
+function supplyChainFixAllButtonLabel(phase, remainingAction = null, failedCount = 0) {
   if (phase === "working") return "Fixing…";
   if (phase === "approval") return "Approval required";
   if (phase === "connecting") return "Connecting…";
-  if (phase === "incomplete" || phase === "error") return "Retry fixes";
+  if ((phase === "incomplete" || phase === "error") && remainingAction === "connect" && failedCount === 0) {
+    return "Connect Guard Cloud";
+  }
+  if (phase === "incomplete" || phase === "error") return "Retry remaining";
   return "Fix all";
 }
 function supplyChainFixAllIsPending(phase) {
@@ -1617,6 +1595,7 @@ const PackageFirewallPanel = reactExports.forwardRef(function PackageFirewallPan
   } = props;
   const rootRef = reactExports.useRef(null);
   const recoveryConnectHandledRef = reactExports.useRef(false);
+  const repairNeedsCloudConnectRef = reactExports.useRef(false);
   const [panelLoad, setPanelLoad] = reactExports.useState({ phase: "loading" });
   const [pendingOp, setPendingOp] = reactExports.useState(null);
   const [lastCompleted, setLastCompleted] = reactExports.useState(null);
@@ -1881,46 +1860,40 @@ const PackageFirewallPanel = reactExports.forwardRef(function PackageFirewallPan
   }, [onStateChanged, refreshAfterOp]);
   const beginFixAllConnectRecovery = reactExports.useCallback(async () => {
     setResumeFixAllAfterConnect(true);
-    onFixAllStateChange?.({
-      phase: "connecting",
-      message: "Finish Guard Cloud sign-in. Repair will resume here automatically.",
-      completedSteps: [],
-      failedSteps: []
-    });
+    onFixAllStateChange?.(
+      supplyChainFixAllConnectState(
+        "connecting",
+        "Finish Guard Cloud sign-in. Repair will resume here automatically."
+      )
+    );
     const started = await handleStartConnect();
     if (started) return;
     setResumeFixAllAfterConnect(false);
-    onFixAllStateChange?.({
-      phase: "error",
-      message: "Guard Cloud sign-in could not start. Retry fixes to try again.",
-      completedSteps: [],
-      failedSteps: ["Guard Cloud sign-in could not start."]
-    });
+    repairNeedsCloudConnectRef.current = true;
+    onFixAllStateChange?.(
+      supplyChainFixAllConnectState(
+        "error",
+        "Guard Cloud sign-in could not start. Connect again to continue.",
+        ["Guard Cloud sign-in could not start."]
+      )
+    );
   }, [handleStartConnect, onFixAllStateChange]);
   const handleFixAll = reactExports.useCallback(
     async (credentials) => {
       const requiresConnection = panelLoad.phase === "loaded" && supplyChainFixAllRequiresConnection(panelLoad.data);
-      if (requiresConnection) {
+      if (requiresConnection || repairNeedsCloudConnectRef.current) {
         await beginFixAllConnectRecovery();
         return;
       }
-      onFixAllStateChange?.({
-        phase: "working",
-        message: "Repairing package tools, activation, and safety intelligence…",
-        completedSteps: [],
-        failedSteps: []
-      });
+      onFixAllStateChange?.(supplyChainFixAllWorkingState());
       setPendingOp({ op: "fix_all", manager: null });
       try {
         const result = await repairSupplyChainProtection(credentials);
         await refreshAfterOp();
         await onStateChanged?.();
-        onFixAllStateChange?.({
-          phase: result.repaired ? "success" : "incomplete",
-          message: result.message,
-          completedSteps: result.completed_steps,
-          failedSteps: result.failed_steps.map((failure) => failure.message)
-        });
+        const nextState = supplyChainFixAllStateFromRepair(result);
+        repairNeedsCloudConnectRef.current = supplyChainFixAllNeedsCloudConnect(nextState);
+        onFixAllStateChange?.(nextState);
       } catch (error) {
         if (credentials === void 0 && isApprovalGateRequiredError(error)) {
           await resolveApprovalGate();
@@ -1939,7 +1912,7 @@ const PackageFirewallPanel = reactExports.forwardRef(function PackageFirewallPan
         }
         const message = readHarnessActionUserMessage(
           error,
-          "Guard could not complete supply-chain repair. Retry here to continue safely."
+          "Guard could not complete supply-chain repair. Retry remaining steps to continue safely."
         );
         onFixAllStateChange?.({
           phase: "error",
@@ -1967,18 +1940,21 @@ const PackageFirewallPanel = reactExports.forwardRef(function PackageFirewallPan
     if (!startingConnect && !panelLoad.data.entitlement.allowed && (panelLoad.data.connect_flow === null || panelLoad.data.connect_flow.state === "idle" || panelLoad.data.connect_flow.state === "failed")) {
       const connectFailed = panelLoad.data.connect_flow?.state === "failed";
       setResumeFixAllAfterConnect(false);
-      onFixAllStateChange?.({
-        phase: "error",
-        message: connectFailed ? panelLoad.data.connect_flow?.detail || "Guard Cloud sign-in did not finish. Retry fixes." : "Guard Cloud sign-in did not grant package protection access. Retry or review plan access.",
-        completedSteps: [],
-        failedSteps: [
-          connectFailed ? "Guard Cloud sign-in did not finish." : "Package protection access is still unavailable."
-        ]
-      });
+      repairNeedsCloudConnectRef.current = true;
+      onFixAllStateChange?.(
+        supplyChainFixAllConnectState(
+          "error",
+          connectFailed ? panelLoad.data.connect_flow?.detail || "Guard Cloud sign-in did not finish. Connect again to continue." : "Guard Cloud sign-in did not grant package protection access. Connect again or review plan access.",
+          [
+            connectFailed ? "Guard Cloud sign-in did not finish." : "Package protection access is still unavailable."
+          ]
+        )
+      );
       return;
     }
     if (!panelLoad.data.entitlement.allowed) return;
     setResumeFixAllAfterConnect(false);
+    repairNeedsCloudConnectRef.current = false;
     void handleFixAll();
   }, [
     handleFixAll,
@@ -2499,13 +2475,16 @@ function useSupplyChainAuditSession({
     handleRunAudit
   };
 }
-const SupplyChainWorkspace = reactExports.lazy(
-  () => __vitePreload(() => import("./supply-chain-workspace.js"), true ? __vite__mapDeps([0,1,2,3,4,5]) : void 0).then((m) => ({ default: m.SupplyChainWorkspace }))
+const SupplyChainWorkspace = lazyWorkspace(
+  "supply-chain-workspace",
+  () => __vitePreload(() => import("./supply-chain-workspace.js"), true ? __vite__mapDeps([0,1,2,3,4,5,6]) : void 0).then((m) => ({ default: m.SupplyChainWorkspace }))
 );
-const AuditWorkspace = reactExports.lazy(
-  () => __vitePreload(() => import("./audit-workspace.js"), true ? __vite__mapDeps([6,1,2,5]) : void 0).then((m) => ({ default: m.AuditWorkspace }))
+const AuditWorkspace = lazyWorkspace(
+  "audit-workspace",
+  () => __vitePreload(() => import("./audit-workspace.js"), true ? __vite__mapDeps([7,1,2,6,5]) : void 0).then((m) => ({ default: m.AuditWorkspace }))
 );
-const FeedHealthWorkspace = reactExports.lazy(
+const FeedHealthWorkspace = lazyWorkspace(
+  "feed-health-workspace",
   () => __vitePreload(() => import("./feed-health-workspace.js"), true ? __vite__mapDeps([3,1,2]) : void 0).then((m) => ({ default: m.FeedHealthWorkspace }))
 );
 const hubTabs = [
@@ -2608,14 +2587,13 @@ const supplyChainHubWorkspace = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Ob
   hubTitleForTab
 }, Symbol.toStringTag, { value: "Module" }));
 export {
-  ApprovalProofModal as A,
   SUPPLY_CHAIN_WORKSPACE_SHELL_CLASS as S,
-  supplyChainFixAllButtonLabel as a,
-  sortPackageWorkbenchFindings as b,
-  supplyChainHubWorkspace as c,
+  supplyChainFixAllNeedsCloudConnect as a,
+  supplyChainFixAllButtonLabel as b,
+  sortPackageWorkbenchFindings as c,
+  supplyChainHubWorkspace as d,
   filterPackageWorkbenchFindings as f,
   isApprovalGateRequiredError as i,
   packageWorkbenchEcosystems as p,
-  supplyChainFixAllIsPending as s,
-  useResolvedApprovalGate as u
+  supplyChainFixAllIsPending as s
 };

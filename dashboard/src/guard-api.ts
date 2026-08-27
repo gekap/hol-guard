@@ -8,7 +8,11 @@ import {
   CODEX_RESUME_STATUSES
 } from "./guard-types";
 import { computeTrendBuckets } from "./evidence/evidence-metrics";
+import { normalizeOperatorHealth } from "./operator-health";
+import { canonicalizeGuardDaemonOrigin, standardGuardDaemonOrigin } from "./guard-daemon-origin";
 import { normalizeProtectionHealth, protectionHeadlineFor } from "./protection-health";
+import { normalizeSupplyChainRepairResult } from "./supply-chain-repair-result";
+export { normalizeOperatorHealth } from "./operator-health";
 import {
   AUTHORITATIVE_DECISION_INCONSISTENT,
   guardActionDisposition,
@@ -64,7 +68,6 @@ import type {
   GuardCloudConnectStatusResponse,
   SupplyChainBundle,
   SupplyChainRepairResult,
-  SupplyChainRepairStepFailure,
   SupplyChainSnapshot,
   GuardSettingsPayload,
   GuardSettingsExport,
@@ -75,7 +78,10 @@ import type {
   GuardUpdateStatus,
   GuardUpdateVersionCheck,
   DecisionScope,
+  GuardApprovalResolutionInput,
+  RiskSignalV2,
   RiskSignalV2Category,
+  RiskSignalV2RedactionLevel,
   RiskSignalV2Severity,
 } from "./guard-types";
 import {
@@ -157,6 +163,7 @@ type RuntimeSnapshotPayload = Omit<
   | "supply_chain"
   | "managed_installs"
   | "cloud_command_capability"
+  | "operator_health"
   | "protection_health"
   | "runtime_state"
   | "latest_receipts"
@@ -169,6 +176,7 @@ type RuntimeSnapshotPayload = Omit<
   supply_chain?: unknown;
   managed_installs?: unknown;
   cloud_command_capability?: unknown;
+  operator_health?: unknown;
   protection_health?: unknown;
   runtime_state?: unknown;
 };
@@ -181,7 +189,7 @@ type QueueResolutionPayload = Omit<
   | "resolved_duplicate_ids"
   | "resolved_scope_ids"
   | "copy"
-  | "codex_resume"
+  | "codexResume"
 > & {
   item?: RawGuardApprovalRequest | null;
   resolved_request?: RawGuardApprovalRequest | null;
@@ -189,7 +197,7 @@ type QueueResolutionPayload = Omit<
   resolved_duplicate_ids?: unknown;
   resolved_scope_ids?: unknown;
   copy?: unknown;
-  codex_resume?: unknown;
+  codexResume?: unknown;
 };
 
 async function readJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -218,6 +226,20 @@ async function requestErrorMessage(response: Response, fallback: string): Promis
     return fallback;
   }
   return fallback;
+}
+
+export class GuardRequestResolutionError extends Error {
+  readonly status: number;
+  readonly payload: Record<string, unknown> | null;
+
+  constructor(status: number, payload: Record<string, unknown> | null, fallback: string) {
+    const error = typeof payload?.["error"] === "string" ? payload["error"] : null;
+    const message = typeof payload?.["message"] === "string" ? payload["message"] : null;
+    super(message?.trim() || (error?.trim() ? `${error} (${status})` : fallback));
+    this.name = "GuardRequestResolutionError";
+    this.status = status;
+    this.payload = payload;
+  }
 }
 
 export class GuardHarnessActionError extends Error {
@@ -868,8 +890,6 @@ export async function reconnectGuardDaemonAfterUpdate(
 }
 
 function readGuardDaemonOrigin(): string | null {
-  const storedDaemonUrl = readGuardStorage(GUARD_DAEMON_PARAM);
-  const storedDaemonOrigin = storedDaemonUrl ? localGuardDaemonOrigin(storedDaemonUrl) : null;
   const rawDaemonUrl = guardParam(GUARD_DAEMON_PARAM);
   if (rawDaemonUrl) {
     const daemonOrigin = localGuardDaemonOrigin(rawDaemonUrl);
@@ -880,37 +900,21 @@ function readGuardDaemonOrigin(): string | null {
       return daemonOrigin;
     }
   }
+  const pageOrigin = standardGuardDaemonOrigin(
+    window.location.origin,
+    DEFAULT_GUARD_DAEMON_PORT,
+    GUARD_DAEMON_PORT_RANGE,
+  );
+  if (pageOrigin) {
+    saveGuardStorage(GUARD_DAEMON_PARAM, pageOrigin);
+    return pageOrigin;
+  }
+  const storedDaemonUrl = readGuardStorage(GUARD_DAEMON_PARAM);
+  const storedDaemonOrigin = storedDaemonUrl ? localGuardDaemonOrigin(storedDaemonUrl) : null;
   return storedDaemonOrigin;
 }
 
-export function canonicalizeGuardDaemonOrigin(rawUrl: string): string | null {
-  try {
-    const rawOrigin = rawUrl.trim();
-    const url = new URL(rawOrigin);
-    if (url.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(url.hostname)) {
-      return null;
-    }
-    if (
-      url.username ||
-      url.password ||
-      (url.pathname && url.pathname !== "/") ||
-      url.search ||
-      url.hash ||
-      !url.port
-    ) {
-      return null;
-    }
-    const port = Number(url.port);
-    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-      return null;
-    }
-    const canonicalHost = url.hostname === "[::1]" ? "[::1]" : "127.0.0.1";
-    const canonical = `http://${canonicalHost}:${port}`;
-    return url.origin === canonical && (rawOrigin === canonical || rawOrigin === `${canonical}/`) ? canonical : null;
-  } catch {
-    return null;
-  }
-}
+export { canonicalizeGuardDaemonOrigin } from "./guard-daemon-origin";
 
 function localGuardDaemonOrigin(rawUrl: string): string | null {
   return canonicalizeGuardDaemonOrigin(rawUrl);
@@ -973,9 +977,19 @@ export async function fetchCommandActivityApi(input: RequestInfo, init?: Request
 export async function fetchExtensionControlApi(input: RequestInfo, init?: RequestInit): Promise<Response> {
   const approvedPath =
     typeof input === "string" &&
-    /^\/v1\/extension-controls\/(?:catalog|effective|preview|apply|refresh)$/.test(input);
+    /^\/v1\/extension-controls\/(?:catalog|effective|history|preview|test|apply|refresh|recover-authority|acknowledge-degraded)$/.test(input);
   if (!approvedPath) {
     throw new Error("Invalid extension-control API path");
+  }
+  return fetchWithGuardAuth(input, init);
+}
+
+export async function fetchLocalCliApi(input: RequestInfo, init?: RequestInit): Promise<Response> {
+  const approvedPath =
+    typeof input === "string" &&
+    /^\/v1\/local-clis(?:\/(?:preview|apply|recognize))?$/.test(input);
+  if (!approvedPath) {
+    throw new Error("Invalid local CLI API path");
   }
   return fetchWithGuardAuth(input, init);
 }
@@ -1143,6 +1157,7 @@ export function parseActionEnvelope(raw: unknown): GuardActionEnvelope | null {
   const mcpTool = raw["mcp_tool"];
   const packageManager = raw["package_manager"];
   const packageName = raw["package_name"];
+  const commandCategory = raw["command_category"];
   const packageIntentKind = raw["package_intent_kind"];
   const packageTargets = raw["package_targets"];
   const preExecutionResult = aliasedPreExecutionResult.value;
@@ -1169,6 +1184,8 @@ export function parseActionEnvelope(raw: unknown): GuardActionEnvelope | null {
     !isStringOrNull(mcpTool) ||
     !isStringOrNull(packageManager) ||
     !isStringOrNull(packageName) ||
+    (commandCategory !== undefined
+      && (!isStringOrNull(commandCategory) || (typeof commandCategory === "string" && commandCategory.length > 160))) ||
     (packageIntentKind !== undefined && !isStringOrNull(packageIntentKind)) ||
     (preExecutionResult !== undefined && preExecutionResult !== null && !isGuardAction(preExecutionResult)) ||
     (policyAction !== undefined && policyAction !== null && !isGuardAction(policyAction)) ||
@@ -1204,6 +1221,7 @@ export function parseActionEnvelope(raw: unknown): GuardActionEnvelope | null {
     mcp_tool: mcpTool,
     package_manager: packageManager,
     package_name: packageName,
+    command_category: isStringOrNull(commandCategory) ? commandCategory : null,
     package_intent_kind: isStringOrNull(packageIntentKind) ? packageIntentKind : null,
     package_targets: isStringArray(packageTargets) ? packageTargets : [],
     pre_execution_result: isGuardAction(preExecutionResult) ? preExecutionResult : null,
@@ -1539,6 +1557,7 @@ function normalizePackageManagerProtection(raw: unknown): PackageManagerProtecti
     shell_profile_path: isStringOrNull(raw["shell_profile_path"]) ? raw["shell_profile_path"] : null,
     shim_dir: shimDir,
     supported_managers: normalizeStringArray(raw["supported_managers"]),
+    detected_managers: normalizeStringArray(raw["detected_managers"]),
     installed_managers: normalizeStringArray(raw["installed_managers"]),
     active_managers: normalizeStringArray(raw["active_managers"]),
     missing_shims: normalizeStringArray(raw["missing_shims"]),
@@ -1663,6 +1682,7 @@ export function normalizeRuntimeSnapshot(snapshot: RuntimeSnapshotPayload): Guar
     supply_chain: normalizeSupplyChainSnapshot(snapshot.supply_chain),
     managed_installs: normalizeManagedInstalls(snapshot.managed_installs),
     cloud_command_capability: normalizeCloudCommandCapability(snapshot.cloud_command_capability),
+    operator_health: normalizeOperatorHealth(snapshot.operator_health),
     protection_health: protectionHealth,
   };
 }
@@ -1807,7 +1827,7 @@ function normalizeQueueResolution(payload: QueueResolutionPayload): GuardQueueRe
     resolution_summary: typeof payload.resolution_summary === "string" ? payload.resolution_summary : "",
     retry_hint: isStringOrNull(payload.retry_hint) ? payload.retry_hint : null,
     copy: normalizeQueueCopy(payload.copy),
-    codex_resume: normalizeCodexResume(payload.codex_resume)
+    codexResume: normalizeCodexResume(payload.codexResume)
   };
 }
 
@@ -2501,20 +2521,19 @@ function normalizeGuardCloudConnectStatus(value: unknown): GuardCloudConnectStat
   };
 }
 
-export async function fetchGuardCloudConnectStatus(): Promise<GuardCloudConnectStatusResponse> {
-  return normalizeGuardCloudConnectStatus(await readJson<unknown>("/v1/cloud/connect"));
+export async function fetchGuardCloudConnectStatus(signal?: AbortSignal): Promise<GuardCloudConnectStatusResponse> {
+  return normalizeGuardCloudConnectStatus(await readJson<unknown>("/v1/cloud/connect", { signal }));
 }
-
-export async function startGuardCloudConnect(): Promise<GuardCloudConnectStatusResponse> {
+export async function startGuardCloudConnect(signal?: AbortSignal): Promise<GuardCloudConnectStatusResponse> {
   return normalizeGuardCloudConnectStatus(
     await readJson<unknown>("/v1/cloud/connect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
+      signal,
     }),
   );
 }
-
 export async function fetchLatestReceipt(
   artifactId: string,
   harness: string
@@ -2863,15 +2882,7 @@ function fetchGuardApi(input: RequestInfo, init?: RequestInit): Promise<Response
   return fetchWithGuardAuth(input, init);
 }
 
-export async function resolveRequest(input: {
-  requestId: string;
-  action: "allow" | "block";
-  scope: DecisionScope;
-  workspace?: string;
-  reason: string;
-  scope_contract_version?: string;
-  scope_contract_digest?: string;
-}): Promise<void> {
+export async function resolveRequest(input: GuardApprovalResolutionInput): Promise<void> {
   await resolveRequestWithQueueResult(input);
 }
 
@@ -2982,18 +2993,9 @@ export async function disableApprovalGateTotp(
   });
 }
 
-export async function resolveRequestWithQueueResult(input: {
-  requestId: string;
-  action: "allow" | "block";
-  scope: DecisionScope;
-  workspace?: string;
-  reason: string;
-  approval_password?: string;
-  approval_totp_code?: string;
-  approval_gate_use_cooldown?: boolean;
-  scope_contract_version?: string;
-  scope_contract_digest?: string;
-}): Promise<GuardQueueResolutionResult> {
+export async function resolveRequestWithQueueResult(
+  input: GuardApprovalResolutionInput,
+): Promise<GuardQueueResolutionResult> {
   if (isGuardDemoMode()) {
     return {
       resolved: true,
@@ -3006,7 +3008,7 @@ export async function resolveRequestWithQueueResult(input: {
       resolution_summary: "Decision saved.",
       retry_hint: null,
       copy: null,
-      codex_resume: null
+      codexResume: null
     };
   }
   const actionPath = input.action === "allow" ? "approve" : "block";
@@ -3028,6 +3030,15 @@ export async function resolveRequestWithQueueResult(input: {
       ...(input.scope_contract_digest !== undefined
         ? { scope_contract_digest: input.scope_contract_digest }
         : {}),
+      ...(input.persist_policy !== undefined ? { persist_policy: input.persist_policy } : {}),
+      ...(input.mcp_grant_target !== undefined ? { mcp_grant_target: input.mcp_grant_target } : {}),
+      ...(input.mcp_grant_duration !== undefined ? { mcp_grant_duration: input.mcp_grant_duration } : {}),
+      ...(input.local_tool_grant_target !== undefined
+        ? { local_tool_grant_target: input.local_tool_grant_target }
+        : {}),
+      ...(input.local_tool_grant_duration !== undefined
+        ? { local_tool_grant_duration: input.local_tool_grant_duration }
+        : {}),
       ...(input.approval_password !== undefined ? { approval_password: input.approval_password } : {}),
       ...(input.approval_totp_code !== undefined ? { approval_totp_code: input.approval_totp_code } : {}),
       ...(input.approval_gate_use_cooldown !== undefined ? { approval_gate_use_cooldown: input.approval_gate_use_cooldown } : {})
@@ -3035,7 +3046,18 @@ export async function resolveRequestWithQueueResult(input: {
   });
   const response = await fetchGuardApi(path, init());
   if (!response.ok) {
-    throw new Error(await requestErrorMessage(response, `Request failed with ${response.status}`));
+    let payload: Record<string, unknown> | null = null;
+    try {
+      const candidate: unknown = await response.clone().json();
+      payload = isRecord(candidate) ? candidate : null;
+    } catch {
+      payload = null;
+    }
+    throw new GuardRequestResolutionError(
+      response.status,
+      payload,
+      await requestErrorMessage(response, `Request failed with ${response.status}`),
+    );
   }
   const payload = (await response.json()) as QueueResolutionPayload;
   return normalizeQueueResolution(payload);
@@ -3123,6 +3145,9 @@ export class GuardProtectionRepairError extends Error {
   readonly status: number;
   readonly code: string | null;
   readonly repairScope: "local_integrity" | null;
+  readonly failedCheckIds: string[];
+  readonly failedHarnesses: string[];
+  readonly pendingCheckIds: string[];
 
   constructor(status: number, payload: Record<string, unknown> | null) {
     const message = payload === null ? null : stringValue(payload.message);
@@ -3131,7 +3156,15 @@ export class GuardProtectionRepairError extends Error {
     this.status = status;
     this.code = payload === null ? null : stringValue(payload.error);
     this.repairScope = payload?.repair_scope === "local_integrity" ? "local_integrity" : null;
+    this.failedCheckIds = stringArrayValue(payload?.failed_check_ids);
+    this.failedHarnesses = stringArrayValue(payload?.failed_harnesses);
+    this.pendingCheckIds = stringArrayValue(payload?.pending_check_ids);
   }
+}
+
+function stringArrayValue(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
 }
 
 export async function repairProtectionCheck(checkId: string): Promise<GuardProtectionRepairResult> {
@@ -3732,11 +3765,12 @@ export function normalizePackageFirewallStatus(value: unknown): PackageFirewallS
     shell_profile_path: isStringOrNull(shellProfilePath) ? (shellProfilePath as string | null) : null,
     shim_dir: stringValue(readPackageShimField(shimStatus, "shim_dir", "shimDir")) ?? "",
     supported_managers: supportedManagers,
+    detected_managers: detectedManagers,
     installed_managers: installedManagers,
     active_managers: activeManagers,
     missing_shims: missingManagers,
     protected_managers: protectedManagers,
-    unprotected_managers: supportedManagers.filter((manager) => !protectedSet.has(manager)),
+    unprotected_managers: detectedManagers.filter((manager) => !protectedSet.has(manager)),
   };
   return {
     actions: normalizePackageFirewallActions(record.actions),
@@ -3957,6 +3991,7 @@ export async function repairSupplyChainProtection(credentials?: {
       repaired: true,
       completed_steps: ["package_shims", "runtime_activation", "intelligence_sync"],
       failed_steps: [],
+      remaining_steps: [],
       message: "Supply-chain protection restored and refreshed.",
     };
   }
@@ -3986,36 +4021,7 @@ export async function repairSupplyChainProtection(credentials?: {
     throw new Error("Guard returned an invalid supply-chain repair result.");
   }
   const result = payloadBody.result;
-  const failures: SupplyChainRepairStepFailure[] = [];
-  if (Array.isArray(result.failed_steps)) {
-    for (const candidate of result.failed_steps) {
-      if (!isRecord(candidate)) continue;
-      const step = stringValue(candidate.step);
-      const message = stringValue(candidate.message);
-      if (
-        (step === "package_shims" ||
-          step === "runtime_activation" ||
-          step === "intelligence_sync") &&
-        message !== null
-      ) {
-        failures.push({ step, message });
-      }
-    }
-  }
-  const completedSteps = Array.isArray(result.completed_steps)
-    ? result.completed_steps.filter((value): value is string => typeof value === "string")
-    : [];
-  const requiredSteps = ["package_shims", "runtime_activation", "intelligence_sync"];
-  const completedWithoutFailures =
-    Array.isArray(result.failed_steps) &&
-    result.failed_steps.length === 0 &&
-    requiredSteps.every((step) => completedSteps.includes(step));
-  return {
-    repaired: result.repaired === true || (!("repaired" in result) && completedWithoutFailures),
-    completed_steps: completedSteps,
-    failed_steps: failures,
-    message: stringValue(result.message) ?? "Supply-chain repair finished.",
-  };
+  return normalizeSupplyChainRepairResult(result);
 }
 
 export type EvidencePageData = {

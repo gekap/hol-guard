@@ -22,16 +22,34 @@ _PROBE_TIMEOUT_SECONDS = 1.0
 
 
 def is_safe_git_worktree_add(command_text: str, *, cwd: Path | None, home_dir: Path) -> bool:
-    """Accept one new branch worktree under a bounded developer root."""
+    """Accept one new branch or detached worktree under a bounded developer root."""
 
-    tokens = _literal_tokens(command_text)
-    if tokens is None or len(tokens) != 7 or tokens[:4] != ["git", "worktree", "add", "-b"] or cwd is None:
+    resolved = _resolved_worktree_command(command_text, cwd=cwd, home_dir=home_dir)
+    if resolved is None:
         return False
-    branch, destination_text, ref = tokens[4:]
-    if not _safe_git_name(branch, _BRANCH) or not _safe_git_name(ref, _REF):
+    command_text, execution_cwd = resolved
+    tokens = _literal_tokens(command_text)
+    if tokens is None:
+        return False
+    branch: str | None
+    if len(tokens) == 7 and tokens[:4] == ["git", "worktree", "add", "-b"]:
+        branch, destination_text, ref = tokens[4:]
+        if not _safe_git_name(branch, _BRANCH):
+            return False
+    elif len(tokens) == 7 and tokens[:3] == ["git", "worktree", "add"] and tokens[4] == "-b":
+        destination_text, branch, ref = tokens[3], tokens[5], tokens[6]
+        if not _safe_git_name(branch, _BRANCH):
+            return False
+    elif len(tokens) == 6 and tokens[:4] == ["git", "worktree", "add", "--detach"]:
+        branch = None
+        destination_text, ref = tokens[4:]
+        if re.fullmatch(r"[0-9a-f]{40}", ref) is None:
+            return False
+    else:
+        return False
+    if not _safe_path_operand(destination_text) or not _safe_git_name(ref, _REF):
         return False
     try:
-        execution_cwd = cwd.resolve(strict=True)
         destination = _absolute_destination(destination_text, cwd=execution_cwd, home_dir=home_dir)
     except (OSError, RuntimeError):
         return False
@@ -46,10 +64,51 @@ def is_safe_git_worktree_add(command_text: str, *, cwd: Path | None, home_dir: P
         ref=ref,
     ):
         return False
-    return _git_ref_exists(git_binary, execution_cwd, ref) and not _git_branch_exists(
-        git_binary,
-        execution_cwd,
-        branch,
+    if not _git_ref_exists(git_binary, execution_cwd, ref):
+        return False
+    return branch is None or not _git_branch_exists(git_binary, execution_cwd, branch)
+
+
+def _resolved_worktree_command(
+    command_text: str,
+    *,
+    cwd: Path | None,
+    home_dir: Path,
+) -> tuple[str, Path] | None:
+    if cwd is None or any(marker in command_text for marker in ("$", "`", "<(", ">(", "\0", "\r", "\n")):
+        return None
+    stripped = command_text.strip()
+    output_match = re.fullmatch(r"(?P<command>.+?)\s+2>&1\s*\|\s*tail\s+-[1-9][0-9]*", stripped)
+    if output_match is not None:
+        stripped = output_match.group("command")
+    execution_cwd = cwd
+    directory_match = re.fullmatch(r"cd\s+(?P<directory>[^\s;&|<>]+)\s+&&\s+(?P<command>.+)", stripped)
+    if directory_match is not None:
+        directory = directory_match.group("directory")
+        if not _safe_cd_operand(directory):
+            return None
+        execution_cwd = _expand_path(directory, cwd=cwd, home_dir=home_dir)
+        stripped = directory_match.group("command")
+    try:
+        execution_cwd = execution_cwd.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if output_match is not None and _trusted_path_command("tail", cwd=execution_cwd) is None:
+        return None
+    return stripped, execution_cwd
+
+
+def _safe_cd_operand(value: str) -> bool:
+    return _safe_path_operand(value)
+
+
+def _safe_path_operand(value: str) -> bool:
+    return bool(
+        value
+        and not value.startswith("-")
+        and (not value.startswith("~") or value.startswith("~/"))
+        and not value.startswith("~//")
+        and re.fullmatch(r"[A-Za-z0-9._/~+-]+", value)
     )
 
 

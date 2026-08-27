@@ -10,6 +10,7 @@ from pathlib import Path
 from ..command_critical_floors import command_critical_floor_factors
 from ..command_model import parse_shell_command
 from ..data_flow import extract_heredocs
+from ..read_only_git_audit import is_read_only_git_ancestry_audit
 from ..shell_execution_context import (
     ShellExecutionContext,
     model_shell_execution_context,
@@ -61,7 +62,7 @@ from .pytest_binary_safety import (
     _contains_unsafe_pytest_environment_wrapper,
     _is_literal_cat_heredoc_to_stdout,
     _looks_like_safe_pytest_binary_invocation,
-    _looks_like_safe_python_module_invocation,
+    _looks_like_supported_python_invocation,
 )
 from .request_models import _MAX_DECODED_PAYLOAD_BYTES
 from .routine_move import _looks_like_safe_routine_move
@@ -208,6 +209,12 @@ def _looks_destructive_shell_command(
     normalized = command_text.strip()
     if not normalized:
         return False
+    if home_dir is not None and is_read_only_git_ancestry_audit(
+        normalized,
+        cwd=cwd,
+        home_dir=home_dir,
+    ):
+        return False
     guard_command_token_present = any(
         Path(part).name.lower().removesuffix(".exe") in {"hol-guard", "plugin-guard"}
         for part in _split_shell_parts(normalized)
@@ -323,7 +330,7 @@ def _looks_destructive_shell_command(
     if _single_interpreter_heredoc_script(normalized) is not None or any(
         _is_python_interpreter_command(command_name) for command_name in parsed_command_names
     ):
-        return not _looks_like_safe_python_module_invocation(parts, cwd=cwd)
+        return not _looks_like_supported_python_invocation(parts, cwd=cwd)
     if _contains_unmodeled_inline_interpreter_eval(normalized, parts, parsed_command_names):
         return True
     if _contains_destructive_node_inline_eval(parts):

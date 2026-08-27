@@ -182,6 +182,7 @@ export type GuardApprovalRequest = {
   recommended_scope_by_action?: GuardRecommendedScopesByAction;
   scope_restrictions?: string[];
   task_capability_eligibility?: GuardTaskCapabilityEligibility;
+  exact_action_persistence_eligible?: boolean;
   risk_headline?: string;
   risk_summary?: string;
   risk_signals?: string[];
@@ -260,6 +261,7 @@ export type GuardApprovalResolutionInput = {
   approval_gate_use_cooldown?: boolean;
   scope_contract_version?: string;
   scope_contract_digest?: string;
+  persist_policy?: boolean;
   mcp_grant_target?: GuardTemporaryMcpGrantTarget;
   mcp_grant_duration?: GuardTemporaryMcpGrantDuration;
   local_tool_grant_target?: GuardLocalToolGrantTarget;
@@ -331,7 +333,7 @@ export type GuardQueueResolutionResult = {
   resolution_summary: string;
   retry_hint: string | null;
   copy: GuardQueueResolutionCopy | null;
-  codex_resume?: GuardCodexResumeResult | null;
+  codexResume?: GuardCodexResumeResult | null;
 };
 
 export type GuardRuntimeState = {
@@ -454,6 +456,7 @@ export type PackageManagerProtection = {
   shell_profile_path: string | null;
   shim_dir: string;
   supported_managers: string[];
+  detected_managers?: string[];
   installed_managers: string[];
   active_managers: string[];
   missing_shims: string[];
@@ -590,6 +593,8 @@ export type GuardRuntimeSnapshot = {
   cloud_command_capability?: GuardCloudCommandCapability;
   operator_health?: GuardOperatorHealth;
   security_level?: "balanced" | "strict" | "custom";
+  protection_posture?: "protected" | "extra_careful" | "watch";
+  protection_capabilities?: GuardProtectionCapability[];
   supply_chain?: SupplyChainSnapshot;
 };
 
@@ -734,6 +739,10 @@ export type GuardPolicyDecision = {
   remembered_context?: string | null;
   workspace_label?: string | null;
   source_scope_path?: string | null;
+  extension_id?: string | null;
+  permission_id?: string | null;
+  authority_mode?: "personal-shared" | "workspace-shared" | "managed-restrictive" | null;
+  cloud_workspace_label?: string | null;
 };
 
 export const GUARD_CLOUD_EXCEPTION_ACK_STATUSES = [
@@ -877,11 +886,14 @@ export type GuardApprovalGatePublicConfig = {
   fail_closed: boolean;
   strict_all_decisions: boolean;
   totp_enabled?: boolean;
-  totp_pending?: boolean;
+  totp_pending?: boolean; totp_recent_satisfied?: boolean;
 };
 
 export type GuardSettings = {
   mode: "observe" | "prompt" | "enforce";
+  protection_posture?: "protected" | "extra_careful" | "watch";
+  protection_posture_explicit?: boolean;
+  watch_auto_revert_hours?: number;
   security_level: "relaxed" | "gentle" | "balanced" | "strict" | "custom";
   default_action: string;
   unknown_publisher_action: string;
@@ -901,12 +913,26 @@ export type GuardSettings = {
   billing: boolean;
   update_channel?: "stable" | "alpha";
   approval_gate?: GuardApprovalGatePublicConfig;
+  managed_locked_settings?: string[];
+};
+
+export type GuardProtectionCapability = {
+  harness: string;
+  display_name: string;
+  can_pre_block: boolean;
+  can_ask_inline: boolean;
+  has_native_remember: boolean;
+  fail_open_on_hook_failure: boolean;
+  can_pre_block_limited: boolean;
+  honesty_sentence: string;
+  limited: boolean;
 };
 
 export type GuardSettingsPayload = {
   guard_home: string;
   config_path: string;
   settings: GuardSettings;
+  protection_capabilities?: GuardProtectionCapability[];
 };
 
 export type GuardNotificationSetupResult = {
@@ -1022,17 +1048,11 @@ export type PackageFirewallActionResponse = {
   entitlement: PackageFirewallEntitlement;
 };
 
-export type SupplyChainRepairStepFailure = {
-  step: "package_shims" | "runtime_activation" | "intelligence_sync";
-  message: string;
-};
-
-export type SupplyChainRepairResult = {
-  repaired: boolean;
-  completed_steps: string[];
-  failed_steps: SupplyChainRepairStepFailure[];
-  message: string;
-};
+export type {
+  SupplyChainRepairRemainingStep,
+  SupplyChainRepairResult,
+  SupplyChainRepairStepFailure,
+} from "./supply-chain-repair-types";
 
 export type SupplyChainAuditDecision = "allow" | "monitor" | "warn" | "ask" | "block";
 
@@ -1134,4 +1154,3 @@ export type GuardUpdateScheduleResult = {
 };
 
 export type GuardUpdatePhase = "idle" | "checking" | "updating" | "reconnecting" | "error";
-

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ..compound_git_inspection import is_low_risk_git_inspection_segment
 from ..git_execution_safety import trusted_git_binary_for_cwd
+from ..git_index_inspection import is_low_risk_git_index_inspection
 from ..kubernetes_commands import kubernetes_read_only_inventory_args
 from ..shell_command_wrappers import is_trusted_absolute_command_path
-from ..shell_execution_context import ShellExecutionContext, model_shell_execution_context
+from ..shell_execution_context import ShellExecutionContext, ShellExecutionSegment, model_shell_execution_context
 from .constants_core import _READ_ONLY_LOOKUP_COMMANDS, _READ_ONLY_LOOKUP_FILTERS, _SAFE_STATIC_SHELL_COMMANDS
 from .developer_inspection import (
     DeveloperShellEffect,
@@ -74,7 +76,7 @@ def _looks_like_safe_compound_developer_inspection(
 
     graph = _compound_developer_effect_graph(command_text, cwd=cwd, home_dir=home_dir)
     if graph is None or not graph.context.complete:
-        return False
+        return is_low_risk_git_index_inspection(command_text, cwd=cwd, home_dir=home_dir)
     silently_verified_effects = {
         DeveloperShellEffect.DIRECTORY,
         DeveloperShellEffect.LOCAL_READ,
@@ -95,6 +97,8 @@ def _looks_like_safe_compound_developer_inspection(
             command_name or "",
             args,
             cwd=segment.effective_cwd or home_dir,
+            command_token=segment.tokens[command_index],
+            command_index=command_index,
         ):
             continue
         if command_name != "git":
@@ -111,6 +115,7 @@ def _looks_like_safe_compound_developer_inspection(
                 continue
             if effect is DeveloperShellEffect.STREAM_FILTER and command_name in {
                 *_READ_ONLY_LOOKUP_FILTERS,
+                "jq",
                 "sort",
             }:
                 continue
@@ -120,6 +125,7 @@ def _looks_like_safe_compound_developer_inspection(
                 continue
             return False
         if args is None or not _git_segment_is_silently_verified(
+            segment,
             args,
             cwd=segment.effective_cwd or home_dir,
         ):
@@ -127,7 +133,12 @@ def _looks_like_safe_compound_developer_inspection(
     return True
 
 
-def _git_segment_is_silently_verified(args: list[str], *, cwd: Path) -> bool:
+def _git_segment_is_silently_verified(
+    segment: ShellExecutionSegment,
+    args: list[str],
+    *,
+    cwd: Path,
+) -> bool:
     invocation = _read_only_git_invocation(args, cwd=cwd)
     git_binary = trusted_git_binary_for_cwd(cwd)
     if invocation is None or git_binary is None:
@@ -137,6 +148,12 @@ def _git_segment_is_silently_verified(args: list[str], *, cwd: Path) -> bool:
         return _git_status_has_execution_free_config(git_cwd, git_binary=git_binary)
     if operation == "log":
         return _git_log_has_execution_free_config(git_cwd, git_binary=git_binary)
+    if operation in {"fetch", "ls-remote"}:
+        return "|" not in (*segment.control_before, *segment.control_after) and is_low_risk_git_inspection_segment(
+            segment
+        )
+    if operation in {"blame", "branch", "diff", "show", "worktree"}:
+        return is_low_risk_git_inspection_segment(segment)
     return operation in {"ls-files", "rev-parse"}
 
 
@@ -152,7 +169,13 @@ def _looks_like_safe_cli_metadata_command(command_text: str, parts: list[str], *
     executable = segments[0][0]
     if "/" in executable or "\\" in executable:
         return False
-    return _safe_cli_metadata_segment_is_safe(command_name, segments[0][1:], cwd=cwd or Path.cwd())
+    return _safe_cli_metadata_segment_is_safe(
+        command_name,
+        segments[0][1:],
+        cwd=cwd or Path.cwd(),
+        command_token=segments[0][0],
+        command_index=command_index,
+    )
 
 
 def _safe_dependency_symlink_execution_context(

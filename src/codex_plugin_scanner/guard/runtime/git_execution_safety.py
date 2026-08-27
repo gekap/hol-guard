@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import urlsplit
 
+from .executable_resolution import which_for_execution_cwd
+
 _GIT_CONFIG_ROUTING_ENV = frozenset(
     {
         "GIT_CONFIG",
@@ -42,6 +44,13 @@ _GIT_FETCH_EXECUTION_ENV = frozenset(
         "GIT_SSH",
         "GIT_SSH_COMMAND",
         "SSH_ASKPASS",
+    }
+)
+_GIT_LOCAL_CHECKOUT_EXECUTION_ENV = frozenset(
+    {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_EXEC_PATH",
+        "GIT_OBJECT_DIRECTORY",
     }
 )
 _SAFE_GITHUB_REPOSITORY_PATH = re.compile(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?")
@@ -173,13 +182,39 @@ def git_status_has_execution_free_config(
     *,
     git_binary: Path | None = None,
 ) -> bool:
-    """Reject status when Git configuration could execute an fsmonitor helper."""
+    """Reject status when Git configuration could execute a pager or fsmonitor helper."""
 
     if not git_config_routing_environment_is_clean():
         return False
     resolved_git = git_binary or trusted_git_binary_for_cwd(cwd)
     if resolved_git is None:
         return False
+    git_pager = os.environ.get("GIT_PAGER")
+    if git_pager is not None:
+        if git_pager not in {"", "cat"}:
+            return False
+    else:
+        if os.environ.get("PAGER", "") not in {"", "cat"}:
+            return False
+        for key in ("core.pager", "pager.status"):
+            try:
+                result = subprocess.run(
+                    [str(resolved_git), "config", "--null", "--get-all", key],
+                    cwd=cwd,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=1,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return False
+            if result.returncode == 1 and not result.stdout:
+                continue
+            if result.returncode != 0:
+                return False
+            values = [value for value in result.stdout.split("\0") if value]
+            if any(value != "cat" for value in values):
+                return False
     try:
         result = subprocess.run(
             [str(resolved_git), "config", "--null", "--get-all", "core.fsmonitor"],
@@ -197,6 +232,44 @@ def git_status_has_execution_free_config(
         return False
     values = [value.strip().casefold() for value in result.stdout.split("\0") if value.strip()]
     return bool(values) and all(value in {"0", "false", "no", "off"} for value in values)
+
+
+def git_object_query_has_no_lazy_fetch(
+    cwd: Path,
+    *,
+    git_binary: Path | None = None,
+) -> bool:
+    """Reject object queries when repository configuration can fetch missing objects."""
+
+    if not git_config_routing_environment_is_clean():
+        return False
+    resolved_git = git_binary or trusted_git_binary_for_cwd(cwd)
+    if resolved_git is None:
+        return False
+    try:
+        repository_cwd = cwd.resolve()
+        repository = subprocess.run(
+            [str(resolved_git), "rev-parse", "--is-inside-work-tree"],
+            cwd=repository_cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_GIT_PROBE_TIMEOUT_SECONDS,
+        )
+        config = subprocess.run(
+            [str(resolved_git), "config", "--null", "--list"],
+            cwd=repository_cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_GIT_PROBE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if repository.returncode != 0 or repository.stdout.strip() != "true" or config.returncode != 0:
+        return False
+    parsed_config = _parse_null_git_config(config.stdout)
+    return parsed_config is not None and not _git_checkout_config_can_fetch(parsed_config)
 
 
 def git_fetch_origin_has_execution_free_config(
@@ -415,7 +488,7 @@ def git_worktree_add_has_execution_free_config(
     resolved_git = git_binary or trusted_git_binary_for_cwd(cwd)
     if (
         resolved_git is None
-        or not git_fetch_origin_has_execution_free_config(cwd, git_binary=resolved_git)
+        or any(os.environ.get(key, "") != "" for key in _GIT_LOCAL_CHECKOUT_EXECUTION_ENV)
         or not git_status_has_execution_free_config(cwd, git_binary=resolved_git)
     ):
         return False
@@ -456,8 +529,10 @@ def git_worktree_add_has_execution_free_config(
         if parsed_config is not None
         else ()
     )
-    if parsed_config is None or (
-        any(configured_filters) and _git_ref_uses_checkout_filter(resolved_git, repository_cwd, ref)
+    if (
+        parsed_config is None
+        or _git_checkout_config_can_fetch(parsed_config)
+        or (any(configured_filters) and _git_ref_uses_checkout_filter(resolved_git, repository_cwd, ref))
     ):
         return False
     if hook_paths.returncode != 0:
@@ -475,6 +550,22 @@ def git_worktree_add_has_execution_free_config(
         except OSError:
             return False
     return True
+
+
+def _git_checkout_config_can_fetch(config: dict[str, tuple[str, ...]]) -> bool:
+    """Reject partial-clone configuration that can lazily fetch checkout objects."""
+
+    return any(
+        (
+            (key == "extensions.partialclone" or key.endswith(".partialclonefilter"))
+            and any(value != "" for value in values)
+        )
+        or (
+            key.endswith(".promisor")
+            and any(value.strip().casefold() not in {"", "0", "false", "no", "off"} for value in values)
+        )
+        for key, values in config.items()
+    )
 
 
 def _git_ref_uses_checkout_filter(git_binary: Path, cwd: Path, ref: str) -> bool:
@@ -533,10 +624,15 @@ def _parse_optional_scoped_git_config(
 def _git_fetch_config_routes_execution(config: dict[str, tuple[str, ...]]) -> bool:
     if config.get("remote.origin.uploadpack"):
         return True
-    if any(value.strip() for value in config.get("core.askpass", ())):
+    if any(value.strip() for key in ("core.askpass", "core.sshcommand") for value in config.get(key, ())):
         return True
-    if any(key.startswith("url.") and key.endswith(".insteadof") for key in config):
-        return True
+    for key, values in config.items():
+        if not (key.startswith("url.") and key.endswith(".insteadof")):
+            continue
+        if key != "url.https://github.com/.insteadof" or not values:
+            return True
+        if any(value.strip() != "git@github.com:" for value in values):
+            return True
     if not all(_safe_origin_fetch_refspec(value) for value in config.get("remote.origin.fetch", ())):
         return True
     boolean_keys = {
@@ -721,20 +817,14 @@ def _trusted_credential_helper(value: str, *, git_exec_path: Path, cwd: Path) ->
     return helper.is_file() and git_binary_path_is_trusted(helper, cwd=cwd)
 
 
-def _path_command_for_cwd(command: str, *, cwd: Path) -> str | None:
-    path_entries: list[str] = []
-    for entry in os.environ.get("PATH", os.defpath).split(os.pathsep):
-        candidate = Path(entry or ".").expanduser()
-        if not candidate.is_absolute():
-            candidate = cwd / candidate
-        path_entries.append(str(candidate))
-    return shutil.which(command, path=os.pathsep.join(path_entries))
+_path_command_for_cwd = which_for_execution_cwd
 
 
 __all__ = (
     "git_binary_path_is_trusted",
     "git_config_routing_environment_is_clean",
     "git_fetch_origin_has_execution_free_config",
+    "git_object_query_has_no_lazy_fetch",
     "git_push_origin_has_execution_free_config",
     "git_status_args_are_read_only",
     "git_status_has_execution_free_config",

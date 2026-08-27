@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import hashlib
 import itertools
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import cast
+
+import pytest
 
 from codex_plugin_scanner.guard import approvals as approvals_module
 from codex_plugin_scanner.guard.models import GuardRuntimeState
+from codex_plugin_scanner.guard.runtime.containment_contract import ContainmentBackend
+from codex_plugin_scanner.guard.runtime.containment_health import (
+    CONTAINMENT_POLICY_CONTRACT_DIGEST,
+    ContainmentHealthEvidence,
+)
 from codex_plugin_scanner.guard.runtime.protection_health import (
     PROTECTION_CHECK_IDS,
     PROTECTION_HEALTH_SCHEMA_VERSION,
@@ -17,6 +26,7 @@ from codex_plugin_scanner.guard.runtime.protection_health import (
 from codex_plugin_scanner.guard.runtime.protection_health_runtime import (
     build_runtime_protection_health,
 )
+from codex_plugin_scanner.guard.store import GuardStore
 
 _NOW = datetime(2026, 7, 19, 15, 0, tzinfo=timezone.utc)
 
@@ -36,12 +46,13 @@ def test_runtime_state_brackets_ipv6_approval_center_origin() -> None:
 class _ActivityHealth:
     dropped_event_count: int
     persistence_error_count: int
+    active_error_count: int
 
 
 class _Store:
-    def __init__(self, *, count: int, dropped: int, errors: int) -> None:
+    def __init__(self, *, count: int, dropped: int, errors: int, active_errors: int) -> None:
         self._count: int = count
-        self._health: _ActivityHealth = _ActivityHealth(dropped, errors)
+        self._health: _ActivityHealth = _ActivityHealth(dropped, errors, active_errors)
 
     def count_command_activities(self) -> int:
         return self._count
@@ -50,19 +61,43 @@ class _Store:
         return self._health
 
 
+def _containment_evidence() -> dict[str, object]:
+    fingerprint = hashlib.sha256(b"stable").hexdigest()
+    return ContainmentHealthEvidence(
+        backend=ContainmentBackend.MACOS_SANDBOX,
+        backend_digest=hashlib.sha256(b"backend").hexdigest(),
+        policy_contract_digest=CONTAINMENT_POLICY_CONTRACT_DIGEST,
+        daemon_fingerprint=fingerprint,
+        runtime_fingerprint=fingerprint,
+        probe_at=_NOW.isoformat(),
+        probe_enforced=True,
+    ).to_dict()
+
+
 def _payload(
     *,
     installs: list[dict[str, object]] | None = None,
     trust: dict[str, object] | None = None,
     dropped: int = 0,
     errors: int = 0,
+    active_errors: int | None = None,
     activity_count: int = 1,
     runtime_state: dict[str, object] | None = None,
     hook_verification: dict[str, bool] | None = None,
 ) -> dict[str, object]:
+    if runtime_state is None:
+        runtime_state = {
+            "last_heartbeat_at": _NOW.isoformat(),
+            "containment_health": _containment_evidence(),
+        }
     return build_runtime_protection_health(
-        store=_Store(count=activity_count, dropped=dropped, errors=errors),
-        runtime_state={"last_heartbeat_at": _NOW.isoformat()} if runtime_state is None else runtime_state,
+        store=_Store(
+            count=activity_count,
+            dropped=dropped,
+            errors=errors,
+            active_errors=(1 if dropped > 0 or errors > 0 else 0) if active_errors is None else active_errors,
+        ),
+        runtime_state=runtime_state,
         managed_installs=installs or [],
         hook_verification=hook_verification,
         trust_status=trust or {},
@@ -89,6 +124,46 @@ def test_missing_positive_proofs_never_claim_protected_or_partial() -> None:
         assert payload["state"] not in {"protected", "partial"}
 
 
+def test_repaired_live_state_ignores_historical_evidence_errors() -> None:
+    payload = _payload(
+        installs=[{"harness": "codex", "active": True}],
+        trust={"runtime_protection": "protected", "remembered_rules": "enforced"},
+        dropped=12_338,
+        errors=12_338,
+        active_errors=0,
+        activity_count=38_102,
+        hook_verification={"codex": True},
+    )
+    checks = cast(list[dict[str, str]], payload["checks"])
+    by_id = {check["check_id"]: check for check in checks}
+    assert by_id["rule_packs"]["status"] == "pass"
+    assert by_id["decision_stream"] == {
+        "check_id": "decision_stream",
+        "status": "pass",
+        "reason_code": "decision_stream_healthy",
+    }
+    assert by_id["tamper_checks"]["status"] == "pass"
+    assert payload["state"] == "protected"
+
+
+def test_fresh_evidence_store_is_ready_before_first_command() -> None:
+    payload = _payload(
+        installs=[{"harness": "codex", "active": True}],
+        trust={"runtime_protection": "protected", "remembered_rules": "enforced"},
+        active_errors=0,
+        activity_count=0,
+        hook_verification={"codex": True},
+    )
+    checks = cast(list[dict[str, str]], payload["checks"])
+    decision_stream = next(check for check in checks if check["check_id"] == "decision_stream")
+    assert decision_stream == {
+        "check_id": "decision_stream",
+        "status": "pass",
+        "reason_code": "decision_stream_ready",
+    }
+    assert payload["state"] == "protected"
+
+
 def test_canonical_managed_install_supersedes_legacy_alias() -> None:
     installs = [
         {"harness": "claude", "active": True, "manifest": {}},
@@ -108,6 +183,27 @@ def test_canonical_managed_install_supersedes_legacy_alias() -> None:
     ]
 
 
+def test_cursor_attestation_unavailable_is_unproven_not_inactive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = GuardStore(tmp_path / "guard-home")
+    installs = [{"harness": "cursor", "active": True, "manifest": {}}]
+
+    def unavailable(_context: object) -> dict[str, object]:
+        return {
+            "protection_active": False,
+            "integrity_status": "attestation-unavailable",
+            "reason": "guard_cursor_cli_attestation_unavailable",
+        }
+
+    monkeypatch.setattr(
+        "codex_plugin_scanner.guard.adapters.cursor_hooks.cursor_native_hook_state",
+        unavailable,
+    )
+    assert approvals_module._live_hook_verification(installs, store) == {}
+
+
 def test_report_distinguishes_failed_and_unproven_facts() -> None:
     active = _payload(
         installs=[{"harness": "codex", "active": True}],
@@ -120,9 +216,8 @@ def test_report_distinguishes_failed_and_unproven_facts() -> None:
     assert by_id["daemon"]["status"] == "pass"
     assert by_id["harness_hooks"]["status"] == "unknown"
     assert by_id["harness_hooks"]["reason_code"] == "hook_attestation_unavailable"
-    assert by_id["decision_plane_compatibility"]["status"] == "fail"
-    assert by_id["decision_plane_compatibility"]["reason_code"] == "containment_health_invalid"
-    assert by_id["sandbox"]["status"] == "fail"
+    assert by_id["decision_plane_compatibility"]["status"] == "pass"
+    assert by_id["sandbox"]["status"] == "pass"
 
     degraded = _payload(
         installs=[{"harness": "codex", "active": False}],
@@ -169,9 +264,10 @@ def test_inactive_historical_rows_do_not_degrade_verified_active_hooks() -> None
         hook_verification={"cursor": True},
     )
 
-    assert payload["state"] == "degraded"
+    assert payload["state"] == "protected"
     apps = cast(list[dict[str, object]], payload["apps"])
     assert [app["harness"] for app in apps] == ["cursor"]
+    assert apps[0]["state"] == "protected"
     checks = cast(list[dict[str, str]], apps[0]["checks"])
     assert checks[0] == {
         "check_id": "harness_hooks",

@@ -801,6 +801,36 @@ def test_cursor_update_repairs_stale_attested_cli_identity(tmp_path: Path) -> No
     assert cursor_native_hook_state(context)["protection_active"] is True
 
 
+def test_cursor_update_repairs_legacy_all_surface(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = HarnessContext(home_dir=home, guard_home=tmp_path / "guard", workspace_dir=workspace)
+    hooks_manifest = install_cursor_hooks(context)
+    store = GuardStore(context.guard_home)
+    store.set_managed_install(
+        "cursor",
+        True,
+        str(workspace),
+        {"surface": "all", **hooks_manifest},
+        "2026-07-20T00:00:00+00:00",
+    )
+    script_path = Path(str(hooks_manifest["managed_hook_script_path"]))
+    script_path.write_text("tampered", encoding="utf-8")
+
+    repaired, warning = guard_update_commands_module._repair_cursor_install(
+        context=context,
+        store=store,
+        workspace=str(workspace),
+        now="2026-07-20T00:01:00+00:00",
+    )
+
+    assert warning is None
+    assert repaired is not None
+    assert repaired["manifest"]["surface"] == "all"
+    assert cursor_native_hook_state(context)["protection_active"] is True
+
+
 def test_cursor_update_reports_context_resolution_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -833,6 +863,41 @@ def test_cursor_update_reports_context_resolution_failure(
 
     assert repaired is None
     assert warning == "Could not inspect Cursor protection during update: invalid repair context"
+
+
+def test_cursor_update_reports_surface_contract_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = HarnessContext(home_dir=tmp_path / "home", guard_home=tmp_path / "guard", workspace_dir=None)
+    store = GuardStore(context.guard_home)
+    store.set_managed_install(
+        "cursor",
+        True,
+        str(tmp_path / "workspace"),
+        {"surface": "editor"},
+        "2026-07-20T00:00:00+00:00",
+    )
+    monkeypatch.setattr(
+        guard_update_commands_module,
+        "cursor_native_hook_state",
+        lambda _context: {"protection_active": False},
+    )
+    monkeypatch.setattr(
+        guard_update_commands_module,
+        "apply_managed_install",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("unsupported repair surface")),
+    )
+
+    repaired, warning = guard_update_commands_module._repair_cursor_install(
+        context=context,
+        store=store,
+        workspace=None,
+        now="2026-07-20T00:01:00+00:00",
+    )
+
+    assert repaired is None
+    assert warning == "Could not repair Cursor protection during update: unsupported repair surface"
 
 
 def test_cursor_install_is_idempotent_across_path_changes(
@@ -1200,6 +1265,174 @@ def test_cursor_native_shell_session_allow_after_trusted_after_shell(tmp_path: P
         )
         is None
     )
+
+
+def test_cursor_native_accept_resolves_inbox_when_approval_gate_enabled(tmp_path: Path) -> None:
+    from codex_plugin_scanner.guard.adapters.cursor_hooks import prepare_cursor_hook_payload
+    from codex_plugin_scanner.guard.approval_gate import update_settings as update_approval_gate_settings
+    from codex_plugin_scanner.guard.cli import commands as guard_commands_module
+    from codex_plugin_scanner.guard.models import GuardApprovalRequest
+    from codex_plugin_scanner.guard.store import GuardStore
+
+    home_dir = tmp_path / "home"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    store = GuardStore(home_dir)
+    update_approval_gate_settings(
+        store.guard_home,
+        {
+            "enabled": True,
+            "new_password": "cursor-native-accept-gate",
+            "confirm_password": "cursor-native-accept-gate",
+            "cooldown_seconds": 0,
+            "strict_all_decisions": False,
+        },
+    )
+    conversation_id = "conv-cursor-native-inbox"
+    command = "rm -rf ./hol-guard-cursor-native-test-marker"
+    generation_id = "gen-cursor-native-inbox"
+    request_id = "req-cursor-native-inbox"
+    artifact = _cursor_shell_artifact(workspace_dir=workspace_dir, command=command)
+    store.add_approval_request(
+        GuardApprovalRequest(
+            request_id=request_id,
+            harness="cursor",
+            artifact_id=artifact.artifact_id,
+            artifact_name=artifact.name,
+            artifact_hash="hash-cursor-shell",
+            policy_action="require-reapproval",
+            recommended_scope="artifact",
+            changed_fields=("tool_action_request",),
+            source_scope="project",
+            config_path=artifact.config_path,
+            review_command=f"hol-guard approvals approve {request_id}",
+            approval_url=f"http://127.0.0.1:5474/approvals/{request_id}",
+        ),
+        "2026-08-15T00:00:00+00:00",
+    )
+    _record_cursor_pending_for_test(
+        store=store,
+        guard_home=home_dir,
+        guard_commands_module=guard_commands_module,
+        conversation_id=conversation_id,
+        command=command,
+        workspace_dir=workspace_dir,
+        generation_id=generation_id,
+    )
+    guard_commands_module._attach_cursor_pending_approval_request_ids(
+        store=store,
+        payload={
+            "conversation_id": conversation_id,
+            "hook_event_name": "beforeShellExecution",
+            "command": command,
+            "cwd": str(workspace_dir),
+            "generation_id": generation_id,
+        },
+        response_payload={"approval_request_ids": [request_id]},
+    )
+    saved = guard_commands_module._persist_cursor_native_permission_after_shell(
+        store=store,
+        payload=prepare_cursor_hook_payload(
+            {
+                "conversation_id": conversation_id,
+                "generation_id": generation_id,
+                "hook_event_name": "afterShellExecution",
+                "command": command,
+                "cwd": str(workspace_dir),
+                "duration": 15,
+            }
+        ),
+        harness="cursor",
+        home_dir=home_dir,
+        guard_home=home_dir,
+        workspace=workspace_dir,
+        hook_env=_trusted_cursor_after_shell_env(
+            home_dir,
+            conversation_id=conversation_id,
+            command=command,
+            workspace_dir=workspace_dir,
+            approval_binding=generation_id,
+        ),
+    )
+    resolved = store.get_approval_request(request_id)
+
+    assert saved is True
+    assert resolved is not None
+    assert resolved.get("status") == "resolved"
+    assert resolved.get("resolution_action") == "allow"
+    assert store.list_approval_requests(status="pending", harness="cursor") == []
+
+
+def test_cursor_native_accept_resolves_inbox_by_artifact_when_ids_missing(tmp_path: Path) -> None:
+    from codex_plugin_scanner.guard.adapters.cursor_hooks import prepare_cursor_hook_payload
+    from codex_plugin_scanner.guard.cli import commands as guard_commands_module
+    from codex_plugin_scanner.guard.models import GuardApprovalRequest
+    from codex_plugin_scanner.guard.store import GuardStore
+
+    home_dir = tmp_path / "home"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    store = GuardStore(home_dir)
+    conversation_id = "conv-cursor-native-inbox-fallback"
+    command = "rm -rf ./hol-guard-cursor-native-test-marker"
+    generation_id = "gen-cursor-native-inbox-fallback"
+    request_id = "req-cursor-native-inbox-fallback"
+    artifact = _cursor_shell_artifact(workspace_dir=workspace_dir, command=command)
+    store.add_approval_request(
+        GuardApprovalRequest(
+            request_id=request_id,
+            harness="cursor",
+            artifact_id=artifact.artifact_id,
+            artifact_name=artifact.name,
+            artifact_hash="hash-cursor-shell",
+            policy_action="require-reapproval",
+            recommended_scope="artifact",
+            changed_fields=("tool_action_request",),
+            source_scope="project",
+            config_path=artifact.config_path,
+            review_command=f"hol-guard approvals approve {request_id}",
+            approval_url=f"http://127.0.0.1:5474/approvals/{request_id}",
+        ),
+        "2026-08-15T00:00:00+00:00",
+    )
+    _record_cursor_pending_for_test(
+        store=store,
+        guard_home=home_dir,
+        guard_commands_module=guard_commands_module,
+        conversation_id=conversation_id,
+        command=command,
+        workspace_dir=workspace_dir,
+        generation_id=generation_id,
+    )
+    saved = guard_commands_module._persist_cursor_native_permission_after_shell(
+        store=store,
+        payload=prepare_cursor_hook_payload(
+            {
+                "conversation_id": conversation_id,
+                "generation_id": generation_id,
+                "hook_event_name": "afterShellExecution",
+                "command": command,
+                "cwd": str(workspace_dir),
+                "duration": 15,
+            }
+        ),
+        harness="cursor",
+        home_dir=home_dir,
+        guard_home=home_dir,
+        workspace=workspace_dir,
+        hook_env=_trusted_cursor_after_shell_env(
+            home_dir,
+            conversation_id=conversation_id,
+            command=command,
+            workspace_dir=workspace_dir,
+            approval_binding=generation_id,
+        ),
+    )
+    resolved = store.get_approval_request(request_id)
+
+    assert saved is True
+    assert resolved is not None
+    assert resolved.get("status") == "resolved"
 
 
 def test_cursor_tampered_pending_shell_cannot_bootstrap_signed_native_allow(tmp_path: Path) -> None:

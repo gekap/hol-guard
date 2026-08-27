@@ -10,18 +10,39 @@ export type ApprovalScopeChoice = {
   description: string;
 };
 
+export function approvalDecisionSubjectKey(item: GuardApprovalRequest): string {
+  return JSON.stringify([
+    item.request_id,
+    item.harness,
+    item.artifact_id ?? null,
+    item.artifact_type ?? null,
+    item.artifact_hash ?? null,
+    item.action_identity ?? null,
+    item.raw_command_text ?? null,
+    item.workspace ?? null,
+  ]);
+}
+
+export function approvalDecisionContractKey(item: GuardApprovalRequest): string {
+  return JSON.stringify([
+    approvalDecisionSubjectKey(item),
+    item.scope_contract_version ?? "legacy",
+    item.scope_contract_digest ?? "legacy",
+  ]);
+}
+
 export const DEFAULT_SCOPE_CHOICES: ApprovalScopeChoice[] = [
   {
     value: "artifact",
-    label: "Approve once",
+    label: "Allow just this once",
     description:
       "Allow only this exact action this time. Guard will ask again for anything different. Nothing is saved.",
   },
   {
     value: "workspace",
-    label: "Remember for project",
+    label: "Allow and remember for this project",
     description:
-      "Save this decision for the current project. Future matching actions skip review here without asking again.",
+      "Save this exact action for the current project. Matching actions skip review here until the action changes.",
   },
   {
     value: "publisher",
@@ -217,6 +238,7 @@ export function buildDecisionPayload(input: {
   action: "allow" | "block";
   scope: DecisionScope;
   reason: string;
+  persistExactAction?: boolean;
 }): {
   requestId: string;
   action: "allow" | "block";
@@ -225,6 +247,7 @@ export function buildDecisionPayload(input: {
   reason: string;
   scope_contract_version?: string;
   scope_contract_digest?: string;
+  persist_policy?: boolean;
 } {
   const contractVersion = input.item.scope_contract_version;
   const contractDigest = input.item.scope_contract_digest;
@@ -244,12 +267,19 @@ export function buildDecisionPayload(input: {
     normalizedScope === "workspace" && typeof input.item.workspace === "string"
       ? input.item.workspace
       : undefined;
+  const persistExactAction = willPersistExactAction(
+    input.item,
+    input.action,
+    normalizedScope,
+    input.persistExactAction === true,
+  );
   return {
     requestId: input.item.request_id,
     action: input.action,
     scope: normalizedScope,
     workspace,
     reason: input.reason,
+    ...(persistExactAction ? { persist_policy: true } : {}),
     ...(hasCompleteBinding
       ? {
           scope_contract_version: contractVersion,
@@ -257,4 +287,17 @@ export function buildDecisionPayload(input: {
         }
       : {}),
   };
+}
+
+export function willPersistExactAction(
+  item: GuardApprovalRequest,
+  action: "allow" | "block",
+  scope: DecisionScope,
+  requested: boolean,
+): boolean {
+  return (
+    requested &&
+    normalizeDecisionScope(item, action, scope) === "artifact" &&
+    item.exact_action_persistence_eligible === true
+  );
 }

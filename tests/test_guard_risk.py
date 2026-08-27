@@ -1336,7 +1336,7 @@ def test_tool_action_request_classifier_skips_git_commit_with_coauthored_by_trai
         cwd=tmp_path,
     )
 
-    assert request is None
+    assert request is not None and request.action_class == "git workspace command"
 
 
 def test_tool_action_request_classifier_allows_static_markdown_gh_pr_create_body_file(tmp_path):
@@ -1376,6 +1376,62 @@ def test_tool_action_request_classifier_allows_canonical_pr_body_file_with_stand
     )
 
     assert request is None
+
+
+def test_tool_action_request_classifier_allows_named_pr_body_from_user_project_worktree(tmp_path: Path) -> None:
+    home_dir = tmp_path / "home"
+    workspace = home_dir / "CascadeProjects" / "hashgraph-online"
+    body_directory = home_dir / "CascadeProjects" / "hol-guard-protection-posture"
+    workspace.mkdir(parents=True)
+    body_directory.mkdir()
+    body_file = body_directory / "PR_BODY_PROTECTION.md"
+    body_file.write_text("## Summary\n- Add the protection posture.\n", encoding="utf-8")
+    request = extract_sensitive_tool_action_request(
+        "bash",
+        {
+            "command": (
+                "gh pr create --repo hashgraph-online/hol-guard --base release/3.0 "
+                "--head feat/protection-posture "
+                "--title 'feat(guard): add protection_posture with dual-write to mode and level' "
+                "--body-file ~/CascadeProjects/hol-guard-protection-posture/PR_BODY_PROTECTION.md"
+            )
+        },
+        cwd=workspace,
+        home_dir=home_dir,
+    )
+
+    assert request is None
+
+
+@pytest.mark.parametrize(
+    "body_operand",
+    (
+        "'~/CascadeProjects/proposal-worktree/PR_BODY_PROTECTION.md'",
+        r"\~/CascadeProjects/proposal-worktree/PR_BODY_PROTECTION.md",
+        "~//CascadeProjects/proposal-worktree/PR_BODY_PROTECTION.md",
+    ),
+)
+def test_tool_action_request_classifier_reviews_ambiguous_tilde_pr_body(
+    tmp_path: Path,
+    body_operand: str,
+) -> None:
+    home_dir = tmp_path / "home"
+    workspace = home_dir / "CascadeProjects" / "active-project"
+    body_directory = home_dir / "CascadeProjects" / "proposal-worktree"
+    workspace.mkdir(parents=True)
+    body_directory.mkdir()
+    body_file = body_directory / "PR_BODY_PROTECTION.md"
+    body_file.write_text("## Summary\n- Safe text.\n", encoding="utf-8")
+
+    request = extract_sensitive_tool_action_request(
+        "bash",
+        {"command": f"gh pr create --title 'Static title' --body-file {body_operand}"},
+        cwd=workspace,
+        home_dir=home_dir,
+    )
+
+    assert request is not None
+    assert request.action_class == "GitHub content mutation command"
 
 
 @pytest.mark.parametrize(
@@ -4824,6 +4880,62 @@ def test_extract_network_hosts_tolerates_bracketed_regex_in_url():
     regex_pattern = r"https://[^:]*:\([^@]*\)@.*|\1|"
     hosts = extract_network_hosts(f"credential strip using {regex_pattern}")
     assert hosts == set()
+
+
+def test_extract_network_hosts_ignores_config_and_module_filenames():
+    hosts = extract_network_hosts("sed next.config next.config.mjs worker.config.cjs")
+
+    assert hosts == set()
+
+
+def test_extract_network_hosts_keeps_real_hosts_with_config_labels():
+    hosts = extract_network_hosts("fetch https://config.example.com/status and inspect vault.config")
+
+    assert hosts == {"config.example.com", "vault.config"}
+
+
+def test_extract_network_hosts_ignores_vendor_media_type_subtypes():
+    command = (
+        "gh api -H 'Accept: application/vnd.github.raw+json' "
+        "'repos/hashgraph-online/hol-guard/contents/ci/test-suite-ratchet-baseline.json?ref=release/3.0'"
+    )
+
+    assert extract_network_hosts(command) == set()
+
+
+def test_artifact_risk_signals_do_not_treat_github_media_type_as_host():
+    command = (
+        "gh api -H 'Accept: application/vnd.github.raw+json' "
+        "'repos/hashgraph-online/hol-guard/contents/ci/test-suite-ratchet-baseline.json?ref=release/3.0' "
+        "| jq '{tests: .tests, total: .total}'"
+    )
+    artifact = GuardArtifact(
+        artifact_id="codex:session:github-static-read",
+        name="Bash",
+        harness="codex",
+        artifact_type="runtime_action",
+        source_scope="session",
+        config_path="/workspace",
+        command="bash",
+        args=("-lc", command),
+        transport="stdio",
+    )
+
+    signals = artifact_risk_signals_typed(artifact)
+
+    assert not any(signal.signal_id.startswith("network:host:") for signal in signals)
+
+
+def test_extract_network_hosts_keeps_real_hosts_alongside_media_types():
+    text = "Accept: application/vnd.github.raw+json https://api.github.com/repos/example/project"
+
+    assert extract_network_hosts(text) == {"api.github.com"}
+
+
+def test_extract_network_hosts_keeps_host_like_non_media_header_values():
+    text = "X-Callback: vnd.github.raw Accept: application/vnd.github.raw+json"
+
+    assert extract_network_hosts(text) == {"vnd.github.raw"}
 
 
 def test_normalized_url_indicator_tolerates_bracketed_regex():

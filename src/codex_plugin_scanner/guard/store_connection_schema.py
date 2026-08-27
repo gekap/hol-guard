@@ -11,12 +11,19 @@ from datetime import datetime, timezone
 from typing import ClassVar
 from uuid import uuid4
 
+from . import store_review_event_outbox_schema
 from .mcp.policy_store import ensure_mcp_policy_request_schema
 from .sqlite_profile import (
     SQLiteMigrationGateReport,
     SQLiteProfiler,
     SQLiteProfileSnapshot,
     sqlite_error_is_busy_locked,
+)
+from .sqlite_recovery import (
+    FATAL_SQLITE_ERROR_MARKERS,
+    SQLITE_IO_ERROR_MARKER,
+    restore_readable_sqlite_store,
+    sqlite_store_is_proven_unusable,
 )
 
 # ruff: noqa: F403,F405
@@ -27,14 +34,20 @@ from .store_command_activity_maintenance_schema import ensure_command_activity_m
 from .store_command_activity_schema import ensure_command_activity_schema
 from .store_command_shadow_schema import ensure_command_shadow_schema
 from .store_extension_control_authority_schema import ensure_extension_control_authority_schema
-from .store_live_request_outbox import ensure_live_request_outbox_schema, seed_live_request_outbox
+from .store_local_cli_schema import ensure_local_cli_schema
+from .store_resume import ensure_resume_schema
+from .store_review_event_outbox_schema import ensure_review_event_outbox_schema
 from .store_secret_policy_integrity import _POLICY_INTEGRITY_LOOKUP_UNSET
 from .store_storage_maintenance import (
     STORAGE_MAINTENANCE_MIGRATION_VERSION,
     STORAGE_QUERY_INDEX_MIGRATION_VERSION,
     storage_maintenance_schema_statements,
 )
-from .store_workflow_capabilities_schema import ensure_workflow_capability_schema
+from .store_watch_only_approval_schema import WATCH_ONLY_APPROVAL_MIGRATION_VERSION, ensure_watch_only_approval_schema
+from .store_workflow_capabilities_schema import (
+    WORKFLOW_CAPABILITY_RECEIPT_EVENT_INDEX_MIGRATION_VERSION,
+    ensure_workflow_capability_schema,
+)
 
 
 def _facade_store_attr(name: str, fallback: object) -> object:
@@ -144,13 +157,12 @@ _POLICY_INDEX_STATEMENTS = (
 )
 
 _RECEIPT_WARN_ROLLUP_MIGRATION_VERSION = 16
-_REQUIRED_SCHEMA_MIGRATION_VERSIONS = tuple(range(2, STORAGE_QUERY_INDEX_MIGRATION_VERSION + 1))
-_FATAL_SQLITE_ERROR_MARKERS = (
-    "database disk image is malformed",
-    "database corruption",
-    "file is not a database",
+_REQUIRED_SCHEMA_MIGRATION_VERSIONS = (  # Keep retired-index databases on the path that reaps the index.
+    *range(2, STORAGE_QUERY_INDEX_MIGRATION_VERSION + 1),
+    WORKFLOW_CAPABILITY_RECEIPT_EVENT_INDEX_MIGRATION_VERSION,
+    WATCH_ONLY_APPROVAL_MIGRATION_VERSION,
+    store_review_event_outbox_schema.REVIEW_EVENT_OUTBOX_MIGRATION_VERSION,
 )
-_SQLITE_IO_ERROR_MARKER = "disk i/o error"
 
 
 @dataclass
@@ -173,6 +185,7 @@ class StoreConnectionSchemaMixin:
     _startup_prefetched_policy_integrity_repair_failed = False
     _storage_recovery_local: ClassVar[threading.local] = threading.local()
     _storage_gate_local: ClassVar[threading.local] = threading.local()
+    _last_sqlite_recovery = "skipped"
 
     def _current_thread_owns_storage_recovery(self) -> bool:
         return getattr(self._storage_recovery_local, "owner", None) == id(self)
@@ -180,7 +193,7 @@ class StoreConnectionSchemaMixin:
     @staticmethod
     def _is_fatal_sqlite_error(error: BaseException) -> bool:
         return isinstance(error, sqlite3.DatabaseError) and any(
-            marker in str(error).lower() for marker in _FATAL_SQLITE_ERROR_MARKERS
+            marker in str(error).lower() for marker in FATAL_SQLITE_ERROR_MARKERS
         )
 
     @contextmanager
@@ -240,29 +253,21 @@ class StoreConnectionSchemaMixin:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def _store_is_proven_unusable(self, error: BaseException) -> bool:
-        if self._is_fatal_sqlite_error(error):
-            return True
-        if _SQLITE_IO_ERROR_MARKER not in str(error).lower():
-            return False
-        # An I/O error alone does not prove corruption. Only replace the active
-        # path when the same directory supports a fresh SQLite transaction and
-        # the existing database remains unreadable on a second probe.
-        probe_path = self.guard_home / f"storage-probe-{uuid4().hex}.db"
-        try:
-            with sqlite3.connect(probe_path, timeout=0.1) as probe:
-                probe.execute("create table probe (value integer)")
-                probe.execute("insert into probe values (1)")
-            with sqlite3.connect(self.path, timeout=0.1) as existing:
-                _ = existing.execute("pragma schema_version").fetchone()
-                return False
-        except sqlite3.DatabaseError as probe_error:
-            return _SQLITE_IO_ERROR_MARKER in str(probe_error).lower() and probe_path.is_file()
-        finally:
-            with suppress(OSError):
-                probe_path.unlink()
+        return sqlite_store_is_proven_unusable(
+            path=self.path,
+            guard_home=self.guard_home,
+            error=error,
+            fatal_error=self._is_fatal_sqlite_error(error),
+        )
 
-    def _recover_fatal_sqlite_store(self, error: BaseException) -> bool:
-        is_io_error = _SQLITE_IO_ERROR_MARKER in str(error).lower()
+    def _recover_fatal_sqlite_store(
+        self,
+        error: BaseException,
+        *,
+        failed_identity: tuple[int, int] | None = None,
+    ) -> bool:
+        self._last_sqlite_recovery = "skipped"
+        is_io_error = SQLITE_IO_ERROR_MARKER in str(error).lower()
         if (
             not isinstance(error, sqlite3.DatabaseError)
             or (not self._is_fatal_sqlite_error(error) and not is_io_error)
@@ -270,11 +275,12 @@ class StoreConnectionSchemaMixin:
             or self.path.is_symlink()
         ):
             return False
-        try:
-            failed_stat = self.path.stat()
-            failed_identity = failed_stat.st_dev, failed_stat.st_ino
-        except OSError:
-            failed_identity = None
+        if failed_identity is None:
+            try:
+                failed_stat = self.path.stat()
+                failed_identity = failed_stat.st_dev, failed_stat.st_ino
+            except OSError:
+                failed_identity = None
         with self._hold_storage_gate(exclusive=True):
             # Another process may already have replaced the failed store.
             try:
@@ -283,6 +289,7 @@ class StoreConnectionSchemaMixin:
             except OSError:
                 current_identity = None
             if current_identity != failed_identity:
+                self._last_sqlite_recovery = "replaced"
                 return True
 
             if not self._store_is_proven_unusable(error):
@@ -290,19 +297,24 @@ class StoreConnectionSchemaMixin:
 
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             quarantine_id = f"{stamp}-{uuid4().hex[:8]}"
+            quarantined = self.guard_home / f"guard.db.corrupt-{quarantine_id}"
             for suffix in ("", "-wal", "-shm"):
                 source = Path(f"{self.path}{suffix}")
                 if not source.exists() or source.is_symlink():
                     continue
-                destination = self.guard_home / f"guard.db.corrupt-{quarantine_id}{suffix}"
-                source.replace(destination)
+                source.replace(self.guard_home / f"{quarantined.name}{suffix}")
             _store_logger.error(
                 "Guard quarantined an unusable SQLite store after a fatal storage error: %s",
                 type(error).__name__,
             )
             self._storage_recovery_local.owner = id(self)
             try:
-                self._initialize_schema()
+                if restore_readable_sqlite_store(destination=self.path, quarantined=quarantined):
+                    self._last_sqlite_recovery = "restored"
+                    _store_logger.error("Guard restored the quarantined SQLite store after it still opened cleanly.")
+                else:
+                    self._initialize_schema()
+                    self._last_sqlite_recovery = "reinitialized"
             finally:
                 self._storage_recovery_local.owner = None
             return True
@@ -333,16 +345,31 @@ class StoreConnectionSchemaMixin:
             with self._connect_once() as connection:
                 yield connection
             return
+        yielded = False
         fatal_error: sqlite3.DatabaseError | None = None
+        failed_identity: tuple[int, int] | None = None
         with self._hold_storage_gate(exclusive=False):
             try:
                 with self._connect_once() as connection:
+                    yielded = True
                     yield connection
+                return
             except sqlite3.DatabaseError as error:
                 fatal_error = error
-        if fatal_error is not None:
-            self._recover_fatal_sqlite_store(fatal_error)
+                try:
+                    failed_stat = self.path.stat()
+                    failed_identity = failed_stat.st_dev, failed_stat.st_ino
+                except OSError:
+                    failed_identity = None
+                if yielded:
+                    raise
+        if fatal_error is None:
+            return
+        recovered = self._recover_fatal_sqlite_store(fatal_error, failed_identity=failed_identity)
+        if not recovered and not sqlite_error_is_busy_locked(fatal_error):
             raise fatal_error
+        with self._hold_storage_gate(exclusive=False), self._connect_once() as connection:
+            yield connection
 
     @contextmanager
     def _connect_once(self) -> Iterator[sqlite3.Connection]:
@@ -373,12 +400,12 @@ class StoreConnectionSchemaMixin:
             # thrash the default 2 MiB cache.
             connection.execute(f"pragma cache_size=-{SQLITE_CACHE_SIZE_KIB}")
             connection.execute(f"pragma mmap_size={SQLITE_MMAP_SIZE_BYTES}")
+            initial_changes = connection.total_changes
             yield connection
-            commit_started = time.monotonic()
-            try:
-                connection.commit()
-            finally:
-                profiler.record_commit((time.monotonic() - commit_started) * 1000)
+            store_review_event_outbox_schema.finalize_review_event_payload_hashes(connection)
+            outbox_generation = store_review_event_outbox_schema.commit_review_event_transaction(
+                connection, initial_changes, profiler.record_commit
+            )
             notification = self._take_policy_integrity_state_notification(connection)
         except sqlite3.OperationalError as error:
             database_failed = True
@@ -401,6 +428,7 @@ class StoreConnectionSchemaMixin:
                     "Guard store slow transaction (%.0fms); consider indexing hot query paths.",
                     elapsed_ms,
                 )
+        store_review_event_outbox_schema.notify_review_event_wake(self.path, outbox_generation)
         if notification is not None:
             self._publish_policy_integrity_state_notification(notification)
 
@@ -728,7 +756,7 @@ class StoreConnectionSchemaMixin:
             on guard_events (event_name, occurred_at desc, event_id desc)
             """,
             """
-            create table if not exists guard_remote_once_receipts (
+            create table if not exists guard_exact_cloud_review_receipts (
               receipt_id text primary key,
               request_id text not null,
               claimed_at text not null
@@ -953,14 +981,21 @@ class StoreConnectionSchemaMixin:
         with self._connect() as connection:
             if initialize_incremental_vacuum:
                 connection.execute("pragma auto_vacuum=incremental")
+            # WAL must be enabled before schema DML starts a transaction. SQLite
+            # cannot change journal modes from inside an active transaction, and
+            # leaving an existing store in rollback-journal mode lets dashboard
+            # readers exhaust the bounded hook write deadline.
+            self._enable_wal_mode(connection)
             for statement in statements:
                 connection.execute(statement)
+            ensure_resume_schema(connection)
             ensure_command_activity_schema(connection, applied_at=_now())
             ensure_command_activity_health_schema(connection, applied_at=_now())
             ensure_command_activity_maintenance_schema(connection, applied_at=_now())
             ensure_command_activity_api_schema(connection, applied_at=_now())
             ensure_evidence_schema(connection)
-            ensure_extension_control_authority_schema(connection)
+            ensure_extension_control_authority_schema(connection, require_compatible=False)
+            ensure_local_cli_schema(connection)
             ensure_workflow_capability_schema(connection, applied_at=_now())
             ensure_command_shadow_schema(connection, applied_at=_now())
             ensure_mcp_policy_request_schema(connection)
@@ -1027,10 +1062,8 @@ class StoreConnectionSchemaMixin:
             self._ensure_approval_column(connection, "browser_intent_json", "text")
             self._ensure_approval_column(connection, "desktop_notified_at", "text")
             self._ensure_approval_column(connection, "raw_command_text", "text")
-            self._ensure_approval_column(connection, "guard_version", "text")
-            self._ensure_approval_column(connection, "first_seen_guard_version", "text")
-            self._ensure_approval_column(connection, "last_seen_guard_version", "text")
-            self._ensure_approval_column(connection, "oauth_source", "text")
+            self._ensure_approval_column(connection, "continuation_snapshot_json", "text")
+            ensure_watch_only_approval_schema(connection, schema=self)
             if not self._schema_version_applied(connection, version=3):
                 _backfill_approval_queue_columns_compat(connection)
                 self._record_schema_version(connection, version=3)
@@ -1038,8 +1071,7 @@ class StoreConnectionSchemaMixin:
                 connection.execute("drop index if exists idx_approval_group_status")
             for idx_stmt in approval_index_statements():
                 connection.execute(idx_stmt)
-            ensure_live_request_outbox_schema(connection)
-            seed_live_request_outbox(connection, datetime.now(timezone.utc).isoformat())
+            ensure_review_event_outbox_schema(connection, datetime.now(timezone.utc).isoformat())
             if not self._schema_version_applied(connection, version=9):
                 self._record_schema_version(connection, version=9)
             for idx_stmt in receipt_index_statements():
@@ -1084,7 +1116,6 @@ class StoreConnectionSchemaMixin:
             )
             if not self._schema_version_applied(connection, version=2):
                 self._record_schema_version(connection, version=2)
-            self._enable_wal_mode(connection)
             connection.execute(
                 """
                 update approval_requests
@@ -1096,9 +1127,8 @@ class StoreConnectionSchemaMixin:
 
     def _initialize_policy_integrity(self) -> None:
         if getattr(self, "_prime_policy_integrity_on_initialize", True):
-            # Prime policy-integrity secrets outside the SQLite transaction. Some
-            # credential-store lookups can block long enough to stall other Guard
-            # processes if initialization still holds the writer lock.
+            # Prime secrets outside the transaction so credential-store lookups
+            # cannot stall other Guard processes while holding the writer lock.
             self._startup_prefetched_policy_integrity_secret_material = self._policy_integrity_secret_material(
                 create=False
             )
@@ -1142,11 +1172,14 @@ class StoreConnectionSchemaMixin:
                         "guard_version",
                         "first_seen_guard_version",
                         "last_seen_guard_version",
+                        "watch_only_observation",
+                        "continuation_snapshot_json",
                     }
                     return (
                         row is not None
                         and int(row[0]) == len(_REQUIRED_SCHEMA_MIGRATION_VERSIONS)
                         and storage_row is not None
+                        and "oauth_source" in approval_columns
                         and required_approval_columns <= approval_columns
                     )
                 finally:

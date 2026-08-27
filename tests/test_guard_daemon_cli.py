@@ -10,8 +10,11 @@ import os
 import sqlite3
 import subprocess
 import time
+from argparse import Namespace
 from pathlib import Path
 from typing import cast
+
+import pytest
 
 
 def _run(args: list[str], guard_home: Path) -> tuple[int, dict[str, object]]:
@@ -60,6 +63,12 @@ class TestDaemonStatusCommand:
         from codex_plugin_scanner.guard.store import GuardStore
 
         store = GuardStore(tmp_path, prime_policy_integrity=False)
+        baseline_started = time.monotonic()
+        baseline_code, baseline_payload = _run(["daemon", "status"], tmp_path)
+        baseline_elapsed = time.monotonic() - baseline_started
+        assert baseline_code == 0
+        assert baseline_payload.get("running") is False
+
         writer = sqlite3.connect(store.path)
         writer.execute("pragma journal_mode=delete")
         writer.execute("begin exclusive")
@@ -72,7 +81,7 @@ class TestDaemonStatusCommand:
 
         assert code == 0
         assert payload.get("running") is False
-        assert time.monotonic() - started < 1.5
+        assert time.monotonic() - started < baseline_elapsed + 0.5
 
     def test_status_running_true_when_live_state(self, tmp_path: Path) -> None:
         from codex_plugin_scanner.guard.daemon.manager import write_guard_daemon_state
@@ -136,6 +145,57 @@ class TestDaemonRepairCommand:
         assert isinstance(cleared, list)
         assert "daemon_discovery_key" in cleared
         assert key_path.exists() is False
+
+
+def test_daemon_recover_dispatches_failure_aware_recovery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from codex_plugin_scanner.guard import daemon
+    from codex_plugin_scanner.guard.cli.commands_dispatch_cloud import _run_guard_daemon_command
+
+    calls: list[tuple[Path, str]] = []
+
+    def recover(guard_home: Path, *, home_dir: Path | None, failure_kind: str) -> str:
+        assert home_dir is None
+        calls.append((guard_home, failure_kind))
+        return "http://127.0.0.1:1"
+
+    monkeypatch.setattr(daemon, "recover_guard_daemon_after_hook_failure", recover)
+
+    code = _run_guard_daemon_command(
+        Namespace(daemon_command="recover", failure_kind="transport-failure"),
+        guard_home=tmp_path,
+    )
+
+    assert code == 0
+    assert calls == [(tmp_path, "transport-failure")]
+
+
+def test_daemon_recover_returns_structured_error_without_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from codex_plugin_scanner.guard import daemon
+    from codex_plugin_scanner.guard.cli.commands_dispatch_cloud import _run_guard_daemon_command
+
+    def recover(guard_home: Path, *, home_dir: Path | None, failure_kind: str) -> str:
+        del guard_home, home_dir, failure_kind
+        raise RuntimeError("recovery unavailable")
+
+    monkeypatch.setattr(daemon, "recover_guard_daemon_after_hook_failure", recover)
+
+    code = _run_guard_daemon_command(
+        Namespace(daemon_command="recover", failure_kind="transport-failure"),
+        guard_home=tmp_path,
+    )
+
+    payload = cast(dict[str, object], json.loads(capsys.readouterr().out))
+    assert code == 1
+    assert payload["recovered"] is False
+    assert payload["running"] is False
+    assert payload["error"] == {
+        "code": "daemon_recovery_failed",
+        "message": "recovery unavailable",
+    }
 
 
 class TestDaemonStopCommand:

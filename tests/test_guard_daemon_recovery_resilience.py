@@ -18,6 +18,15 @@ from codex_plugin_scanner.guard.daemon import manager as daemon_manager_module
 from codex_plugin_scanner.guard.daemon.lifecycle_journal import load_daemon_lifecycle_events
 
 
+@pytest.fixture(autouse=True)
+def _stub_locator_publish(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        daemon_manager_module,
+        "publish_approval_center_locator",
+        lambda _home, _url: None,
+    )
+
+
 def _old_generation() -> dict[str, object]:
     return {"started_at": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()}
 
@@ -84,6 +93,63 @@ def test_recovery_starts_when_overloaded_state_has_no_live_generation(
 
     assert recovered == "http://127.0.0.1:4782"
     assert retired == []
+
+
+def test_recovery_republishes_approval_center_after_starting_new_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard_home = tmp_path / "guard-home"
+    home_dir = tmp_path / "home"
+    published: list[tuple[Path, str]] = []
+    monkeypatch.setattr(daemon_manager_module, "load_authenticated_daemon_state", lambda _home: None)
+    monkeypatch.setattr(daemon_manager_module, "load_guard_daemon_url", lambda _home: None)
+    monkeypatch.setattr(
+        daemon_manager_module,
+        "ensure_guard_daemon",
+        lambda _home, *, home_dir=None: "http://127.0.0.1:4782",
+    )
+    monkeypatch.setattr(
+        daemon_manager_module,
+        "publish_approval_center_locator",
+        lambda received_home, daemon_url: published.append((received_home, daemon_url)),
+    )
+
+    recovered = daemon_manager_module.recover_guard_daemon_after_hook_failure(
+        guard_home,
+        home_dir=home_dir,
+        failure_kind="transport-failure",
+    )
+
+    assert recovered == "http://127.0.0.1:4782"
+    assert published == [(guard_home, "http://127.0.0.1:4782")]
+
+
+def test_recovery_keeps_live_daemon_when_locator_publication_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard_home = tmp_path / "guard-home"
+    monkeypatch.setattr(daemon_manager_module, "load_authenticated_daemon_state", lambda _home: None)
+    monkeypatch.setattr(daemon_manager_module, "load_guard_daemon_url", lambda _home: None)
+    monkeypatch.setattr(
+        daemon_manager_module,
+        "ensure_guard_daemon",
+        lambda _home, *, home_dir=None: "http://127.0.0.1:4782",
+    )
+    monkeypatch.setattr(
+        daemon_manager_module,
+        "publish_approval_center_locator",
+        lambda _home, _url: (_ for _ in ()).throw(OSError("write interrupted")),
+    )
+
+    recovered = daemon_manager_module.recover_guard_daemon_after_hook_failure(
+        guard_home,
+        failure_kind="transport-failure",
+    )
+
+    assert recovered == "http://127.0.0.1:4782"
+    assert any(event["event"] == "locator_publish_failed" for event in load_daemon_lifecycle_events(guard_home))
 
 
 def test_recovery_records_trigger_and_missing_authenticated_process(
@@ -195,7 +261,7 @@ def test_transport_recovery_preserves_authenticated_process_when_health_probe_mi
     assert recovered == "http://127.0.0.1:4781"
 
 
-def test_transport_recovery_replaces_old_process_when_health_probe_misses(
+def test_transport_recovery_preserves_verified_old_process_when_health_probe_misses(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -234,8 +300,8 @@ def test_transport_recovery_replaces_old_process_when_health_probe_misses(
         failure_kind="transport-failure",
     )
 
-    assert recovered == "http://127.0.0.1:4782"
-    assert retired == [guard_home]
+    assert recovered == "http://127.0.0.1:4781"
+    assert retired == []
 
 
 def test_recovery_does_not_reuse_recent_stale_runtime_generation(
@@ -276,7 +342,7 @@ def test_recovery_does_not_reuse_recent_stale_runtime_generation(
     assert start_count == 1
 
 
-def test_recovery_retires_one_old_generation_for_concurrent_control_failures(
+def test_recovery_preserves_old_live_generation_for_concurrent_control_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -284,8 +350,6 @@ def test_recovery_retires_one_old_generation_for_concurrent_control_failures(
     generation_lock = threading.Lock()
     generation_state = _old_generation()
     generation_url: str | None = "http://127.0.0.1:4781"
-    retirement_started = threading.Event()
-    allow_retirement = threading.Event()
     retire_count = 0
     start_count = 0
 
@@ -298,12 +362,8 @@ def test_recovery_retires_one_old_generation_for_concurrent_control_failures(
             return generation_url
 
     def retire(_home: Path) -> list[int]:
-        nonlocal generation_url, retire_count
+        nonlocal retire_count
         retire_count += 1
-        retirement_started.set()
-        assert allow_retirement.wait(timeout=2)
-        with generation_lock:
-            generation_url = None
         return []
 
     def ensure(_home: Path, *, home_dir: Path | None = None) -> str:
@@ -323,26 +383,28 @@ def test_recovery_retires_one_old_generation_for_concurrent_control_failures(
     monkeypatch.setattr(daemon_manager_module, "ensure_guard_daemon", ensure)
     results: list[str] = []
 
-    first = threading.Thread(
-        target=lambda: results.append(daemon_manager_module.recover_guard_daemon_after_hook_failure(guard_home))
-    )
-    second = threading.Thread(
-        target=lambda: results.append(daemon_manager_module.recover_guard_daemon_after_hook_failure(guard_home))
-    )
-    first.start()
-    assert retirement_started.wait(timeout=1)
-    second.start()
-    time.sleep(0.05)
-    assert second.is_alive()
-    allow_retirement.set()
-    first.join(timeout=2)
-    second.join(timeout=2)
+    start_gate = threading.Barrier(32, timeout=10)
+    barrier_errors: list[threading.BrokenBarrierError] = []
 
-    assert not first.is_alive()
-    assert not second.is_alive()
-    assert retire_count == 1
-    assert start_count == 1
-    assert results == ["http://127.0.0.1:4782"] * 2
+    def recover() -> None:
+        try:
+            start_gate.wait()
+        except threading.BrokenBarrierError as error:
+            barrier_errors.append(error)
+            return
+        results.append(daemon_manager_module.recover_guard_daemon_after_hook_failure(guard_home))
+
+    workers = [threading.Thread(target=recover) for _ in range(32)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=2)
+
+    assert all(not worker.is_alive() for worker in workers)
+    assert barrier_errors == []
+    assert retire_count == 0
+    assert start_count == 0
+    assert results == ["http://127.0.0.1:4781"] * 32
 
 
 def test_recovery_lock_serializes_separate_processes(tmp_path: Path) -> None:

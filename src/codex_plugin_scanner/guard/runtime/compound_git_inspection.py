@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Final
 
+from .compound_git_bounds import safe_bound_segment
 from .git_execution_safety import (
     git_config_routing_environment_is_clean,
     git_fetch_origin_has_execution_free_config,
+    git_object_query_has_no_lazy_fetch,
     git_push_origin_has_execution_free_config,
     git_status_has_execution_free_config,
     trusted_git_binary_for_cwd,
@@ -18,8 +21,29 @@ from .git_execution_safety import (
 from .shell_execution_context import ShellExecutionContext, ShellExecutionSegment
 
 _REF: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,255}")
+_OBJECT_EXISTENCE_QUERY: Final = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._/-]{0,255}(?:\^|\^\{(?:blob|commit|object|tag|tree)\})?"
+)
 _REPOSITORY_PATH_COMPONENT: Final = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
-_BOUND: Final = 1000
+
+
+def canonical_home_git_c_path(command_text: str) -> str | None:
+    """Return an unquoted canonical current-user Git ``-C`` operand."""
+
+    match = re.match(r"\Agit[ \t]+-C[ \t]+(?P<path>~/[A-Za-z0-9_.\-/]+)(?=[ \t]+)", command_text)
+    if match is None:
+        return None
+    path = match.group("path")
+    tail = path[2:]
+    return (
+        path
+        if tail
+        and all(
+            component not in {"", ".", ".."} and _REPOSITORY_PATH_COMPONENT.fullmatch(component) is not None
+            for component in tail.split("/")
+        )
+        else None
+    )
 
 
 def is_low_risk_compound_git_inspection(context: ShellExecutionContext) -> bool:
@@ -44,7 +68,7 @@ def is_low_risk_compound_git_inspection(context: ShellExecutionContext) -> bool:
                 return False
             continue
         if command in {"head", "tail"}:
-            if not _safe_bound_segment(segment, previous=context.segments[index - 1]):
+            if not safe_bound_segment(segment, previous=context.segments[index - 1]):
                 return False
             continue
         return False
@@ -60,7 +84,11 @@ def _leading_literal_cd(segment: ShellExecutionSegment) -> bool:
     )
 
 
-def is_low_risk_git_inspection_segment(segment: ShellExecutionSegment) -> bool:
+def is_low_risk_git_inspection_segment(
+    segment: ShellExecutionSegment,
+    *,
+    home_dir: Path | None = None,
+) -> bool:
     """Recognize one bounded Git refresh or inspection segment."""
 
     tokens = _without_stderr_merge(segment.tokens)
@@ -69,11 +97,15 @@ def is_low_risk_git_inspection_segment(segment: ShellExecutionSegment) -> bool:
     operation_index = 1
     repository_path: str | None = None
     if tokens[1] == "-C":
-        if len(tokens) < 4 or not _safe_repository_path(tokens[2]):
+        if len(tokens) < 4 or not _safe_git_c_repository_path(tokens[2], home_dir=home_dir):
             return False
         repository_path = tokens[2]
         operation_index = 3
-    invocation_cwds = _git_invocation_cwds(segment, repository_path=repository_path)
+    invocation_cwds = _git_invocation_cwds(
+        segment,
+        repository_path=repository_path,
+        home_dir=home_dir,
+    )
     if invocation_cwds is None:
         return False
     execution_cwd, repository_cwd = invocation_cwds
@@ -84,9 +116,15 @@ def is_low_risk_git_inspection_segment(segment: ShellExecutionSegment) -> bool:
     args = tokens[operation_index + 1 :]
     if operation == "fetch":
         return bool(
-            len(args) == 2
-            and args[0] == "origin"
-            and _safe_ref(args[1])
+            _safe_fetch_args(args)
+            and git_fetch_origin_has_execution_free_config(
+                repository_cwd,
+                git_binary=resolved_git,
+            )
+        )
+    if operation == "ls-remote":
+        return bool(
+            _safe_ls_remote_args(args)
             and git_fetch_origin_has_execution_free_config(
                 repository_cwd,
                 git_binary=resolved_git,
@@ -97,18 +135,30 @@ def is_low_risk_git_inspection_segment(segment: ShellExecutionSegment) -> bool:
             repository_cwd,
             git_binary=resolved_git,
         )
-    if operation == "status":
+    if operation == "blame":
         return (
-            bool(args)
-            and all(_safe_status_arg(arg) for arg in args)
-            and git_status_has_execution_free_config(repository_cwd, git_binary=resolved_git)
+            _safe_blame_args(args)
+            and _git_show_has_execution_free_config(segment, repository_path=repository_path)
+            and _git_log_has_execution_free_config(
+                repository_cwd,
+                git_binary=resolved_git,
+                pager_key="pager.blame",
+            )
+        )
+    if operation == "status":
+        return all(_safe_status_arg(arg) for arg in args) and git_status_has_execution_free_config(
+            repository_cwd, git_binary=resolved_git
         )
     if operation == "branch":
-        return args in {("--show-current",), ("--list",)}
+        return _safe_branch_args(args) and _git_log_has_execution_free_config(
+            repository_cwd,
+            git_binary=resolved_git,
+            pager_key="pager.branch",
+        )
     if operation == "rev-parse":
         return _safe_rev_parse_args(args)
     if operation == "diff":
-        return _safe_diff_args(args)
+        return _safe_diff_args(args) and _git_show_has_execution_free_config(segment, repository_path=repository_path)
     if operation == "ls-files":
         return _safe_ls_files_args(args)
     if operation == "show":
@@ -116,6 +166,8 @@ def is_low_risk_git_inspection_segment(segment: ShellExecutionSegment) -> bool:
             segment,
             repository_path=repository_path,
         )
+    if operation == "worktree":
+        return args == ("list", "--porcelain")
     return False
 
 
@@ -150,7 +202,11 @@ def is_low_risk_git_push_segment(segment: ShellExecutionSegment) -> bool:
     )
 
 
-def is_low_risk_standalone_git_routine(context: ShellExecutionContext) -> bool:
+def is_low_risk_standalone_git_routine(
+    context: ShellExecutionContext,
+    *,
+    home_dir: Path | None = None,
+) -> bool:
     """Recognize one bounded Git read or configured-origin ref refresh."""
 
     if not context.complete or len(context.segments) != 1:
@@ -160,7 +216,29 @@ def is_low_risk_standalone_git_routine(context: ShellExecutionContext) -> bool:
         segment.tokens[:1] == ("git",)
         and not segment.control_before
         and not segment.control_after
-        and is_low_risk_git_inspection_segment(segment)
+        and is_low_risk_git_inspection_segment(segment, home_dir=home_dir)
+    )
+
+
+def is_safe_standalone_git_object_existence_query(
+    command_text: str,
+    *,
+    cwd: Path,
+) -> bool:
+    """Recognize an exact, output-free Git object existence query."""
+
+    try:
+        parts = tuple(shlex.split(command_text))
+        execution_cwd = cwd.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    resolved_git = trusted_git_binary_for_cwd(execution_cwd)
+    return bool(
+        len(parts) == 4
+        and parts[:3] == ("git", "cat-file", "-e")
+        and _safe_cat_file_exists_args(parts[2:])
+        and resolved_git is not None
+        and git_object_query_has_no_lazy_fetch(execution_cwd, git_binary=resolved_git)
     )
 
 
@@ -168,6 +246,10 @@ def _safe_rev_parse_args(args: tuple[str, ...]) -> bool:
     return args in {("--show-toplevel",), ("--show-prefix",), ("--is-inside-work-tree",)} or (
         len(args) == 1 and _safe_ref(args[0])
     )
+
+
+def _safe_cat_file_exists_args(args: tuple[str, ...]) -> bool:
+    return bool(len(args) == 2 and args[0] == "-e" and _OBJECT_EXISTENCE_QUERY.fullmatch(args[1]))
 
 
 def _safe_status_arg(value: str) -> bool:
@@ -179,13 +261,64 @@ def _safe_status_arg(value: str) -> bool:
 
 
 def _safe_bounded_log_args(args: tuple[str, ...]) -> bool:
+    if len(args) == 3 and args[0] in {"-1", "-n1"} and args[1].startswith("--format="):
+        return _safe_log_format(args[1][len("--format=") :]) and _safe_ref(args[2])
     if "--oneline" not in args or args.count("--oneline") != 1:
         return False
     bounds = [arg for arg in args if arg.startswith("-") and arg[1:].isdigit()]
     if len(bounds) != 1 or not 1 <= int(bounds[0][1:]) <= 100:
         return False
-    refs = [arg for arg in args if arg not in {"--oneline", bounds[0]}]
+    allowed_flags = {"--decorate", "--oneline", bounds[0]}
+    refs = [arg for arg in args if arg not in allowed_flags]
     return len(refs) <= 1 and all(_safe_ref(ref) for ref in refs)
+
+
+_SAFE_FETCH_FLAGS: Final = frozenset({"-q", "--quiet", "--no-tags"})
+
+
+def _safe_fetch_args(args: tuple[str, ...]) -> bool:
+    if not args or len(args) > 16:
+        return False
+    remote: str | None = None
+    refs: list[str] = []
+    for arg in args:
+        if arg in _SAFE_FETCH_FLAGS:
+            continue
+        if arg.startswith("-") or (remote is None and arg != "origin"):
+            return False
+        if remote is None:
+            remote = arg
+            continue
+        refs.append(arg)
+    return remote == "origin" and len(refs) <= 12 and all(_safe_ref(ref) for ref in refs)
+
+
+def _safe_ls_remote_args(args: tuple[str, ...]) -> bool:
+    return bool(3 <= len(args) <= 12 and args[:2] == ("--heads", "origin") and all(_safe_ref(ref) for ref in args[2:]))
+
+
+def _safe_branch_args(args: tuple[str, ...]) -> bool:
+    if args in {("--show-current",), ("--list",)}:
+        return True
+    return bool(
+        3 <= len(args) <= 12
+        and args[:2] in {("-r", "--list"), ("--remotes", "--list")}
+        and all(_safe_ref(ref) for ref in args[2:])
+    )
+
+
+def _safe_log_format(value: str) -> bool:
+    return bool(value and len(value) <= 160 and re.fullmatch(r"(?:[^%\r\n]|%(?:H|h|cI|s|an|ae))+", value))
+
+
+def _safe_blame_args(args: tuple[str, ...]) -> bool:
+    if len(args) != 4 or args[0] != "-L" or args[2] != "--":
+        return False
+    match = re.fullmatch(r"([1-9][0-9]{0,5}),([1-9][0-9]{0,5})", args[1])
+    if match is None:
+        return False
+    start, end = int(match.group(1)), int(match.group(2))
+    return start <= end <= 100_000 and end - start <= 1000 and _safe_repository_path(args[3])
 
 
 def _safe_repository_path(value: str) -> bool:
@@ -200,6 +333,28 @@ def _safe_repository_path(value: str) -> bool:
     return bool(components) and all(
         component not in {"", ".", ".."} and _REPOSITORY_PATH_COMPONENT.fullmatch(component) is not None
         for component in components
+    )
+
+
+def _safe_git_c_repository_path(value: str, *, home_dir: Path | None = None) -> bool:
+    if _safe_repository_path(value):
+        return True
+    if value.startswith("~/"):
+        tail = value[2:]
+        return bool(
+            home_dir is not None
+            and tail
+            and not tail.startswith(("/", "\\"))
+            and all(
+                component not in {"", ".", ".."} and _REPOSITORY_PATH_COMPONENT.fullmatch(component) is not None
+                for component in tail.split("/")
+            )
+        )
+    if not value or len(value) > 512 or not Path(value).is_absolute() or _dynamic(value):
+        return False
+    return all(
+        component not in {"", ".", ".."} and _REPOSITORY_PATH_COMPONENT.fullmatch(component) is not None
+        for component in Path(value).parts[1:]
     )
 
 
@@ -220,8 +375,12 @@ def _safe_diff_args(args: tuple[str, ...]) -> bool:
             arg in {"--check", "--stat", "--name-only", "--name-status", "--cached", "HEAD"} or _safe_ref(arg)
             for arg in revisions
         )
-        and all(_safe_repository_path(path) for path in paths)
+        and all(_safe_diff_pathspec(path) for path in paths)
     )
+
+
+def _safe_diff_pathspec(value: str) -> bool:
+    return _safe_repository_path(value) or (value.startswith((":!", ":^")) and _safe_repository_path(value[2:]))
 
 
 def _safe_show_args(args: tuple[str, ...]) -> bool:
@@ -283,27 +442,49 @@ def _git_invocation_cwds(
     segment: ShellExecutionSegment,
     *,
     repository_path: str | None,
+    home_dir: Path | None = None,
 ) -> tuple[Path, Path] | None:
     if segment.effective_cwd is None:
         return None
     try:
         execution_cwd = segment.effective_cwd.resolve()
-        repository_cwd = (execution_cwd / repository_path).resolve() if repository_path is not None else execution_cwd
+        if repository_path is None:
+            repository_cwd = execution_cwd
+        else:
+            if repository_path.startswith("~/"):
+                if home_dir is None:
+                    return None
+                requested_repository = home_dir.resolve() / repository_path[2:]
+            else:
+                requested_repository = Path(repository_path)
+            candidate = (
+                requested_repository if requested_repository.is_absolute() else execution_cwd / requested_repository
+            )
+            repository_cwd = candidate.resolve()
+        allowed_roots = (execution_cwd,) if home_dir is None else (execution_cwd, home_dir.resolve())
     except (OSError, RuntimeError):
         return None
-    return (execution_cwd, repository_cwd) if repository_cwd.is_dir() else None
+    return (
+        (execution_cwd, repository_cwd)
+        if repository_cwd.is_dir() and any(repository_cwd.is_relative_to(root) for root in allowed_roots)
+        else None
+    )
 
 
 def _git_log_has_execution_free_config(
     cwd: Path,
     *,
     git_binary: Path,
+    pager_key: str = "pager.log",
 ) -> bool:
-    if any(os.environ.get(key, "").strip() not in {"", "cat"} for key in ("GIT_PAGER", "PAGER")):
+    git_pager = os.environ.get("GIT_PAGER")
+    if git_pager is not None:
+        return git_pager in {"", "cat"} and git_config_routing_environment_is_clean()
+    if os.environ.get("PAGER", "") not in {"", "cat"}:
         return False
     if not git_config_routing_environment_is_clean():
         return False
-    for key in ("core.pager", "pager.log"):
+    for key in ("core.pager", pager_key):
         try:
             result = subprocess.run(
                 [str(git_binary), "config", "--null", "--get-all", key],
@@ -319,10 +500,21 @@ def _git_log_has_execution_free_config(
             continue
         if result.returncode != 0:
             return False
-        values = [value.strip() for value in result.stdout.split("\0") if value.strip()]
+        values = [value for value in result.stdout.split("\0") if value]
         if any(value != "cat" for value in values):
             return False
     return True
+
+
+def git_log_has_execution_free_config(
+    cwd: Path,
+    *,
+    git_binary: Path,
+    pager_key: str = "pager.log",
+) -> bool:
+    """Return whether Git log-family output cannot invoke an executable pager."""
+
+    return _git_log_has_execution_free_config(cwd, git_binary=git_binary, pager_key=pager_key)
 
 
 def _safe_ls_files_args(args: tuple[str, ...]) -> bool:
@@ -348,6 +540,8 @@ def _without_stderr_merge(tokens: tuple[str, ...]) -> tuple[str, ...] | None:
 
 
 def _safe_ref(value: str) -> bool:
+    if re.fullmatch(r"HEAD~[1-9][0-9]{0,3}", value):
+        return True
     return _REF.fullmatch(value) is not None and ".." not in value and not value.endswith((".", "/"))
 
 
@@ -360,22 +554,12 @@ def _safe_echo_segment(segment: ShellExecutionSegment) -> bool:
     )
 
 
-def _safe_bound_segment(segment: ShellExecutionSegment, *, previous: ShellExecutionSegment) -> bool:
-    if segment.control_before != ("|",) or len(segment.tokens) != 2:
-        return False
-    if not previous.tokens or previous.tokens[0] != "git" or previous.control_after != ("|",):
-        return False
-    count = segment.tokens[1]
-    if not count.startswith("-") or not count[1:].isdigit():
-        return False
-    return 1 <= int(count[1:]) <= _BOUND
-
-
 def _dynamic(value: str) -> bool:
     return any(marker in value for marker in ("$", "`", "<", ">", "|", ";", "&", "\x00"))
 
 
 __all__ = (
+    "canonical_home_git_c_path",
     "is_low_risk_compound_git_inspection",
     "is_low_risk_git_inspection_segment",
     "is_low_risk_git_push_segment",
