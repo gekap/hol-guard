@@ -1,0 +1,26 @@
+name: Release 3.2 source snapshot
+
+on:
+  push:
+    branches:
+      - automation/release-32-source-snapshot
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      - name: Create source archive
+        run: tar --exclude=.git --exclude=.github/workflows/release-32-source-snapshot.yml -czf /tmp/hol-guard-release-3.2.tar.gz .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hol-guard-release-3.2
+          path: /tmp/hol-guard-release-3.2.tar.gz
+          if-no-files-found: error
+          retention-days: 1
