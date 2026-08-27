@@ -136,6 +136,17 @@ def patch_runtime_cargo() -> None:
     path.write_text(source, encoding="utf-8")
 
 
+def _ensure_atomic_import(source: str) -> str:
+    marker = "use std::sync::atomic::{AtomicU64, Ordering};\n"
+    if marker in source:
+        return source
+    return source.replace(
+        "use std::sync::{Arc, Mutex};\n",
+        marker + "use std::sync::{Arc, Mutex};\n",
+        1,
+    )
+
+
 def patch_runtime_rust() -> None:
     path = Path("rust/crates/guard-runtime/src/main.rs")
     source = path.read_text(encoding="utf-8")
@@ -145,12 +156,7 @@ def patch_runtime_rust() -> None:
         if import_anchor not in source:
             raise RuntimeError("runtime hook-core import anchor not found")
         source = source.replace(import_anchor, import_anchor + policy_import, 1)
-    if "use std::sync::atomic::{AtomicU64, Ordering};\n" not in source:
-        source = source.replace(
-            "use std::sync::{Arc, Mutex};\n",
-            "use std::sync::atomic::{AtomicU64, Ordering};\nuse std::sync::{Arc, Mutex};\n",
-            1,
-        )
+    source = _ensure_atomic_import(source)
     const_anchor = 'const CLIENT_PROOF_LABEL: &[u8] = b"hol-guard-resident-client-v1\\0";\n'
     if "MIN_POLICY_GENERATION" not in source:
         if const_anchor not in source:

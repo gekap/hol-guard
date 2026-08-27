@@ -34,6 +34,31 @@ def replace_function(source: str, name: str, replacement: str) -> str:
     return source[:start] + replacement.strip() + source[end:]
 
 
+def _patch_resident_evaluation(source: str) -> str:
+    resident_span = function_span(source, "evaluate_resident_bytes")
+    if resident_span is None:
+        raise RuntimeError("evaluate_resident_bytes missing")
+    start, end = resident_span
+    resident = source[start:end]
+    resident = resident.replace(
+        "    let value = strict_json_value(bytes)?;",
+        "    let mut value = strict_json_value(bytes)?;",
+    )
+    if 'if value.get("operation").is_none()' not in resident:
+        resident = resident.replace(
+            "    let mut value = strict_json_value(bytes)?;",
+            '    let mut value = strict_json_value(bytes)?;\n    if value.get("operation").is_none() {\n        validate_request_policy_snapshot(&value)?;\n        remove_policy_snapshot(&mut value);\n    }',
+            1,
+        )
+    elif "remove_policy_snapshot(&mut value);" not in resident:
+        resident = resident.replace(
+            "        validate_request_policy_snapshot(&value)?;\n    }",
+            "        validate_request_policy_snapshot(&value)?;\n        remove_policy_snapshot(&mut value);\n    }",
+            1,
+        )
+    return source[:start] + resident + source[end:]
+
+
 def main() -> int:
     path = Path("rust/crates/guard-runtime/src/main.rs")
     source = path.read_text(encoding="utf-8")
@@ -148,26 +173,7 @@ fn remove_policy_snapshot(value: &mut Value) {
             1,
         )
     source = source[:start] + hook + source[end:]
-
-    resident_span = function_span(source, "evaluate_resident_bytes")
-    if resident_span is None:
-        raise RuntimeError("evaluate_resident_bytes missing")
-    start, end = resident_span
-    resident = source[start:end]
-    resident = resident.replace("    let value = strict_json_value(bytes)?;", "    let mut value = strict_json_value(bytes)?;")
-    if 'if value.get("operation").is_none()' not in resident:
-        resident = resident.replace(
-            "    let mut value = strict_json_value(bytes)?;",
-            '    let mut value = strict_json_value(bytes)?;\n    if value.get("operation").is_none() {\n        validate_request_policy_snapshot(&value)?;\n        remove_policy_snapshot(&mut value);\n    }',
-            1,
-        )
-    elif "remove_policy_snapshot(&mut value);" not in resident:
-        resident = resident.replace(
-            "        validate_request_policy_snapshot(&value)?;\n    }",
-            "        validate_request_policy_snapshot(&value)?;\n        remove_policy_snapshot(&mut value);\n    }",
-            1,
-        )
-    source = source[:start] + resident + source[end:]
+    source = _patch_resident_evaluation(source)
 
     path.write_text(source, encoding="utf-8")
     return 0

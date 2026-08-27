@@ -89,8 +89,26 @@ jobs:
         run: |
           sleep 60
           python - <<'PY'
-          import json, os, subprocess
+          import json, os, subprocess, time
           number = os.environ["PR"]
+          sha = os.environ["HEAD_SHA"]
+          deadline = time.monotonic() + 600
+          while True:
+              reviews = json.loads(subprocess.check_output(
+                  ["gh", "api", f"repos/hashgraph-online/hol-guard/pulls/{number}/reviews?per_page=100"],
+                  text=True,
+              ))
+              matched = [
+                  item
+                  for item in reviews
+                  if str((item.get("user") or {}).get("login", "")).lower().startswith("coderabbit")
+                  and str(item.get("commit_id", "")).startswith(sha[:12])
+              ]
+              if matched:
+                  break
+              if time.monotonic() >= deadline:
+                  raise SystemExit("timed out waiting for CodeRabbit review on this head")
+              time.sleep(20)
           cursor = None
           unresolved = False
           changes = False

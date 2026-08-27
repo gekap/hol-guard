@@ -162,7 +162,9 @@ mod tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn lock_generation() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn snapshot_value(generation: u64) -> Value {

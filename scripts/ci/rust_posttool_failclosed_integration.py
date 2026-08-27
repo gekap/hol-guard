@@ -86,6 +86,14 @@ def _decision(value: dict[str, Any]) -> str:
     return raw.lower() if isinstance(raw, str) else ""
 
 
+def _require_native_error(result: subprocess.CompletedProcess[bytes], reason: str) -> None:
+    blob = result.stderr.decode("utf-8", "replace") + result.stdout.decode("utf-8", "replace")
+    if result.returncode == 0 or reason not in blob:
+        raise SystemExit(
+            f"expected native error {reason}, got rc={result.returncode} output={blob[:240]!r}"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime", required=True, type=Path)
@@ -137,25 +145,16 @@ def main() -> int:
         bad_rule = _request(workspace, rule_digest, "safe\n", time.time_ns())
         bad_rule["policy_snapshot"]["rule_digest"] = "0" * 64
         bad_result = _run(runtime, bad_rule)
-        if bad_result.returncode == 0:
-            decoded = _decode(bad_result)
-            if decoded is not None and _decision(decoded) == "allow":
-                raise SystemExit("rule-mismatched policy snapshot was allowed")
+        _require_native_error(bad_result, "native_policy_snapshot_rule_mismatch")
         evidence.append({"case": "rule-mismatch", "returncode": bad_result.returncode})
 
         malformed = _run(runtime, b'{"protocol_version":1,"event_name":"PostToolUse",')
-        if malformed.returncode == 0:
-            decoded = _decode(malformed)
-            if decoded is None or _decision(decoded) == "allow":
-                raise SystemExit("malformed request did not fail closed")
+        _require_native_error(malformed, "native_request_invalid_json")
         evidence.append({"case": "malformed", "returncode": malformed.returncode})
 
         oversized_output = "x" * (7 * 1024 * 1024)
         oversized = _run(runtime, _request(workspace, rule_digest, oversized_output, time.time_ns()))
-        if oversized.returncode == 0:
-            decoded = _decode(oversized)
-            if decoded is not None and _decision(decoded) == "allow":
-                raise SystemExit("oversized PostToolUse was allowed")
+        _require_native_error(oversized, "native_request_too_large")
         evidence.append({"case": "oversized", "returncode": oversized.returncode})
 
     report = {
