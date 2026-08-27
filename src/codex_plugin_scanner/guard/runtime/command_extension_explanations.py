@@ -8,11 +8,11 @@ and policy runtime.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
 
 from codex_plugin_scanner.guard.redaction import redact_text
 
@@ -255,7 +255,7 @@ def _strings(value: object, max_items: int, max_length: int) -> tuple[str, ...]:
     return tuple(result)
 
 
-def _assert_unique(values: Sequence[str] | object, label: str) -> None:
-    sequence = list(values)  # type: ignore[arg-type]
+def _assert_unique(values: Iterable[str], label: str) -> None:
+    sequence = list(values)
     if len(sequence) != len(set(sequence)):
         raise ValueError(f"duplicate {label}")
