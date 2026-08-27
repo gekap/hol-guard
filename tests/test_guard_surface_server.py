@@ -1996,10 +1996,10 @@ class TestGuardSurfaceServer:
 
         daemon = GuardDaemonServer(store, host="127.0.0.1", port=0)
         monkeypatch.setattr(daemon._server.hook_process_runner, "start", lambda **_: None)
+        monkeypatch.setattr(daemon._server.hook_process_runner, "require_initial_capacity", lambda: None)
         daemon.start()
         daemon._server.runtime_hook_process_scheduler.set_active_limit(1)
         monkeypatch.setattr(daemon._server.hook_process_runner, "review", fake_review)
-
         try:
             request = urllib.request.Request(
                 (

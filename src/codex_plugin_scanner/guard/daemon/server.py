@@ -8020,6 +8020,7 @@ class GuardDaemonServer:
         self._require_command_activity_maintenance_stopped()
         self._shutdown_started.clear()
         self._server.hook_process_runner.start(defer_backfill=True)
+        self._server.hook_process_runner.require_initial_capacity()
         self._reconcile_runtime_artifacts_best_effort()
         self._maintain_command_activity_best_effort()
         self._persist_aibom_inventory_context()
@@ -8048,7 +8049,6 @@ class GuardDaemonServer:
             self._cloud_review_sync_worker,
         )
         self._start_command_activity_maintenance()
-        self._server.hook_process_runner.require_initial_capacity()
         self._record_lifecycle("ready")
         self._diagnostics.record("daemon_ready")
 
