@@ -113,11 +113,14 @@ class HookWorker:
                 reason_code="native_post_tool_unavailable",
                 policy_action="block",
             )
+            fail_safe_reason_code = response.reason_code
+            if observe_mode:
+                response = _observe_only_response(request, response)
             receipt = native_decision_receipt(
                 backend="native_fail_safe",
                 transport="unavailable",
                 decision_core="native_unavailable_fail_safe",
-                reason_code=response.reason_code,
+                reason_code=fail_safe_reason_code,
             )
         else:
             receipt = native_decision_receipt(
@@ -267,6 +270,35 @@ class HookWorker:
             tool_input_path=tool_input_path,
             adapter_stat=stat_dict,
         )
+
+
+def _observe_only_response(
+    request: HookReviewRequest,
+    response: HookReviewResponse,
+) -> HookReviewResponse:
+    """Preserve observe posture when the authoritative native route fails."""
+
+    observed_policy_action = response.policy_action
+    if response.decision == "deny" and observed_policy_action is None:
+        observed_policy_action = "block"
+    output_sha256 = (
+        request.source_ref.output_sha256
+        if request.source_ref is not None
+        else request.output_summary.output_sha256
+        if request.output_summary is not None
+        else None
+    )
+    return HookReviewResponse(
+        decision="allow",
+        reason=None,
+        model_output_action="allow_original",
+        reviewed_output_sha256=output_sha256,
+        notice="none",
+        reason_code=(f"observe_{response.reason_code}" if response.decision == "deny" else response.reason_code),
+        policy_action="allow",
+        observed_policy_action=observed_policy_action,
+        observe_mode=True,
+    )
 
 
 def _canonical_hook_harness(harness: str) -> str:
