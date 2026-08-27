@@ -98,4 +98,4 @@ jobs:
             src/codex_plugin_scanner/guard/daemon/hook_process_runner.py
           git diff --cached --quiet && exit 0
           git commit -s -m "fix(rust): restore scheduler wake-up and harden authority CI"
-          git push origin HEAD:rust/hotpath-authority-t001-t100
+          /usr/bin/git push origin HEAD:rust/hotpath-authority-t001-t100
