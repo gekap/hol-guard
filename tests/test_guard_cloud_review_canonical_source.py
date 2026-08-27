@@ -12,10 +12,12 @@ _FORBIDDEN_SOURCE = (
 _DURABLE_COMPATIBILITY_ALIASES = {
     "guard.approval.resolve": {
         "src/codex_plugin_scanner/guard/runtime/command_executors.py",
+        "src/codex_plugin_scanner/guard/runtime/command_operation_classification.py",
         "src/codex_plugin_scanner/guard/runtime/legacy_approval_command_executor.py",
     },
     "guard.liveRequests": {
         "src/codex_plugin_scanner/guard/runtime/command_executors.py",
+        "src/codex_plugin_scanner/guard/runtime/command_operation_classification.py",
     },
 }
 

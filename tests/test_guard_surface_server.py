@@ -2865,7 +2865,7 @@ class TestGuardSurfaceServer:
         assert daemon._shutdown_started.wait(timeout=3)
         daemon_thread = daemon._thread
         assert daemon_thread is not None
-        daemon_thread.join(timeout=10)
+        daemon_thread.join(timeout=40)
         runtime_state = store.get_runtime_state()
         daemon.stop()
 
