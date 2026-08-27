@@ -8,6 +8,7 @@ from typing import Any
 
 from ...version import __version__  # noqa: F401 - public compatibility export
 from ..adapters.base import HarnessContext
+from ..review_verification_keyring import review_verification_keyring_ready
 from ..store import GuardStore
 from .auto_update import maybe_auto_update
 from .command_capability import (
@@ -58,9 +59,6 @@ from .command_queue_state import (
     clear_exact_route_failure as _clear_exact_route_failure,
 )
 from .command_queue_state import (
-    cloud_review_repair_status as _cloud_review_sync_repair_status,
-)
-from .command_queue_state import (
     command_queue_now as _now,
 )
 from .command_queue_state import (
@@ -97,6 +95,13 @@ def command_queue_operations(store: GuardStore) -> tuple[str, ...]:
     return generic + tuple(operation for operation in exact_cloud_review_operations(store) if operation not in generic)
 
 
+def lease_ready_operations(store: GuardStore) -> tuple[str, ...]:
+    operations = command_queue_operations(store)
+    if review_verification_keyring_ready(store):
+        return operations
+    return tuple(operation for operation in operations if operation != EXACT_CLOUD_REVIEW_OPERATION)
+
+
 def command_queue_enabled(store: GuardStore | None = None, environ: dict[str, str] | None = None) -> bool:
     return command_queue_is_enabled(
         store,
@@ -128,7 +133,6 @@ def _lease_payload(
         operations=operations,
         wait_ms=wait_ms,
         operation_resolver=command_queue_operations,
-        repair_status_resolver=_cloud_review_sync_repair_status,
     )
 
 
@@ -195,7 +199,7 @@ def _lease_next_job(
     *,
     state: dict[str, object] | None = None,
 ) -> dict[str, object] | None:
-    operations = command_queue_operations(store)
+    operations = lease_ready_operations(store)
     exact_route_failure: Callable[[urllib.error.HTTPError], None] | None = None
     exact_route_success: Callable[[], None] | None = None
     if state is not None:

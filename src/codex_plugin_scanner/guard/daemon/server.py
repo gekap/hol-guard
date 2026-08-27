@@ -157,6 +157,7 @@ from ..runtime.command_shadow_evaluation import (
 )
 from ..runtime.extension_control_authority import ExtensionControlAuthorityError, ExtensionControlAuthorityView
 from ..runtime.extension_control_runtime import ExtensionControlRuntime, ExtensionControlRuntimeSnapshot
+from ..runtime.isolation_provider import load_managed_provider_registry
 from ..runtime.local_temp_paths import trusted_temporary_root_for_path
 from ..runtime.network_status import build_network_status, project_network_supervisor_health
 from ..runtime.network_supervisor import NetworkSupervisor
@@ -370,6 +371,7 @@ _RUNTIME_HOOK_ADMISSION_TIMEOUT_SECONDS = 3.0
 _RUNTIME_HOOK_PROCESS_TIMEOUT_SECONDS = 1.45
 _RUNTIME_POST_HOOK_PROCESS_TIMEOUT_SECONDS = 2.75
 _DAEMON_REQUEST_READ_TIMEOUT_SECONDS = 0.4
+_DAEMON_SERVE_THREAD_START_TIMEOUT_SECONDS = 5.0
 _DAEMON_CONNECTION_ADMISSION_WAIT_SECONDS = 0.05
 _DAEMON_CONTROL_ADMISSION_WAIT_SECONDS = 1.0
 _DAEMON_UNCLASSIFIED_WATCHDOG_POLL_SECONDS = 0.025
@@ -604,6 +606,7 @@ class _GuardDaemonHTTPServer(BoundedThreadingHTTPServer):
         self.unclassified_watchdog_thread = None
         self.hook_process_runner = HookProcessRunner(guard_home=store.guard_home)
         self.hook_process_runner.set_capacity_listener(self.runtime_hook_process_scheduler.set_active_limit)
+        self.runtime_hook_process_scheduler.set_queue_listener(self.hook_process_runner.notify_queued_work)
         self.runtime_heartbeat = RuntimeHeartbeatWriter(
             store=store,
             session_id=runtime_session_id,
@@ -2693,6 +2696,12 @@ class _GuardDaemonHandler(BaseHTTPRequestHandler):
         if parsed.path == "/v1/policy/decisions":
             self._handle_policy_upsert(payload)
             return
+        if parsed.path == "/v1/policy/resolve":
+            self._handle_policy_resolve(payload)
+            return
+        if parsed.path == "/v1/policy/claim":
+            self._handle_policy_claim(payload)
+            return
         if parsed.path == "/v1/policy/clear":
             self._handle_policy_clear(payload)
             return
@@ -3819,7 +3828,15 @@ class _GuardDaemonHandler(BaseHTTPRequestHandler):
         return managers, None
 
     def _supply_chain_entitlement(self) -> dict[str, object]:
-        return resolve_package_firewall_entitlement_with_refresh(self.server.store)  # type: ignore[attr-defined]
+        server = self.server  # type: ignore[attr-defined]
+        with server.guard_cloud_browser_session_lock:
+            cloud_connect = _copy_guard_cloud_connect_state(server)
+            package_connect = _copy_package_firewall_connect_state(server)
+            if _guard_cloud_connect_state_is_in_flight(cloud_connect) or _guard_cloud_connect_state_is_in_flight(
+                package_connect
+            ):
+                return resolve_package_firewall_entitlement(server.store)
+            return resolve_package_firewall_entitlement_with_refresh(server.store)
 
     def _handle_get_supply_chain_bundle(self) -> None:
         store = self.server.store  # type: ignore[attr-defined]
@@ -6064,7 +6081,7 @@ class _GuardDaemonHandler(BaseHTTPRequestHandler):
     ) -> dict[str, object] | None:
         """Try the resident hook worker. Return None to fall back to legacy.
 
-        The worker only handles ``PostToolUse`` with ``guard_source_ref``.
+        The worker handles PostToolUse and supported command PreToolUse.
         ``HookWorkerUnsupported`` means the event is not eligible for the
         fast path — return ``None`` so the caller falls through to the
         legacy CLI path, preserving existing policy/permission checks.
@@ -6091,7 +6108,7 @@ class _GuardDaemonHandler(BaseHTTPRequestHandler):
             )
         except HookWorkerUnsupported:
             # Not eligible for fast path — fall back to legacy CLI so
-            # PreToolUse/PermissionRequest/PostToolUse-without-source-ref
+            # non-command PreToolUse/PermissionRequest/PostToolUse-without-source-ref
             # still get full policy/permission/approval checks.
             return None
         except Exception as error:
@@ -7394,6 +7411,26 @@ class _GuardDaemonHandler(BaseHTTPRequestHandler):
             return
         self._write_json({"saved": True, "decision": record})
 
+    def _handle_policy_resolve(self, payload: dict[str, object]) -> None:
+        from .policy_authority_api import PolicyAuthorityApiError, resolve_policy_decision
+
+        try:
+            result = resolve_policy_decision(self.server.store, payload, now=_now())  # type: ignore[attr-defined]
+        except PolicyAuthorityApiError as error:
+            self._write_json({"error": str(error)}, status=400)
+            return
+        self._write_json(result, extra_headers={"Cache-Control": "no-store"})
+
+    def _handle_policy_claim(self, payload: dict[str, object]) -> None:
+        from .policy_authority_api import PolicyAuthorityApiError, claim_policy_decision
+
+        try:
+            result = claim_policy_decision(self.server.store, payload, now=_now())  # type: ignore[attr-defined]
+        except PolicyAuthorityApiError as error:
+            self._write_json({"error": str(error)}, status=400)
+            return
+        self._write_json(result, status=200 if result["claimed"] else 409)
+
     @staticmethod
     def _optional_string(value: object) -> str | None:
         if isinstance(value, str) and value.strip():
@@ -7636,6 +7673,8 @@ class _GuardDaemonHandler(BaseHTTPRequestHandler):
             "/v1/connect/result",
             "/v1/operations/block",
             "/v1/policy/decisions",
+            "/v1/policy/resolve",
+            "/v1/policy/claim",
             "/v1/policy/cloud-exceptions",
             "/v1/policy/cloud-exception-requests",
             "/v1/policy/clear",
@@ -7879,6 +7918,7 @@ class GuardDaemonServer:
             raise RuntimeError("A previous Guard daemon remains quarantined after unconfirmed containment.")
         self._diagnostics = DaemonDiagnostics(store.guard_home)
         try:
+            self._isolation_provider_registry = load_managed_provider_registry()
             _validate_dashboard_bundle()
         except BaseException:
             self._diagnostics.record_exception("daemon_initialization_failed")
@@ -7918,9 +7958,7 @@ class GuardDaemonServer:
         self._headless_cloud_sync_interval_seconds = _DEFAULT_HEADLESS_CLOUD_SYNC_INTERVAL_SECONDS
         self._aibom_home_dir = home_dir.expanduser() if home_dir is not None else None
         self._aibom_workspace_dir = workspace_dir.expanduser() if workspace_dir is not None else None
-        self._aibom_context_workspace_id = (
-            store.get_cloud_workspace_id() if self._aibom_workspace_dir is not None else None
-        )
+        self._aibom_context_workspace_id = store.get_cloud_workspace_id() if self._aibom_workspace_dir else None
         self._aibom_refresh_thread: threading.Thread | None = None
         self._bundle_refresh_thread: threading.Thread | None = None
         self._command_queue_worker: CommandQueueWorker | None = None
@@ -7930,6 +7968,7 @@ class GuardDaemonServer:
         self._extension_control_refresh_interval_seconds = extension_control_refresh_interval_seconds
         self._cloud_review_sync_worker: CloudReviewSyncWorker | None = None
         self._thread: threading.Thread | None = None
+        self._serve_loop_started = threading.Event()
         self._watchdog_thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -7943,13 +7982,13 @@ class GuardDaemonServer:
         self._begin_service()
         serve_thread_started = False
         try:
+            self._serve_loop_started.clear()
             self._thread = threading.Thread(target=self._serve_forever, daemon=True)
             self._thread.start()
             serve_thread_started = True
-            self._server.hook_process_runner.enable_full_capacity(
-                delay_seconds=0,
-                active_deferral_seconds=0,
-            )
+            if not self._serve_loop_started.wait(timeout=_DAEMON_SERVE_THREAD_START_TIMEOUT_SECONDS):
+                raise RuntimeError("Guard daemon serve thread did not become ready")
+            self._server.hook_process_runner.enable_full_capacity()
         except BaseException as error:
             self._diagnostics.record_exception("daemon_start_thread_failed")
             serve_thread_contained = True
@@ -7972,10 +8011,7 @@ class GuardDaemonServer:
 
     def serve(self) -> None:
         self._begin_service()
-        self._server.hook_process_runner.enable_full_capacity(
-            delay_seconds=0,
-            active_deferral_seconds=0,
-        )
+        self._server.hook_process_runner.enable_full_capacity()
         self._serve_forever()
 
     def stop(self) -> None:
@@ -8017,6 +8053,7 @@ class GuardDaemonServer:
         self._require_command_activity_maintenance_stopped()
         self._shutdown_started.clear()
         self._server.hook_process_runner.start(defer_backfill=True)
+        self._server.hook_process_runner.require_initial_capacity()
         self._reconcile_runtime_artifacts_best_effort()
         self._maintain_command_activity_best_effort()
         self._persist_aibom_inventory_context()
@@ -8088,9 +8125,7 @@ class GuardDaemonServer:
     def _maintain_command_activity_best_effort(self) -> None:
         now = datetime.now(timezone.utc)
         try:
-            config = load_guard_config(
-                self._server.store.guard_home,
-            )
+            config = load_guard_config(self._server.store.guard_home)
             self._server.store.maintain_command_activity(
                 now=now,
                 detail_retain_days=config.evidence_retain_days,
@@ -8178,6 +8213,7 @@ class GuardDaemonServer:
     def _serve_forever(self) -> None:
         stop_reason = "serve_loop_returned"
         try:
+            self._serve_loop_started.set()
             self._server.serve_forever()
             if self._shutdown_started.is_set():
                 stop_reason = "requested_shutdown"

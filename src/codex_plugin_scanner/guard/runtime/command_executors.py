@@ -36,6 +36,9 @@ from ..shims import (
     probe_package_shim_intercepts,
 )
 from ..store import GuardStore
+from .command_payload import mapping as _mapping
+from .command_payload import optional_text as _text
+from .command_payload import result as _command_result
 from .exact_cloud_review import EXACT_CLOUD_REVIEW_OPERATION
 from .exact_cloud_review_executor import execute_exact_cloud_review_operation
 from .review_policy_memory_executor import (
@@ -433,12 +436,11 @@ def command_job_operation(job: dict[str, object]) -> str:
 
 
 def _job_payload(job: dict[str, object]) -> dict[str, object]:
-    payload = job.get("payload")
-    return dict(payload) if isinstance(payload, dict) else {}
+    return _mapping(job.get("payload"))
 
 
 def _optional_string(value: object) -> str | None:
-    return value.strip() if isinstance(value, str) and value.strip() else None
+    return _text(value)
 
 
 def _optional_surface(value: object) -> str | None:
@@ -451,10 +453,7 @@ def _optional_surface(value: object) -> str | None:
 
 
 def _result(data: dict[str, object], *, generated_at: str) -> dict[str, object]:
-    return {
-        "data": data,
-        "generatedAt": generated_at,
-    }
+    return _command_result(data, generated_at=generated_at)
 
 
 def _waiting_local_confirm(
