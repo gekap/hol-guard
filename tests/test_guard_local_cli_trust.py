@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from codex_plugin_scanner.guard.local_cli_hook import observe_unlisted_cli
 from codex_plugin_scanner.guard.local_cli_trust import matching_local_cli_grant, utc_now
 from codex_plugin_scanner.guard.runtime.local_cli_identity import identify_unlisted_cli
 from codex_plugin_scanner.guard.store import GuardStore
@@ -116,3 +117,34 @@ def test_list_merges_observation_and_grant(tmp_path: Path) -> None:
     assert items[0]["stale"] is False
     assert items[0]["observed_count"] == 1
     assert items[0]["suggestable"] is True
+
+
+def test_grant_matches_sourced_helper_in_compound_command(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    store = GuardStore(home)
+    helper = tmp_path / "server-access.sh"
+    helper.write_text("#!/bin/sh\necho access\n", encoding="utf-8")
+    helper.chmod(0o755)
+    command = f"source {helper} && ssh -o BatchMode=yes host 'echo ok'"
+    observe_unlisted_cli(store=store, command=command, cwd=tmp_path, home_dir=tmp_path)
+    items = store.list_local_cli_items()
+    assert len(items) == 1
+    identity = identify_unlisted_cli(f"bash {helper}", cwd=tmp_path, home_dir=tmp_path)
+    assert identity is not None
+    store.upsert_local_cli_grant(
+        identity=identity,
+        state="allowed",
+        expected_revision=0,
+        updated_at=utc_now(),
+    )
+    matched = matching_local_cli_grant(
+        store=store,
+        command=command,
+        cwd=tmp_path,
+        home_dir=tmp_path,
+        current_action="review",
+    )
+    assert matched is not None
+    assert matched[0].cli_id == identity.cli_id
+    assert matched[1] == "allowed"

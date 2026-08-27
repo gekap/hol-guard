@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from codex_plugin_scanner.guard.runtime.custom_extension_suggestion import is_suggestable_custom_tool
+from codex_plugin_scanner.guard.runtime.local_cli_compound import identify_unlisted_cli_identities
 from codex_plugin_scanner.guard.runtime.local_cli_identity import (
     catalog_owned_executables,
     identify_unlisted_cli,
@@ -64,6 +65,33 @@ def test_compound_command_is_not_unlisted(tmp_path: Path) -> None:
     script = tmp_path / "cwv.py"
     script.write_text("print('ok')\n", encoding="utf-8")
     assert identify_unlisted_cli(f"python3 {script} && echo done", cwd=tmp_path, home_dir=tmp_path) is None
+
+
+def test_compound_source_and_ssh_identifies_the_sourced_script(tmp_path: Path) -> None:
+    helper = tmp_path / "server-access.sh"
+    helper.write_text("#!/bin/sh\necho access\n", encoding="utf-8")
+    helper.chmod(0o755)
+    command = f"source {helper} && ssh -o BatchMode=yes host 'echo ok'"
+    assert identify_unlisted_cli(command, cwd=tmp_path, home_dir=tmp_path) is None
+    identities = identify_unlisted_cli_identities(command, cwd=tmp_path, home_dir=tmp_path)
+    assert [item.name for item in identities] == ["server-access.sh"]
+
+
+def test_bash_c_source_identifies_the_sourced_script(tmp_path: Path) -> None:
+    helper = tmp_path / "server-access.sh"
+    helper.write_text("#!/bin/sh\necho access\n", encoding="utf-8")
+    wrapped = f"/bin/bash -c 'source {helper} && ssh -o BatchMode=yes host echo ok'"
+    identities = identify_unlisted_cli_identities(wrapped, cwd=tmp_path, home_dir=tmp_path)
+    assert [item.name for item in identities] == ["server-access.sh"]
+
+
+def test_compound_identities_skip_ssh(tmp_path: Path) -> None:
+    identities = identify_unlisted_cli_identities(
+        "ssh -o BatchMode=yes host 'echo ok'",
+        cwd=tmp_path,
+        home_dir=tmp_path,
+    )
+    assert identities == ()
 
 
 def test_common_shell_utilities_are_not_unlisted(tmp_path: Path) -> None:

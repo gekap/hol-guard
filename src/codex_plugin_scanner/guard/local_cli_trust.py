@@ -16,7 +16,8 @@ from .runtime.local_cli_commands import (
     resolve_command_id_for_text,
     slug_local_cli_command_id,
 )
-from .runtime.local_cli_identity import UnlistedCliIdentity, identify_unlisted_cli
+from .runtime.local_cli_compound import identify_unlisted_cli_identities
+from .runtime.local_cli_identity import UnlistedCliIdentity
 from .runtime.package_json_scripts import identify_package_json_scripts
 
 LocalCliGrantState = Literal["allowed", "blocked"]
@@ -43,11 +44,33 @@ def matching_local_cli_grant(
 
     if current_action not in {"review", "require-reapproval", "warn"}:
         return None
-    identity = identify_package_json_scripts(command, cwd=cwd, home_dir=home_dir)
-    if identity is None:
-        identity = identify_unlisted_cli(command, cwd=cwd, home_dir=home_dir)
-    if identity is None:
-        return None
+    package_identity = identify_package_json_scripts(command, cwd=cwd, home_dir=home_dir)
+    identities = (
+        (package_identity,)
+        if package_identity is not None
+        else identify_unlisted_cli_identities(command, cwd=cwd, home_dir=home_dir)
+    )
+    for identity in identities:
+        matched = _matching_grant_for_identity(
+            store,
+            identity=identity,
+            command=command,
+            cwd=cwd,
+            home_dir=home_dir,
+        )
+        if matched is not None:
+            return matched
+    return None
+
+
+def _matching_grant_for_identity(
+    store: object,
+    *,
+    identity: UnlistedCliIdentity,
+    command: str,
+    cwd: Path,
+    home_dir: Path | None,
+) -> tuple[UnlistedCliIdentity, LocalCliGrantState] | None:
     lookup = getattr(store, "read_local_cli_grant", None)
     if not callable(lookup):
         return None
