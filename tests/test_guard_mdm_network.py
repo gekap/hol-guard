@@ -170,6 +170,10 @@ def test_disabled_public_registry_fails_before_network() -> None:
     with pytest.raises(ManagedNetworkError, match="managed_public_registry_disabled"):
         session.adapters["https://"].add_headers(prepared)
 
+    rooted = session.prepare_request(Request("GET", "https://PYPI.ORG./simple/hol-guard/"))
+    with pytest.raises(ManagedNetworkError, match="managed_public_registry_disabled"):
+        session.adapters["https://"].add_headers(rooted)
+
 
 def test_blocked_public_registry_diagnostic_is_stable_and_offline() -> None:
     result = diagnose_endpoint(

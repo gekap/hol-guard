@@ -60,6 +60,41 @@ const ok = { default: "workspace" };
 {
   const storage = memoryStorage();
   let reloads = 0;
+  const genericFailure = async () => {
+    throw new TypeError("Importing a module script failed.");
+  };
+  try {
+    await loadWorkspaceModule(genericFailure, {
+      moduleId: "policy-workspace",
+      storage,
+      wait: async () => undefined,
+      reload: () => {
+        reloads += 1;
+        throw new Error("dashboard-reload");
+      },
+    });
+  } catch (error) {
+    assert(error instanceof Error && error.message === "dashboard-reload", "first generic failure reloads");
+  }
+  try {
+    await loadWorkspaceModule(genericFailure, {
+      moduleId: "audit-workspace",
+      storage,
+      wait: async () => undefined,
+      reload: () => {
+        reloads += 1;
+        throw new Error("dashboard-reload");
+      },
+    });
+  } catch (error) {
+    assert(error instanceof Error && error.message === "dashboard-reload", "another module receives its own retry");
+  }
+  assert(reloads === 2, "generic browser errors are scoped by stable module identity");
+}
+
+{
+  const storage = memoryStorage();
+  let reloads = 0;
   let waited = 0;
   try {
     await loadWorkspaceModule(
@@ -99,7 +134,7 @@ const ok = { default: "workspace" };
   const storage = memoryStorage();
   storage.setItem(
     CHUNK_RELOAD_STORAGE_KEY,
-    "Failed to fetch dynamically imported module: http://127.0.0.1:5474/assets/chunks/extensions-workspace.js",
+    "anonymous-workspace-module:Failed to fetch dynamically imported module: http://127.0.0.1:5474/assets/chunks/extensions-workspace.js",
   );
   let reloads = 0;
   try {
@@ -127,7 +162,7 @@ const ok = { default: "workspace" };
   const storage = memoryStorage();
   storage.setItem(
     CHUNK_RELOAD_STORAGE_KEY,
-    "Failed to fetch dynamically imported module: http://127.0.0.1:5474/assets/chunks/extensions-v1.js",
+    "anonymous-workspace-module:Failed to fetch dynamically imported module: http://127.0.0.1:5474/assets/chunks/extensions-v1.js",
   );
   let reloads = 0;
   try {

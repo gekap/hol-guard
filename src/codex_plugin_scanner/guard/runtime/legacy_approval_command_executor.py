@@ -1,7 +1,5 @@
 """Compatibility executor for durable legacy Cloud Review queue jobs."""
 
-# pyright: reportAttributeAccessIssue=false
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -26,11 +24,10 @@ from ..review_contracts import (
 )
 from ..store import GuardStore
 from . import local_request_snapshots
+from .command_payload import mapping as _payload_mapping
+from .command_payload import optional_text as _optional_string
+from .command_payload import result as _result
 from .legacy_policy_sync_executor import execute_legacy_policy_sync
-
-LOCAL_REQUEST_PENDING_SNAPSHOT_LIMIT = local_request_snapshots.LOCAL_REQUEST_PENDING_SNAPSHOT_LIMIT
-LOCAL_REQUEST_RESOLVED_SNAPSHOT_LIMIT = local_request_snapshots.LOCAL_REQUEST_RESOLVED_SNAPSHOT_LIMIT
-LOCAL_REQUEST_SNAPSHOT_MAX_BYTES = local_request_snapshots.LOCAL_REQUEST_SNAPSHOT_MAX_BYTES
 
 
 @dataclass(frozen=True)
@@ -156,21 +153,16 @@ def _apply_legacy_approval(
     validated: _ValidatedLegacyApproval,
     generated_at: str,
 ) -> dict[str, object]:
-    if not store.claim_remote_once_receipt(validated.receipt_id, request_id=request_id, claimed_at=generated_at):
+    result = store.resolve_request_with_signed_remote_compat_result(
+        request_id,
+        receipt_id=validated.receipt_id,
+        resolution_action=validated.resolution_action,
+        resolution_scope=validated.resolution_scope,
+        reason=validated.reason,
+        resolved_at=generated_at,
+    )
+    if result.get("error") == "remote_approval_replayed":
         raise ValueError("remote_approval_replayed")
-    try:
-        result = store.resolve_request_with_signed_remote_result(
-            request_id,
-            resolution_action=validated.resolution_action,
-            resolution_scope=validated.resolution_scope,
-            reason=validated.reason,
-            resolved_at=generated_at,
-        )
-    except Exception:
-        store.release_remote_once_receipt(validated.receipt_id)
-        raise
-    if result.get("resolved") is not True:
-        store.release_remote_once_receipt(validated.receipt_id)
     return result
 
 
@@ -205,9 +197,12 @@ def _legacy_approval_response(
         else {}
     )
     confirmed = resolved and _remote_resume_confirmed(resume_metadata, validated.resolution_action)
+    daemon_ack_status = "not_resolved"
+    if resolved:
+        daemon_ack_status = "resolved" if confirmed else "resolved_unconfirmed"
     response_data: dict[str, object] = {
         "action": validated.resolution_action,
-        "daemonAckStatus": "resolved" if confirmed else "resolved_unconfirmed" if resolved else "not_resolved",
+        "daemonAckStatus": daemon_ack_status,
         "localRequestId": request_id,
         "remoteDecision": validated.resolution_action,
         "resolution": _remote_resolution_metadata(result),
@@ -351,9 +346,6 @@ def _local_request_snapshot_items(store: GuardStore) -> list[dict[str, object]]:
 
 
 def _local_request_snapshot_payload(store: GuardStore) -> dict[str, object]:
-    local_request_snapshots.LOCAL_REQUEST_PENDING_SNAPSHOT_LIMIT = LOCAL_REQUEST_PENDING_SNAPSHOT_LIMIT
-    local_request_snapshots.LOCAL_REQUEST_RESOLVED_SNAPSHOT_LIMIT = LOCAL_REQUEST_RESOLVED_SNAPSHOT_LIMIT
-    local_request_snapshots.LOCAL_REQUEST_SNAPSHOT_MAX_BYTES = LOCAL_REQUEST_SNAPSHOT_MAX_BYTES
     return local_request_snapshots.local_request_snapshot_payload(store)
 
 
@@ -381,18 +373,6 @@ def _local_request_snapshot_byte_capped_items(
         max_bytes=max_bytes,
         existing_items=existing_items,
     )
-
-
-def _payload_mapping(value: object) -> dict[str, object]:
-    return dict(value) if isinstance(value, dict) else {}
-
-
-def _optional_string(value: object) -> str | None:
-    return value.strip() if isinstance(value, str) and value.strip() else None
-
-
-def _result(data: dict[str, object], *, generated_at: str) -> dict[str, object]:
-    return {"data": data, "generatedAt": generated_at}
 
 
 __all__ = ["execute_legacy_approval_operation"]

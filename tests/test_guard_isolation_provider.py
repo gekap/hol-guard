@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from pathlib import Path
 
 import pytest
 
 from codex_plugin_scanner.guard.runtime import isolation_provider as isolation_provider_module
+from codex_plugin_scanner.guard.runtime import oci_isolation_provider as oci_provider_module
 from codex_plugin_scanner.guard.runtime.execution_assurance_contract import (
     AtomicGuarantee,
     AtomicGuaranteeKind,
@@ -22,8 +25,10 @@ from codex_plugin_scanner.guard.runtime.isolation_provider import (
     ProviderHealth,
     ProviderPlanError,
     ProviderRegistry,
+    load_managed_provider_registry,
     validate_provider_plan_inputs,
 )
+from codex_plugin_scanner.guard.runtime.oci_isolation_provider import OCIIsolationProvider
 
 _SHA = "a" * 64
 _OTHER = "b" * 64
@@ -181,7 +186,7 @@ class TestProviderRegistry:
 class TestProviderHealth:
     def test_rejects_non_state(self) -> None:
         with pytest.raises(ValueError, match="ProviderHealthState"):
-            ProviderHealth(state="healthy", guarantees=())  # type: ignore[arg-type]
+            ProviderHealth(state="healthy", guarantees=())  # pyright: ignore[reportArgumentType]
 
 
 def test_registry_rejects_traversal_escape() -> None:
@@ -200,6 +205,90 @@ def test_artifact_digest_reader_rejects_symlinks(tmp_path) -> None:
     link.symlink_to(artifact)
     with pytest.raises(ValueError, match="missing or unreadable"):
         isolation_provider_module._sha256_regular_file(link)
+
+
+def test_managed_registry_loads_and_verifies_configured_oci_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_root = tmp_path / "providers"
+    provider_root.mkdir()
+    configured_artifact = provider_root / "oci-isolation.py"
+    provider = OCIIsolationProvider()
+    source = Path(oci_provider_module.__file__)
+    configured_artifact.write_bytes(source.read_bytes())
+    configured_artifact.chmod(0o600)
+    config = tmp_path / "providers.json"
+    identity = provider.identity()
+    config.write_text(
+        json.dumps(
+            {
+                "schema": "guard.provider-registry.v1",
+                "providers": [
+                    {
+                        "kind": "oci-isolation",
+                        "path": str(configured_artifact),
+                        "trustAnchor": {
+                            "providerKind": identity.provider_kind,
+                            "implementationVersion": identity.implementation_version,
+                            "binaryOrImageDigest": identity.binary_or_image_digest,
+                            "signingIdentity": identity.signing_identity,
+                            "trustDomain": identity.trust_domain,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    monkeypatch.setattr(isolation_provider_module, "_managed_provider_locations", lambda: (config, str(provider_root)))
+    monkeypatch.setattr(isolation_provider_module, "_provider_root_is_guard_owned", lambda _path: True)
+
+    registry = load_managed_provider_registry()
+
+    assert len(registry.providers()) == 1
+    assert registry.providers()[0].identity() == identity
+
+
+def test_managed_registry_rejects_unpinned_provider_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_root = tmp_path / "providers"
+    provider_root.mkdir()
+    configured_artifact = provider_root / "oci-isolation.py"
+    configured_artifact.write_text("tampered", encoding="utf-8")
+    configured_artifact.chmod(0o600)
+    config = tmp_path / "providers.json"
+    identity = OCIIsolationProvider().identity()
+    config.write_text(
+        json.dumps(
+            {
+                "schema": "guard.provider-registry.v1",
+                "providers": [
+                    {
+                        "kind": "oci-isolation",
+                        "path": str(configured_artifact),
+                        "trustAnchor": {
+                            "providerKind": identity.provider_kind,
+                            "implementationVersion": identity.implementation_version,
+                            "binaryOrImageDigest": identity.binary_or_image_digest,
+                            "signingIdentity": identity.signing_identity,
+                            "trustDomain": identity.trust_domain,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    monkeypatch.setattr(isolation_provider_module, "_managed_provider_locations", lambda: (config, str(provider_root)))
+    monkeypatch.setattr(isolation_provider_module, "_provider_root_is_guard_owned", lambda _path: True)
+
+    with pytest.raises(ValueError, match="artifact digest"):
+        load_managed_provider_registry()
 
 
 def test_plan_rejects_additional_vcs_names() -> None:

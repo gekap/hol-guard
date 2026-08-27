@@ -70,7 +70,7 @@ def _git_common_dir(root: Path) -> Path:
     return (path if path.is_absolute() else resolved / path).resolve()
 
 
-def _open_hooks_directory(root: Path, *, create: bool) -> int:
+def _open_hooks_directory(root: Path, *, create: bool) -> int | None:
     hooks_dir = _git_common_dir(root) / "hooks"
     if create:
         try:
@@ -80,6 +80,10 @@ def _open_hooks_directory(root: Path, *, create: bool) -> int:
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(hooks_dir, flags)
+    except FileNotFoundError:
+        if not create:
+            return None
+        raise ValueError("Git hook directory must be a real trusted directory") from None
     except OSError as error:
         raise ValueError("Git hook directory must be a real trusted directory") from error
     if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
@@ -122,6 +126,8 @@ def install_precommit_hook(root: Path) -> SecretsHookResult:
     """Install the managed hook while preserving any existing user hook."""
 
     directory = _open_hooks_directory(root, create=True)
+    if directory is None:  # pragma: no cover - create=True guarantees a directory or raises
+        raise ValueError("Git hook directory could not be created safely")
     hook = "pre-commit"
     backup = _BACKUP_NAME
     display = "git-hooks/pre-commit"
@@ -176,6 +182,8 @@ def uninstall_precommit_hook(root: Path) -> SecretsHookResult:
     hook = "pre-commit"
     backup = _BACKUP_NAME
     display = "git-hooks/pre-commit"
+    if directory is None:
+        return SecretsHookResult(status="not_installed", hook=display, chained_existing=False)
     try:
         _require_regular_entry(directory, hook)
         _require_regular_entry(directory, backup)

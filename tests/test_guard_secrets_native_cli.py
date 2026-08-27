@@ -235,3 +235,14 @@ def test_precommit_uninstall_does_not_remove_foreign_hook(tmp_path: Path) -> Non
 
     assert result.status == "not_installed"
     assert hook.read_bytes() == original
+
+
+def test_precommit_uninstall_accepts_missing_hooks_directory(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    hooks = tmp_path / ".git" / "hooks"
+    hooks.rename(tmp_path / ".git" / "hooks-preserved")
+
+    result = uninstall_precommit_hook(tmp_path)
+
+    assert result.status == "not_installed"
+    assert result.chained_existing is False

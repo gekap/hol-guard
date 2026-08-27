@@ -126,9 +126,19 @@ def request_url(request: str | urllib.request.Request) -> str:
 
 
 def validate_destination(url: str, policy: ManagedNetworkPolicy) -> None:
-    hostname = (urllib.parse.urlsplit(url).hostname or "").lower()
+    hostname = _canonical_hostname(urllib.parse.urlsplit(url).hostname or "")
     if not policy.allow_public_registries and hostname in _PUBLIC_REGISTRIES:
         raise ManagedNetworkError("managed_public_registry_disabled")
+
+
+def _canonical_hostname(hostname: str) -> str:
+    """Return a comparison-safe DNS hostname, accepting one root-label dot."""
+
+    rooted = hostname[:-1] if hostname.endswith(".") else hostname
+    try:
+        return rooted.encode("idna").decode("ascii").lower()
+    except UnicodeError as error:
+        raise ManagedNetworkError("managed_destination_invalid") from error
 
 
 def validated_proxy_url(value: str, *, require_https: bool, reason_code: str) -> str:

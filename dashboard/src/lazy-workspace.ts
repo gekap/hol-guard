@@ -7,6 +7,7 @@ export type WorkspaceModuleLoader<T> = () => Promise<T>;
 
 export type LoadWorkspaceModuleOptions = {
   delayMs?: number;
+  moduleId?: string;
   reload?: () => void;
   storage?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
   wait?: (ms: number) => Promise<void>;
@@ -80,7 +81,8 @@ export async function loadWorkspaceModule<T>(
       throw error;
     }
     const storage = options.storage;
-    const failureFingerprint = error instanceof Error ? error.message : String(error);
+    const failureMessage = error instanceof Error ? error.message : String(error);
+    const failureFingerprint = `${options.moduleId ?? "anonymous-workspace-module"}:${failureMessage}`;
     if (!storage || storageGet(storage, CHUNK_RELOAD_STORAGE_KEY) === failureFingerprint) {
       throw error;
     }
@@ -102,10 +104,11 @@ export async function loadWorkspaceModule<T>(
 }
 
 export function lazyWorkspace<T extends FunctionComponent<never>>(
+  moduleId: string,
   loader: WorkspaceModuleLoader<{ default: T }>,
 ): LazyExoticComponent<FunctionComponent<Parameters<T>[0]>> {
   const load = async (): Promise<{ default: FunctionComponent<Parameters<T>[0]> }> => {
-    const module = await loadWorkspaceModule(loader, { storage: browserSessionStorage() });
+    const module = await loadWorkspaceModule(loader, { moduleId, storage: browserSessionStorage() });
     return { default: module.default };
   };
   return lazy(load);
