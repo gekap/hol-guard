@@ -19,6 +19,7 @@ jobs:
         with:
           ref: rust/hotpath-authority-t001-t100
           fetch-depth: 0
+          persist-credentials: true
       - name: Apply reviewed remediation
         shell: bash
         run: |
