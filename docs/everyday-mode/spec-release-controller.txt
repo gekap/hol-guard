@@ -1,0 +1,1 @@
+prepare deterministic release tag internal-everyday-mode-specs-20260827-v3
