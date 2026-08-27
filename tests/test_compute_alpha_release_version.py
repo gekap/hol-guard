@@ -63,6 +63,8 @@ def test_phase_status_reports_a_closed_train_without_weakening_alpha_computation
 def test_phase_status_rejects_malformed_registry_versions() -> None:
     with pytest.raises(ValueError, match="invalid"):
         _ = alpha_phase_status("3.0", ["not-a-version"])
+    with pytest.raises(ValueError, match="invalid"):
+        _ = alpha_phase_status("3.0", ["3.0.0", "not-a-version"])
 
 
 @pytest.mark.parametrize("version", ["2.2.0b1", "2.2.0rc1"])

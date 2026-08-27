@@ -73,6 +73,11 @@ def test_release_branch_pushes_publish_alpha_while_main_pushes_publish_stable() 
     assert "vars.MAIN_TESTPYPI_ENABLED == 'true'" in jobs["publish-main-testpypi"]["if"]
     assert jobs["release-main"]["needs"] == ["build", "publish-main-pypi"]
 
+    native_condition = jobs["build-native-guard-wheels"]["if"]
+    assert "needs.build.outputs.channel == 'validation'" in native_condition
+    for job_name in ("reserve-alpha-tag", "publish-alpha-testpypi", "publish-alpha-pypi", "release-alpha"):
+        assert "validation" not in jobs[job_name]["if"]
+
     workflow_text = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
     assert "startsWith(github.ref, 'refs/tags/')" not in workflow_text
     assert "github.ref == 'refs/heads/main'" in workflow_text

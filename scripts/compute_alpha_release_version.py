@@ -57,11 +57,14 @@ def validate_alpha_phase_open(release_train: str, existing_versions: Iterable[st
 
 
 def alpha_phase_status(release_train: str, existing_versions: Iterable[str]) -> AlphaPhaseStatus:
-    try:
-        validate_alpha_phase_open(release_train, existing_versions)
-    except AlphaPhaseClosedError:
-        return "closed"
-    return "open"
+    validate_alpha_phase_open(release_train, ())
+    closed = False
+    for version in existing_versions:
+        try:
+            validate_alpha_phase_open(release_train, (version,))
+        except AlphaPhaseClosedError:
+            closed = True
+    return "closed" if closed else "open"
 
 
 def compute_alpha_release_version(release_train: str, existing_versions: Iterable[str]) -> str:

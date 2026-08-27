@@ -410,11 +410,12 @@ jobs:
           needs.build.outputs.channel == 'canary'
         ) ||
         (
+          (needs.build.outputs.channel == 'alpha' || needs.build.outputs.channel == 'validation') &&
+          (github.event_name == 'push' && github.ref == 'refs/heads/release/3.0')
+        ) ||
+        (
           needs.build.outputs.channel == 'alpha' &&
-          (
-            (github.event_name == 'push' && github.ref == 'refs/heads/release/3.0') ||
             (github.event_name == 'workflow_dispatch' && github.event.inputs.release_train == '3.0')
-          )
         )
       )
     needs: build
