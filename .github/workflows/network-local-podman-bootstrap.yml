@@ -1,0 +1,26 @@
+name: Network local Podman bootstrap
+
+on:
+  push:
+    branches:
+      - fix/network-isolation-remediation-rem121-139
+
+permissions:
+  contents: read
+
+jobs:
+  package-podman:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download and verify pinned Podman static bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSLo /tmp/podman-linux-amd64.tar.gz https://github.com/mgoltzsche/podman-static/releases/download/v5.8.4/podman-linux-amd64.tar.gz
+          printf '%s  %s\n' 'a58765fe8be6ab3fb79f892f1a027b4ce4a7e8eb589df1ef960c167cbde08d69' '/tmp/podman-linux-amd64.tar.gz' | sha256sum -c -
+      - uses: actions/upload-artifact@v4
+        with:
+          name: network-local-podman
+          path: /tmp/podman-linux-amd64.tar.gz
+          if-no-files-found: error
+          retention-days: 1
