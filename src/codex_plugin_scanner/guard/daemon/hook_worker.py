@@ -1,10 +1,10 @@
 """Daemon-resident native hook worker.
 
-The supported PostToolUse decision path is Rust-authoritative. Python builds the
-bounded transport envelope and maps the already-completed native decision to a
-harness response. It does not run a Python scanner, classifier, or evaluator,
-and native failure produces a deterministic fail-safe result rather than a
-Python decision fallback.
+PostToolUse is Rust-authoritative: Python builds the bounded transport envelope
+and maps the completed native decision to harness JSON, but it never substitutes
+a Python scanner/evaluator when Rust is unavailable. Supported command
+PreToolUse is likewise decided by Rust; native failure fails closed while
+non-command PreToolUse remains owned by the existing CLI coordination path.
 """
 
 from __future__ import annotations
@@ -18,12 +18,13 @@ from ..cli.commands_support_command_activity import (
     record_post_hook_command_activity_best_effort,
 )
 from ..config import load_guard_config
+from ..native_pretool import review_pre_tool_native
 from ..native_route_metrics import (
     attach_native_decision_receipt,
     native_decision_receipt,
     record_native_decision,
 )
-from ..native_runtime import review_post_tool_native
+from ..native_runtime import native_mode, native_runtime_status, review_post_tool_native
 from ..runtime.hook_review_types import (
     HookOutputSummary,
     HookPayloadKind,
@@ -67,9 +68,8 @@ class HookWorker:
         self.store = store
         self.guard_home = store.guard_home
         self.activity_writer = activity_writer
-        # The daemon server owns aggregate failure accounting through this
-        # recorder. It is observability only and never participates in a hook
-        # decision or provides a Python evaluator fallback.
+        # Aggregate failure metrics are observability only. They never become
+        # an alternate evaluator or a Python decision fallback.
         from .hook_metrics import HookMetricsRecorder
 
         self.metrics = HookMetricsRecorder()
@@ -87,6 +87,31 @@ class HookWorker:
     ) -> dict[str, object]:
         harness = self._runtime_harness(params) or default_harness
         event_name = self._hook_event_name(payload)
+        if event_name == "PreToolUse":
+            command = _pre_tool_command(payload)
+            if command is None:
+                raise HookWorkerUnsupported("native PreToolUse fast path requires a command")
+            native = review_pre_tool_native(
+                command,
+                guard_home=guard_home,
+                cwd=workspace,
+                home_dir=home_dir,
+            )
+            if native is not None:
+                action = str(native.get("minimum_action") or "")
+                if action == "review":
+                    raise HookWorkerUnsupported("native PreToolUse review uses CLI approval coordination")
+                return _harness_json_from_native_pre_tool(harness, native)
+            status = native_runtime_status()
+            if status.mode == "off":
+                raise HookWorkerUnsupported("native PreToolUse runtime is off")
+            if status.available or native_mode() == "force":
+                return post_tool_fail_safe_response(
+                    harness,
+                    reason="HOL Guard could not complete the native PreToolUse decision safely.",
+                    reason_code="native_pre_tool_unavailable",
+                )
+            raise HookWorkerUnsupported("native PreToolUse runtime is unavailable")
         if event_name != "PostToolUse":
             raise HookWorkerUnsupported(f"native worker does not own event={event_name}")
 
@@ -299,6 +324,52 @@ def _observe_only_response(
         observed_policy_action=observed_policy_action,
         observe_mode=True,
     )
+
+
+def _pre_tool_command(payload: Mapping[str, object]) -> str | None:
+    for candidate in (payload.get("tool_input"), payload.get("arguments"), payload):
+        if not isinstance(candidate, Mapping):
+            continue
+        for key in ("command", "cmd", "shell_command", "shellCommand"):
+            value = candidate.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    return None
+
+
+def _harness_json_from_native_pre_tool(harness: str, response: Mapping[str, object]) -> dict[str, object]:
+    action = response.get("minimum_action")
+    reason = str(response.get("reason") or "HOL Guard requires native review before execution.")
+    reason_code = str(response.get("reason_code") or "native_pre_tool_review")
+    if action == "allow" and response.get("decision") == "allow":
+        if _canonical_hook_harness(harness) in {"pi", "omp"}:
+            return {
+                "decision": "allow",
+                "policy_action": "allow",
+                "reason_code": reason_code,
+            }
+        return {
+            "continue": True,
+            "policy_action": "allow",
+            "reason_code": reason_code,
+            "hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"},
+        }
+    if _canonical_hook_harness(harness) in {"pi", "omp"}:
+        return {
+            "decision": "deny",
+            "reason": reason,
+            "model_output_action": "block",
+            "notice": "warning",
+            "reason_code": reason_code,
+        }
+    return {
+        "reason_code": reason_code,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+    }
 
 
 def _canonical_hook_harness(harness: str) -> str:
