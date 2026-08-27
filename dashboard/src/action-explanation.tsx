@@ -41,9 +41,7 @@ export function TechnicalDisclosure({
   const panelId = useId();
 
   useEffect(() => {
-    if (required) {
-      setOpen(true);
-    }
+    if (required) setOpen(true);
   }, [required]);
 
   return (
@@ -171,16 +169,9 @@ export function ActionExplanation({
         canonicalIdentity={canonicalIdentity}
       />
       <h2>
-        <EverydayText
-          messageId={explanation.everyday.headline_message_id}
-          text={explanation.everyday.headline}
-        />
+        <EverydayText messageId={explanation.everyday.headline_message_id} text={explanation.everyday.headline} />
       </h2>
-      <EverydayText
-        as="p"
-        messageId={explanation.everyday.summary_message_id}
-        text={explanation.everyday.summary}
-      />
+      <EverydayText as="p" messageId={explanation.everyday.summary_message_id} text={explanation.everyday.summary} />
       <TargetSummary explanation={explanation} />
       <ConsequenceList explanation={explanation} />
       <ExplanationConfidenceNotice explanation={explanation} />
@@ -192,13 +183,7 @@ export function ActionExplanation({
         />
       ) : null}
       <SaferAlternatives explanation={explanation} />
-      {resolved.value === "technical" ? (
-        <TechnicalDisclosure disclosureKey={`technical:${actionIdentity}`} label="Technical details">
-          <ExactActionDisclosure explanation={explanation} />
-        </TechnicalDisclosure>
-      ) : (
-        <ExactActionDisclosure explanation={explanation} />
-      )}
+      <ExactActionDisclosure explanation={explanation} />
     </article>
   );
 }
