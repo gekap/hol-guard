@@ -139,7 +139,7 @@ def _posttool_gate() -> None:
         hook,
     ):
         raise RuntimeError("supported PostToolUse still spills into Python semantic evaluation")
-    if "native_required = mode in {\"auto\", \"force\"}" not in hook:
+    if 'native_required = mode in {"auto", "force"}' not in hook:
         raise RuntimeError("PostToolUse auto path is not native-required")
     if re.search(r'mode == "auto" and native_runtime_status\(\)\.available', hook):
         raise RuntimeError("PostToolUse still availability-gates native authority")
