@@ -1,0 +1,36 @@
+name: Validate Everyday Mode specification transfer
+on:
+  push:
+    branches: [feat/everyday-mode-001-100-v32]
+permissions:
+  contents: write
+jobs:
+  validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: feat/everyday-mode-001-100-v32
+          fetch-depth: 0
+      - shell: bash
+        run: |
+          set -euo pipefail
+          prd=docs/everyday-mode/HOL_GUARD_EVERYDAY_MODE_PRD.md
+          todo=docs/everyday-mode/HOL_GUARD_EVERYDAY_MODE_TODO.md
+          test -s "$prd"
+          test -s "$todo"
+          test "$(wc -c < "$prd")" -gt 1000
+          test "$(wc -c < "$todo")" -gt 10000
+          grep -q 'EVM-001' "$todo"
+          grep -q 'EVM-740' "$todo"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git checkout -B tmp/everyday-specs-valid-release-3.2 origin/release/3.2
+          mkdir -p docs/everyday-mode
+          git show feat/everyday-mode-001-100-v32:"$prd" > "$prd"
+          git show feat/everyday-mode-001-100-v32:"$todo" > "$todo"
+          printf 'validated\n' > docs/everyday-mode/spec-transfer.valid
+          git add docs/everyday-mode
+          git commit -m 'docs: stage validated Everyday Mode specifications'
+          git push -f origin HEAD:tmp/everyday-specs-valid-release-3.2
