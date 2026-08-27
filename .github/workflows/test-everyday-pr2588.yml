@@ -1,0 +1,65 @@
+name: Test Everyday PR 2588 Combined
+on:
+  push:
+    branches: [tmp/finish-prs-2569-2588-20260826-v2]
+    paths: [.github/workflows/test-everyday-pr2588.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+      - shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check uv
+          npm install --global bun@1.2.22
+          git fetch --no-tags origin feat/everyday-mode-001-100 feat/everyday-mode-101-200 release/3.0
+          git checkout -B feat/everyday-mode-101-200 origin/feat/everyday-mode-101-200
+          git config user.name test-bot
+          git config user.email test-bot@users.noreply.github.com
+          git merge --no-edit origin/feat/everyday-mode-001-100
+          uv sync --frozen --extra dev
+          uv run ruff format --check \
+            src/codex_plugin_scanner/guard/runtime/semantic_explanations.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_builder.py \
+            src/codex_plugin_scanner/guard/runtime/command_extension_explanations.py \
+            tests/test_guard_semantic_explanations.py \
+            tests/test_guard_action_explanation_builder.py \
+            tests/test_guard_command_extension_explanations.py
+          uv run ruff check \
+            src/codex_plugin_scanner/guard/runtime/semantic_explanations.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_builder.py \
+            src/codex_plugin_scanner/guard/runtime/command_extension_explanations.py \
+            tests/test_guard_semantic_explanations.py \
+            tests/test_guard_action_explanation_builder.py \
+            tests/test_guard_command_extension_explanations.py
+          uv run basedpyright \
+            src/codex_plugin_scanner/guard/runtime/semantic_explanations.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_builder.py \
+            src/codex_plugin_scanner/guard/runtime/command_extension_explanations.py
+          uv run pytest -q \
+            tests/test_guard_semantic_explanations.py \
+            tests/test_guard_action_explanation_builder.py \
+            tests/test_guard_command_extension_explanations.py \
+            tests/test_guard_action_explanation_contract.py
+          (cd dashboard && bun install --frozen-lockfile && npx tsx src/presentation-mode.test.ts && npx tsx src/action-explanation.test.tsx && bun run build)
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          forbidden={'requests','httpx','urllib','openai','anthropic','subprocess','socket'}
+          for file in [
+              'src/codex_plugin_scanner/guard/runtime/semantic_explanations.py',
+              'src/codex_plugin_scanner/guard/runtime/action_explanation_builder.py',
+              'src/codex_plugin_scanner/guard/runtime/command_extension_explanations.py',
+          ]:
+              tree=ast.parse(Path(file).read_text())
+              imports={a.name.split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.Import) for a in n.names}
+              imports.update((n.module or '').split('.')[0] for n in ast.walk(tree) if isinstance(n,ast.ImportFrom))
+              assert not forbidden.intersection(imports), (file, forbidden.intersection(imports))
+          PY
