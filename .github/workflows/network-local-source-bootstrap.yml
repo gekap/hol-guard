@@ -1,0 +1,33 @@
+name: Network local source bootstrap
+
+on:
+  push:
+    branches:
+      - fix/network-isolation-remediation-rem121-139
+
+permissions:
+  contents: read
+
+jobs:
+  package-source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Package reviewed source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD > SOURCE_HEAD
+          tar --exclude=.git --exclude=.venv --exclude=node_modules --exclude=dist --exclude=build -czf hol-guard-source.tgz .
+          sha256sum hol-guard-source.tgz > hol-guard-source.tgz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: network-local-source
+          path: |
+            hol-guard-source.tgz
+            hol-guard-source.tgz.sha256
+            SOURCE_HEAD
+          if-no-files-found: error
+          retention-days: 1
