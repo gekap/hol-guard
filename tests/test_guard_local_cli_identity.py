@@ -94,6 +94,30 @@ def test_compound_identities_skip_ssh(tmp_path: Path) -> None:
     assert identities == ()
 
 
+def test_interpreter_option_before_script_is_identified(tmp_path: Path) -> None:
+    script = tmp_path / "cwv.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    identities = identify_unlisted_cli_identities(
+        f"python3 -u {script} && echo done",
+        cwd=tmp_path,
+        home_dir=tmp_path,
+    )
+    assert [item.name for item in identities] == ["cwv.py"]
+
+
+def test_relative_source_after_cd_is_not_guessed(tmp_path: Path) -> None:
+    nested = tmp_path / "scripts"
+    nested.mkdir()
+    helper = nested / "server-access.sh"
+    helper.write_text("#!/bin/sh\necho access\n", encoding="utf-8")
+    identities = identify_unlisted_cli_identities(
+        "cd scripts && source server-access.sh",
+        cwd=tmp_path,
+        home_dir=tmp_path,
+    )
+    assert identities == ()
+
+
 def test_common_shell_utilities_are_not_unlisted(tmp_path: Path) -> None:
     for command in ("ls -la", "grep foo", "echo hi", "rg foo", "whoami", "script"):
         assert identify_unlisted_cli(command, cwd=tmp_path, home_dir=tmp_path) is None

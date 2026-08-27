@@ -35,8 +35,19 @@ def identify_unlisted_cli_identities(
         model = parse_shell_command(command_text, cwd=cwd, home_dir=home_dir)
     except ValueError:
         return tuple(found.values())
+    relative_ok = True
     for segment in model.segments:
-        add(_identity_from_segment(segment, cwd=cwd, home_dir=home_dir, registry=registry))
+        if executable_name(segment.executable) == "cd":
+            relative_ok = False
+        add(
+            _identity_from_segment(
+                segment,
+                cwd=cwd,
+                home_dir=home_dir,
+                registry=registry,
+                allow_relative=relative_ok,
+            )
+        )
     return tuple(found.values())
 
 
@@ -46,12 +57,20 @@ def _identity_from_segment(
     cwd: Path,
     home_dir: Path | None,
     registry: CommandSafetyExtensionRegistry,
+    allow_relative: bool,
 ) -> UnlistedCliIdentity | None:
+    if segment.path_overridden or segment.wrapper_chain:
+        return None
     exe = executable_name(segment.executable)
     if exe is None:
         return None
     if exe in _SOURCE_BUILTINS and segment.arguments:
-        script = _resolve_existing_file(segment.arguments[0], cwd=cwd, home_dir=home_dir)
+        script = _resolve_existing_file(
+            segment.arguments[0],
+            cwd=cwd,
+            home_dir=home_dir,
+            allow_relative=allow_relative,
+        )
         if script is None:
             return None
         return identify_unlisted_cli(
@@ -60,39 +79,59 @@ def _identity_from_segment(
             home_dir=home_dir,
             registry=registry,
         )
-    if segment.arguments:
-        first = segment.arguments[0]
-        if first in _INLINE_FLAGS:
-            return None
-        script = _resolve_existing_file(first, cwd=cwd, home_dir=home_dir)
-        if script is not None:
-            return identify_unlisted_cli(
-                f"{exe} {shlex.quote(str(script))}",
-                cwd=cwd,
-                home_dir=home_dir,
-                registry=registry,
-            )
+    if any(argument in _INLINE_FLAGS for argument in segment.arguments):
+        return None
+    for argument in segment.arguments:
+        if argument.startswith("-"):
+            continue
+        script = _resolve_existing_file(
+            argument,
+            cwd=cwd,
+            home_dir=home_dir,
+            allow_relative=allow_relative,
+        )
+        if script is None:
+            continue
+        return identify_unlisted_cli(
+            f"{exe} {shlex.quote(str(script))}",
+            cwd=cwd,
+            home_dir=home_dir,
+            registry=registry,
+        )
     if segment.executable is None:
         return None
-    script = _resolve_existing_file(segment.executable, cwd=cwd, home_dir=home_dir)
+    script = _resolve_existing_file(
+        segment.executable,
+        cwd=cwd,
+        home_dir=home_dir,
+        allow_relative=allow_relative,
+    )
     if script is None:
         return None
     return identify_unlisted_cli(shlex.quote(str(script)), cwd=cwd, home_dir=home_dir, registry=registry)
 
 
-def _resolve_existing_file(value: str, *, cwd: Path, home_dir: Path | None) -> Path | None:
+def _resolve_existing_file(
+    value: str,
+    *,
+    cwd: Path,
+    home_dir: Path | None,
+    allow_relative: bool,
+) -> Path | None:
     expanded = value.strip()
     if not expanded:
         return None
-    home = (home_dir or Path.home()).expanduser()
-    if expanded.startswith("~/"):
-        expanded = str(home / expanded[2:])
-    path = Path(expanded)
-    if not path.is_absolute():
-        path = cwd / path
     try:
+        home = (home_dir or Path.home()).expanduser()
+        if expanded.startswith("~/"):
+            expanded = str(home / expanded[2:])
+        path = Path(expanded)
+        if not path.is_absolute():
+            if not allow_relative:
+                return None
+            path = cwd / path
         resolved = path.expanduser().resolve()
-    except OSError:
+    except (OSError, RuntimeError):
         return None
     if not resolved.is_file():
         return None

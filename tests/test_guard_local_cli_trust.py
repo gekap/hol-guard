@@ -119,7 +119,7 @@ def test_list_merges_observation_and_grant(tmp_path: Path) -> None:
     assert items[0]["suggestable"] is True
 
 
-def test_grant_matches_sourced_helper_in_compound_command(tmp_path: Path) -> None:
+def test_grant_does_not_allow_compound_source_and_ssh(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     store = GuardStore(home)
@@ -128,8 +128,6 @@ def test_grant_matches_sourced_helper_in_compound_command(tmp_path: Path) -> Non
     helper.chmod(0o755)
     command = f"source {helper} && ssh -o BatchMode=yes host 'echo ok'"
     observe_unlisted_cli(store=store, command=command, cwd=tmp_path, home_dir=tmp_path)
-    items = store.list_local_cli_items()
-    assert len(items) == 1
     identity = identify_unlisted_cli(f"bash {helper}", cwd=tmp_path, home_dir=tmp_path)
     assert identity is not None
     store.upsert_local_cli_grant(
@@ -145,6 +143,13 @@ def test_grant_matches_sourced_helper_in_compound_command(tmp_path: Path) -> Non
         home_dir=tmp_path,
         current_action="review",
     )
-    assert matched is not None
-    assert matched[0].cli_id == identity.cli_id
-    assert matched[1] == "allowed"
+    assert matched is None
+    direct = matching_local_cli_grant(
+        store=store,
+        command=f"bash {helper} ssh 1",
+        cwd=tmp_path,
+        home_dir=tmp_path,
+        current_action="review",
+    )
+    assert direct is not None
+    assert direct[1] == "allowed"
