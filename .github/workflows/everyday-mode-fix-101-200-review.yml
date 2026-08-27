@@ -1,0 +1,85 @@
+name: Everyday Mode fix EVM 101-200 review findings
+
+on:
+  push:
+    branches:
+      - feat/everyday-mode-101-200
+
+permissions:
+  contents: write
+
+concurrency:
+  group: everyday-mode-fix-101-200-review
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: feat/everyday-mode-101-200
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Apply review fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          semantic = Path('src/codex_plugin_scanner/guard/runtime/semantic_explanations.py')
+          text = semantic.read_text()
+          old = 'frozenset({"-d", "--data", "--data-binary", "--form", "-f", "--upload-file", "--body", "-infile"})'
+          new = 'frozenset({"-d", "--data", "--data-binary", "--form", "--upload-file", "--body", "-infile"})'
+          if old not in text:
+              raise SystemExit('network upload token set was not found')
+          semantic.write_text(text.replace(old, new))
+
+          builder = Path('src/codex_plugin_scanner/guard/runtime/action_explanation_builder.py')
+          text = builder.read_text()
+          old = '            arguments = tuple(segment.arguments)\n            if not operands:\n                operands = tuple(segment.arguments)\n'
+          new = '            arguments = tuple(segment.arguments)\n'
+          if old not in text:
+              raise SystemExit('operand fallback was not found')
+          builder.write_text(text.replace(old, new))
+
+          semantic_tests = Path('tests/test_guard_semantic_explanations.py')
+          text = semantic_tests.read_text()
+          anchor = 'def test_everyday_projection_keeps_safe_destination_while_redacting_secret_payload() -> None:\n'
+          addition = '''def test_curl_fail_flag_is_not_misclassified_as_upload() -> None:\n    explanation = explain_command(_input("curl", "-f", "https://example.com/status"))\n    assert explanation.kind == "network_read"\n    assert "Connect to a website" in explanation.everyday.headline\n\n\n'''
+          if addition not in text:
+              if anchor not in text:
+                  raise SystemExit('semantic test anchor was not found')
+              text = text.replace(anchor, addition + anchor)
+              semantic_tests.write_text(text)
+
+          builder_tests = Path('tests/test_guard_action_explanation_builder.py')
+          text = builder_tests.read_text()
+          anchor = 'def test_cache_key_covers_identity_catalog_renderer_locale_and_redaction() -> None:\n'
+          addition = '''def test_builder_does_not_promote_flags_to_typed_operands() -> None:\n    canonical = parse_shell_command("rm ./build -rf")\n    facts = semantic_facts_from_action(\n        action_envelope={"action_type": "shell_command", "command": canonical.raw_text},\n        action_identity="approval:rm-flags",\n        actor_label="Cursor",\n        canonical_command=canonical,\n    )\n    assert facts.operands == ()\n    explanation = build_action_explanation(\n        action_envelope={"action_type": "shell_command", "command": canonical.raw_text},\n        action_identity="approval:rm-flags",\n        actor_label="Cursor",\n        canonical_command=canonical,\n    )\n    assert explanation.kind == "file_delete"\n    assert "build" in explanation.everyday.summary\n    assert "item named rf" not in explanation.everyday.summary\n\n\n'''
+          if addition not in text:
+              if anchor not in text:
+                  raise SystemExit('builder test anchor was not found')
+              text = text.replace(anchor, addition + anchor)
+              builder_tests.write_text(text)
+          PY
+      - name: Verify patches are present
+        run: |
+          set -euo pipefail
+          ! grep -F '"--form", "-f", "--upload-file"' src/codex_plugin_scanner/guard/runtime/semantic_explanations.py
+          ! grep -A2 'arguments = tuple(segment.arguments)' src/codex_plugin_scanner/guard/runtime/action_explanation_builder.py | grep -F 'if not operands'
+          grep -F 'test_curl_fail_flag_is_not_misclassified_as_upload' tests/test_guard_semantic_explanations.py
+          grep -F 'test_builder_does_not_promote_flags_to_typed_operands' tests/test_guard_action_explanation_builder.py
+      - name: Remove one-shot workflow and push
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/everyday-mode-fix-101-200-review.yml
+          git add src/codex_plugin_scanner/guard/runtime/semantic_explanations.py src/codex_plugin_scanner/guard/runtime/action_explanation_builder.py tests/test_guard_semantic_explanations.py tests/test_guard_action_explanation_builder.py
+          git commit -m "fix: harden Everyday semantic target classification"
+          git push origin HEAD:feat/everyday-mode-101-200
