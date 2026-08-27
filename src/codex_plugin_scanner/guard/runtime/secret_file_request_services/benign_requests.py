@@ -429,7 +429,7 @@ def build_tool_action_request_artifact(
             f"Requested `{request.tool_name}` action `{request.command_text}` via transparent wrappers "
             f"`{' -> '.join(wrapper_chain)}` ({request.action_class})."
         )
-    risk_summary = f"Requests a sensitive native tool action: {request.action_class}."
+    risk_summary = _tool_action_risk_summary(request)
     runtime_reason = request.reason
     if wrapper_chain:
         runtime_reason = (
@@ -513,6 +513,17 @@ def build_tool_action_request_artifact(
             ),
         },
     )
+
+
+def _tool_action_risk_summary(request: ToolActionRequestMatch) -> str:
+    """Describe the consequence that made a native tool action reviewable."""
+
+    if request.action_class.casefold() == "destructive shell command":
+        return (
+            "This command can delete or overwrite local files, discard work, or alter repository or system state. "
+            "Recovery may require version control or a backup."
+        )
+    return request.reason.rstrip(".") + "."
 
 
 def _path_is_within_roots(path: Path, roots: tuple[Path, ...]) -> bool:

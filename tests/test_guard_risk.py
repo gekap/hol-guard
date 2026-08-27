@@ -4034,6 +4034,45 @@ def test_tool_action_request_classifier_detects_shell_wrapper_script_command():
     assert request.action_class == "destructive shell command"
 
 
+def test_destructive_tool_action_summary_explains_user_impact():
+    request = extract_sensitive_tool_action_request(
+        "bash",
+        {"command": "rm -rf dangerous-marker.json"},
+    )
+
+    assert request is not None
+    artifact = build_tool_action_request_artifact(
+        "opencode",
+        request,
+        config_path="opencode.json",
+        source_scope="project",
+    )
+
+    assert artifact.metadata["runtime_request_summary"] == (
+        "This command can delete or overwrite local files, discard work, or alter repository or system state. "
+        "Recovery may require version control or a backup."
+    )
+
+
+def test_non_destructive_tool_action_summary_preserves_specific_classifier_reason():
+    request = extract_sensitive_tool_action_request(
+        "bash",
+        {"command": "kubectl get secret app-credentials -o yaml"},
+    )
+
+    assert request is not None
+    artifact = build_tool_action_request_artifact(
+        "opencode",
+        request,
+        config_path="opencode.json",
+        source_scope="project",
+    )
+
+    summary = str(artifact.metadata["runtime_request_summary"])
+    assert "expose cluster credentials or application secrets" in summary
+    assert "sensitive native tool action" not in summary
+
+
 @pytest.mark.parametrize("shell_name", ["bash", "sh"])
 def test_tool_action_request_classifier_detects_clustered_shell_command_flag(shell_name: str):
     command = f"{shell_name} -cl 'rm -rf dangerous-marker.json'"
