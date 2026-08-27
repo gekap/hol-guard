@@ -52,8 +52,17 @@ jobs:
             BASE="${{ github.event.before }}"
             HEAD="${{ github.sha }}"
           fi
-          if [[ -z "$BASE" || "$BASE" == "0000000000000000000000000000000000000000" ]]; then
-            BASE="${{ github.sha }}^"
+          if ! git cat-file -e "${HEAD}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$HEAD"
+          fi
+          if [[ -z "$BASE" || "$BASE" == "0000000000000000000000000000000000000000" ]] \
+            || ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            if git cat-file -e "${HEAD}^{commit}" 2>/dev/null \
+              && git cat-file -e "${HEAD}^{commit}^" 2>/dev/null; then
+              BASE="${HEAD}^"
+            else
+              BASE="$HEAD"
+            fi
           fi
           python scripts/ci/rust_hotpath_ownership.py \
             --base "$BASE" \
