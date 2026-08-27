@@ -27,7 +27,7 @@ from ..cli.commands_support_command_activity import (
     record_post_hook_command_activity_best_effort,
 )
 from ..config import load_guard_config
-from ..native_command_model import review_pre_tool_native
+from ..native_pretool import review_pre_tool_native
 from ..native_runtime import native_mode, native_runtime_status, review_post_tool_native
 from ..runtime.hook_content_scanner import ContentScanner
 from ..runtime.hook_decision_cache import HookDecisionCache

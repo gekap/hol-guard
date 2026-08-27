@@ -38,11 +38,16 @@ def run(root: Path) -> dict[str, object]:
                 "pre-tool-command-authority-v1",
                 'command == "pre-tool"',
                 "PreToolUse(CommandModelRequestV1)",
-                "fn evaluate_pre_tool_bytes",
             ),
         )
     )
-    command_bridge = root / "src/codex_plugin_scanner/guard/native_command_model.py"
+    failures.extend(
+        required_tokens(
+            root / "rust/crates/guard-runtime/src/oneshot.rs",
+            ("fn evaluate_pre_tool_bytes", "pre_tool_response", "evaluate_pre_tool_request"),
+        )
+    )
+    command_bridge = root / "src/codex_plugin_scanner/guard/native_pretool.py"
     failures.extend(
         required_tokens(
             command_bridge,
@@ -55,6 +60,8 @@ def run(root: Path) -> dict[str, object]:
         )
     )
     bridge_source = read(command_bridge)
+    if "Python remains authoritative" in read(root / "src/codex_plugin_scanner/guard/native_command_model.py"):
+        failures.append("native_command_model.py still describes Python as authoritative")
     if "Python remains authoritative" in bridge_source:
         failures.append(f"{command_bridge.as_posix()} still describes Python as authoritative")
     review_start = bridge_source.find("def review_pre_tool_native(")
@@ -66,7 +73,7 @@ def run(root: Path) -> dict[str, object]:
         required_tokens(
             root / "src/codex_plugin_scanner/guard/daemon/hook_worker.py",
             (
-                "from ..native_command_model import review_pre_tool_native",
+                "from ..native_pretool import review_pre_tool_native",
                 'if event_name == "PreToolUse":',
                 "native_pre_tool_unavailable",
             ),

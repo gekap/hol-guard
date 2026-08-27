@@ -1,8 +1,5 @@
 #![forbid(unsafe_code)]
-
-mod pretool;
-
-pub use pretool::{evaluate_pre_tool, PreToolDecisionV1};
+pub mod pretool;
 
 use serde::{Deserialize, Serialize};
 
@@ -443,8 +440,7 @@ fn assignment_name(token: &str) -> Option<&str> {
     }
     Some(name)
 }
-
-pub(crate) fn executable_basename(executable: &str) -> &str {
+fn executable_basename(executable: &str) -> &str {
     executable.rsplit(['/', '\\']).next().unwrap_or(executable)
 }
 

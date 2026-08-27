@@ -8,6 +8,7 @@ on:
       - "scripts/ci/rust_pretool_authority_integration.py"
       - "rust/**"
       - "src/codex_plugin_scanner/guard/native_command_model.py"
+      - "src/codex_plugin_scanner/guard/native_pretool.py"
       - "src/codex_plugin_scanner/guard/native_runtime*.py"
       - "src/codex_plugin_scanner/guard/daemon/hook_worker.py"
   pull_request:
@@ -17,6 +18,7 @@ on:
       - "scripts/ci/rust_pretool_authority_integration.py"
       - "rust/**"
       - "src/codex_plugin_scanner/guard/native_command_model.py"
+      - "src/codex_plugin_scanner/guard/native_pretool.py"
       - "src/codex_plugin_scanner/guard/native_runtime*.py"
       - "src/codex_plugin_scanner/guard/daemon/hook_worker.py"
   workflow_dispatch:
@@ -51,7 +53,8 @@ jobs:
       - name: Enforce source authority invariants
         run: |
           ! grep -q "Python remains authoritative" src/codex_plugin_scanner/guard/native_command_model.py
-          grep -q "def review_pre_tool_native(" src/codex_plugin_scanner/guard/native_command_model.py
+          ! grep -q "Python remains authoritative" src/codex_plugin_scanner/guard/native_pretool.py
+          grep -q "def review_pre_tool_native(" src/codex_plugin_scanner/guard/native_pretool.py
           grep -q 'command == "pre-tool"' rust/crates/guard-runtime/src/main.rs
           grep -q "pub fn evaluate_pre_tool" rust/crates/guard-command/src/pretool.rs
           grep -q 'if event_name == "PreToolUse":' src/codex_plugin_scanner/guard/daemon/hook_worker.py

@@ -1,5 +1,9 @@
-use crate::{executable_basename, parse_command, CanonicalCommandV1, CommandModelRequestV1};
+use crate::{parse_command, CanonicalCommandV1, CommandModelRequestV1};
 use serde::{Deserialize, Serialize};
+
+fn executable_basename(executable: &str) -> &str {
+    executable.rsplit(['/', '\\']).next().unwrap_or(executable)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PreToolDecisionV1 {

@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from codex_plugin_scanner.guard.daemon.hook_worker import HookWorker, HookWorkerUnsupported
-from codex_plugin_scanner.guard.native_command_model import (
+from codex_plugin_scanner.guard.native_pretool import (
     _decode_pre_tool,
     native_pre_tool_policy_floor,
 )
@@ -52,7 +52,7 @@ def test_policy_floor_uses_native_block(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "codex_plugin_scanner.guard.native_command_model.review_pre_tool_native",
+        "codex_plugin_scanner.guard.native_pretool.review_pre_tool_native",
         lambda *_args, **_kwargs: _native_block("rm -rf /"),
     )
     assert (
@@ -71,11 +71,11 @@ def test_policy_floor_fails_closed_when_native_is_forced_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "codex_plugin_scanner.guard.native_command_model.review_pre_tool_native",
+        "codex_plugin_scanner.guard.native_pretool.review_pre_tool_native",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "codex_plugin_scanner.guard.native_command_model.native_mode",
+        "codex_plugin_scanner.guard.native_pretool.native_mode",
         lambda: "force",
     )
     assert (
