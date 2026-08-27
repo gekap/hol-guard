@@ -183,6 +183,8 @@ def remove_guard_shim(
 
 
 def _build_python_shim(harness: str, context: HarnessContextLike, workspace_args: list[str]) -> str:
+    if _is_transient_appimage_path(sys.executable):
+        return _build_durable_cli_shim(harness, context, workspace_args)
     command_args = [
         sys.executable,
         *_trusted_python_flags(),
@@ -224,7 +226,81 @@ def _build_python_shim(harness: str, context: HarnessContextLike, workspace_args
     )
 
 
+def _is_transient_appimage_path(value: str) -> bool:
+    normalized = str(Path(value).expanduser().absolute()).replace("\\", "/").lower()
+    return "/tmp/.mount_" in normalized or "/private/tmp/.mount_" in normalized
+
+
+def _build_durable_cli_shim(harness: str, context: HarnessContextLike, workspace_args: list[str]) -> str:
+    fixed_args = [
+        "guard",
+        "run",
+        harness,
+        "--guard-home",
+        str(context.guard_home),
+        *_home_override_args(context),
+        *workspace_args,
+    ]
+    quoted_args = " ".join(shlex.quote(arg) for arg in fixed_args)
+    official_cli = _durable_guard_cli_path(context)
+    metadata_command = [str(official_cli or "hol-guard"), *fixed_args]
+    quoted_cli = shlex.quote(str(official_cli)) if official_cli is not None else "''"
+    return "\n".join(
+        (
+            "#!/bin/sh",
+            f"# base_command = {metadata_command!r}",
+            f"guard_cli={quoted_cli}",
+            'if [ ! -x "$guard_cli" ]; then',
+            '        echo "HOL Guard needs the durable official install. Run: pipx install --force hol-guard" >&2',
+            "        exit 127",
+            "fi",
+            "original_count=$#",
+            "for arg do",
+            '    set -- "$@" "--arg=$arg"',
+            "done",
+            'shift "$original_count"',
+            f'exec "$guard_cli" {quoted_args} "$@"',
+            "",
+        )
+    )
+
+
+def _durable_guard_cli_path(context: HarnessContextLike) -> Path | None:
+    candidates = (
+        os.environ.get("HOL_GUARD_DESKTOP_RUNTIME_OWNER"),
+        str(context.home_dir / ".local" / "bin" / "hol-guard"),
+    )
+    for candidate in candidates:
+        if not candidate:
+            continue
+        invocation_path = Path(candidate).expanduser().absolute()
+        try:
+            resolved_path = invocation_path.resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if not invocation_path.is_file() or not os.access(invocation_path, os.X_OK):
+            continue
+        if _is_transient_runtime_path(invocation_path) or _is_transient_runtime_path(resolved_path):
+            continue
+        return invocation_path
+    return None
+
+
+def _is_transient_runtime_path(path: Path) -> bool:
+    normalized = str(path).replace("\\", "/").lower()
+    return any(fragment in normalized for fragment in _TRANSIENT_PATH_FRAGMENTS)
+
+
 def _build_windows_script(posix_path: Path) -> str:
+    if _is_transient_appimage_path(sys.executable):
+        return "\r\n".join(
+            (
+                "@echo off",
+                "echo HOL Guard needs a durable Windows install before this launcher can run. 1>&2",
+                "exit /b 127",
+                "",
+            )
+        )
     return "\r\n".join(("@echo off", f'"{sys.executable}" "{posix_path}" %*', ""))
 
 
