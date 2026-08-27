@@ -1,4 +1,4 @@
-name: Release 3.2 source snapshot
+name: Release 3.0 current source snapshot
 
 on:
   push:
@@ -15,12 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
+          ref: release/3.0
           persist-credentials: false
       - name: Create source archive
-        run: tar --exclude=.git --exclude=.github/workflows/release-32-source-snapshot.yml -czf /tmp/hol-guard-release-3.2.tar.gz .
+        run: tar --exclude=.git -czf /tmp/hol-guard-release-3.0-current.tar.gz .
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: hol-guard-release-3.2
-          path: /tmp/hol-guard-release-3.2.tar.gz
+          name: hol-guard-release-3.0-current
+          path: /tmp/hol-guard-release-3.0-current.tar.gz
           if-no-files-found: error
           retention-days: 1
