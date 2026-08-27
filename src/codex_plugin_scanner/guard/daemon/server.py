@@ -8048,6 +8048,8 @@ class GuardDaemonServer:
             self._cloud_review_sync_worker,
         )
         self._start_command_activity_maintenance()
+        hook_ready_timeout = _RUNTIME_HOOK_PROCESS_TIMEOUT_SECONDS
+        _ = self._server.hook_process_runner.wait_for_capacity(minimum_workers=1, timeout_seconds=hook_ready_timeout)
         self._record_lifecycle("ready")
         self._diagnostics.record("daemon_ready")
 
@@ -8091,9 +8093,7 @@ class GuardDaemonServer:
     def _maintain_command_activity_best_effort(self) -> None:
         now = datetime.now(timezone.utc)
         try:
-            config = load_guard_config(
-                self._server.store.guard_home,
-            )
+            config = load_guard_config(self._server.store.guard_home)
             self._server.store.maintain_command_activity(
                 now=now,
                 detail_retain_days=config.evidence_retain_days,
