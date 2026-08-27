@@ -203,10 +203,9 @@ jobs:
             --baseline ci/test-suite-ratchet-baseline.json \
             --inventory "$RUNNER_TEMP/test-inventory.json"
 
-      - name: Commit and update PR branch with lease protection
+      - name: Commit and stage reconciled branch
         shell: bash
         env:
-          OLD_PR_HEAD: ${{ steps.rebuild.outputs.old_pr_head }}
           BASE_HEAD: ${{ steps.rebuild.outputs.base_head }}
         run: |
           set -euo pipefail
@@ -214,6 +213,6 @@ jobs:
           git diff --cached --check
           git commit -m 'feat: reconcile Everyday Mode foundation onto current release/3.0'
           git push origin \
-            "HEAD:refs/heads/feat/everyday-mode-001-100" \
-            --force-with-lease="refs/heads/feat/everyday-mode-001-100:${OLD_PR_HEAD}"
-          echo "Reconciled onto ${BASE_HEAD} and updated from ${OLD_PR_HEAD}."
+            "HEAD:refs/heads/tmp/everyday-pr2569-built-v4" \
+            --force
+          echo "Staged reconciled foundation on ${BASE_HEAD} as $(git rev-parse HEAD)."
