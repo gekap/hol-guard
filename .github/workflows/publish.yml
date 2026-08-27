@@ -1165,8 +1165,11 @@ jobs:
             fi
             sleep 5
           done
-          wheel=$(jq -r '.install_paths[] | select(endswith(".whl"))' <<< "$result")
-          [[ -n "$wheel" ]]
+          mapfile -t wheels < <(
+            jq -r '.install_paths[] | select(endswith("-py3-none-any.whl"))' <<< "$result"
+          )
+          [[ "${#wheels[@]}" == "1" ]]
+          wheel="${wheels[0]}"
           [[ "$(uv tool run --from "$wheel" hol-guard --version)" == "hol-guard $VERSION" ]]
 
   publish-main-pypi:
@@ -1304,9 +1307,15 @@ jobs:
             fi
             sleep 5
           done
-          guard_wheel=$(jq -r '.install_paths[] | select(endswith(".whl"))' <<< "$guard_result")
-          scanner_wheel=$(jq -r '.install_paths[] | select(endswith(".whl"))' <<< "$scanner_result")
-          [[ -n "$guard_wheel" && -n "$scanner_wheel" ]]
+          mapfile -t guard_wheels < <(
+            jq -r '.install_paths[] | select(endswith("-py3-none-any.whl"))' <<< "$guard_result"
+          )
+          mapfile -t scanner_wheels < <(
+            jq -r '.install_paths[] | select(endswith(".whl"))' <<< "$scanner_result"
+          )
+          [[ "${#guard_wheels[@]}" == "1" && "${#scanner_wheels[@]}" == "1" ]]
+          guard_wheel="${guard_wheels[0]}"
+          scanner_wheel="${scanner_wheels[0]}"
           [[ "$(uv tool run --from "$guard_wheel" hol-guard --version)" == "hol-guard $VERSION" ]]
           [[ "$(uv tool run --from "$scanner_wheel" plugin-scanner --version)" == "plugin-scanner $VERSION" ]]
 

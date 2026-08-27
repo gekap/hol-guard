@@ -371,6 +371,8 @@ def test_registry_state_is_revalidated_at_each_publication_boundary() -> None:
         < main_test_steps.index(main_test_verify)
     )
     assert "--download-dir verified-testpypi" in main_test_verify["run"]
+    assert 'select(endswith("-py3-none-any.whl"))' in main_test_verify["run"]
+    assert '"${#wheels[@]}" == "1"' in main_test_verify["run"]
 
     main_revalidation = next(
         step["run"] for step in jobs["publish-main-pypi"]["steps"] if step.get("name") == "Revalidate main publication"
@@ -443,6 +445,9 @@ def test_registry_state_is_revalidated_at_each_publication_boundary() -> None:
         assert 'attempt" == "60"' in verify_step["run"]
         assert '== "hol-guard $VERSION"' in verify_step["run"]
         assert '== "plugin-scanner $VERSION"' in verify_step["run"]
+        assert 'select(endswith("-py3-none-any.whl"))' in verify_step["run"]
+        assert '"${#guard_wheels[@]}" == "1"' in verify_step["run"]
+        assert '"${#scanner_wheels[@]}" == "1"' in verify_step["run"]
 
     alpha_steps = jobs["publish-alpha-pypi"]["steps"]
     alpha_inspect = next(step for step in alpha_steps if step.get("name") == "Inspect PyPI release state")
