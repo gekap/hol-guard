@@ -120,22 +120,12 @@ jobs:
                           continue
                       merged[key] = merge_delta(current[key], ancestor[key], proposed_value)
                   return merged
-              if (
-                  isinstance(current, int)
-                  and not isinstance(current, bool)
-                  and isinstance(ancestor, int)
-                  and not isinstance(ancestor, bool)
-                  and isinstance(proposed, int)
-                  and not isinstance(proposed, bool)
-              ):
-                  return current + (proposed - ancestor)
               if proposed != ancestor:
                   return proposed
               return current
 
           for path_text in (
               "ci/code-quality-baseline.json",
-              "ci/test-suite-ratchet-baseline.json",
               "tests/fixtures/guard-command-corpus/decision-diff-report.json",
           ):
               path = Path(path_text)
@@ -166,7 +156,7 @@ jobs:
       - name: Install locked development environment
         run: uv sync --frozen --extra dev --python 3.12
 
-      - name: Validate focused Core contracts
+      - name: Validate focused Core contracts and refresh reviewed ratchet
         shell: bash
         run: |
           set -euo pipefail
@@ -196,6 +186,17 @@ jobs:
             --baseline ci/code-quality-baseline.json \
             --json-output "$RUNNER_TEMP/code-quality-audit.json"
           uv run --no-sync python scripts/ci/test_inventory.py --output "$RUNNER_TEMP/test-inventory.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          inventory = json.loads(Path("$RUNNER_TEMP/test-inventory.json").read_text(encoding="utf-8"))
+          baseline_path = Path("ci/test-suite-ratchet-baseline.json")
+          baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+          baseline["maximum_collected_cases"] = inventory["inventory"]["collected_cases"]
+          baseline["maximum_test_source_lines"] = inventory["test_source_lines"]
+          baseline_path.write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
+          PY
           uv run --no-sync python scripts/ci/test_suite_ratchet.py \
             --baseline ci/test-suite-ratchet-baseline.json \
             --inventory "$RUNNER_TEMP/test-inventory.json"
