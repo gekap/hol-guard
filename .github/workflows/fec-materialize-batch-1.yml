@@ -1,0 +1,84 @@
+name: Materialize Fleet Extension Configuration batch one
+
+on:
+  push:
+    branches:
+      - feat/fec-001-100-core
+    paths:
+      - '.github/workflows/fec-materialize-batch-1.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out HOL Guard
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+          path: hol-guard
+      - name: Check out Guard Cloud contract source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          repository: hashgraph-online/points-portal
+          ref: feat/fec-001-100-cloud
+          fetch-depth: 1
+          persist-credentials: false
+          path: points-portal
+      - name: Copy reviewed shared contracts and decisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hol-guard
+          mkdir -p contracts/managed-controls/v1 contracts/managed-controls/v2
+          mkdir -p docs/guard/fleet-extension-configuration/batches
+          cp ../points-portal/contracts/managed-controls/v1/fleet-contract-limits.json contracts/managed-controls/v1/
+          cp ../points-portal/contracts/managed-controls/v1/fleet-extension-configuration.schema.json contracts/managed-controls/v1/
+          cp ../points-portal/contracts/managed-controls/v1/fleet-extension-configuration.fixtures.json contracts/managed-controls/v1/
+          cp ../points-portal/contracts/managed-controls/v1/managed-control-assignment.schema.json contracts/managed-controls/v1/
+          cp ../points-portal/contracts/managed-controls/v1/managed-control-assignment.fixtures.json contracts/managed-controls/v1/
+          cp ../points-portal/contracts/managed-controls/v2/custom-extension-definition.schema.json contracts/managed-controls/v2/
+          cp ../points-portal/contracts/managed-controls/v2/custom-extension-definition.fixtures.json contracts/managed-controls/v2/
+          cp ../points-portal/contracts/managed-controls/v2/custom-extension-configuration.schema.json contracts/managed-controls/v2/
+          cp ../points-portal/contracts/managed-controls/v2/custom-extension-configuration.fixtures.json contracts/managed-controls/v2/
+          cp ../points-portal/contracts/managed-controls/v2/catalog-semantic-fingerprints.schema.json contracts/managed-controls/v2/
+          cp ../points-portal/contracts/managed-controls/v2/catalog-semantic-fingerprints.fixtures.json contracts/managed-controls/v2/
+          cp ../points-portal/contracts/managed-controls/fleet-extension-contract-manifest.json contracts/managed-controls/
+          cp ../points-portal/docs/guard/fleet-extension-configuration/baseline.md docs/guard/fleet-extension-configuration/
+          cp ../points-portal/docs/guard/fleet-extension-configuration/decisions.md docs/guard/fleet-extension-configuration/
+          cp ../points-portal/docs/guard/fleet-extension-configuration/architecture.md docs/guard/fleet-extension-configuration/
+          cp ../points-portal/docs/guard/fleet-extension-configuration/glossary.md docs/guard/fleet-extension-configuration/
+          cp ../points-portal/docs/guard/fleet-extension-configuration/risk-register.md docs/guard/fleet-extension-configuration/
+          cp ../points-portal/docs/guard/fleet-extension-configuration/contracts.md docs/guard/fleet-extension-configuration/
+          cp ../points-portal/docs/guard/fleet-extension-configuration/batches/FEC-001-100.md docs/guard/fleet-extension-configuration/batches/
+          cp ../points-portal/.github/workflows/fleet-extension-contract-drift.yml .github/workflows/fleet-extension-contract-drift.yml
+          sed -i "s/path: points-portal/path: points-portal/" .github/workflows/fleet-extension-contract-drift.yml
+          rm -rf .fec-patches
+          rm -f .github/workflows/fec-apply-batch.yml
+          rm -f .github/workflows/fec-materialize-batch-1.yml
+      - name: Verify shared contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hol-guard
+          python -m compileall -q src/codex_plugin_scanner/guard/managed_controls/fleet_contracts.py
+          python -m pytest -q \
+            tests/managed_controls/test_fleet_contracts.py \
+            tests/managed_controls/test_fleet_contract_manifest.py
+      - name: Commit batch one materialization
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hol-guard
+          git add -A
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'feat(guard): materialize FEC-001 through FEC-100 shared contracts'
+          git push origin HEAD:feat/fec-001-100-core
