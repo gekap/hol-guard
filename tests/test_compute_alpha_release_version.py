@@ -6,7 +6,12 @@ import sys
 
 import pytest
 
-from scripts.compute_alpha_release_version import compute_alpha_release_version, main, validate_alpha_phase_open
+from scripts.compute_alpha_release_version import (
+    alpha_phase_status,
+    compute_alpha_release_version,
+    main,
+    validate_alpha_phase_open,
+)
 
 
 @pytest.mark.parametrize(
@@ -48,6 +53,16 @@ def test_rejects_noncanonical_or_malformed_existing_versions(existing: list[str]
 def test_same_train_stable_release_blocks_an_alpha() -> None:
     with pytest.raises(ValueError, match="stable release"):
         _ = compute_alpha_release_version("2.2", ["2.2.0"])
+
+
+def test_phase_status_reports_a_closed_train_without_weakening_alpha_computation() -> None:
+    assert alpha_phase_status("3.0", ["3.0.0a1"]) == "open"
+    assert alpha_phase_status("3.0", ["3.0.0a1", "3.0.0"]) == "closed"
+
+
+def test_phase_status_rejects_malformed_registry_versions() -> None:
+    with pytest.raises(ValueError, match="invalid"):
+        _ = alpha_phase_status("3.0", ["not-a-version"])
 
 
 @pytest.mark.parametrize("version", ["2.2.0b1", "2.2.0rc1"])

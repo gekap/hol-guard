@@ -216,39 +216,47 @@ jobs:
               --argjson testpypi "$TESTPYPI_VERSIONS" \
               --argjson tags "$TAG_VERSIONS" \
               '$pypi + $testpypi + $tags | unique')
-            mapfile -t SOURCE_ALPHA_TAGS < <(
-              git tag --points-at "$SOURCE_SHA" --list "alpha/v${TRAIN}.0a*" | sed 's#^alpha/v##'
-            )
-            if [[ "${#SOURCE_ALPHA_TAGS[@]}" -gt 1 ]]; then
-              echo "Source commit has multiple reserved alpha versions" >&2
-              exit 1
-            fi
-            if [[ "${#SOURCE_ALPHA_TAGS[@]}" -eq 1 ]]; then
-              RELEASE_VERSION="${SOURCE_ALPHA_TAGS[0]}"
-              REUSING_RESERVED_ALPHA=true
-              uv run --no-sync python scripts/compute_alpha_release_version.py \
-                --release-train "$TRAIN" --validate-phase-only <<< "$EXISTING_VERSIONS"
+            PHASE_STATUS=$(uv run --no-sync python scripts/compute_alpha_release_version.py \
+              --release-train "$TRAIN" --phase-status <<< "$EXISTING_VERSIONS")
+            if [[ "$PHASE_STATUS" == "closed" ]]; then
+              CHANNEL="validation"
+              VERSION="$BASE_VERSION"
+              echo "Stable release closes train ${TRAIN}; validating without publishing"
             else
-              RELEASE_VERSION=$(uv run --no-sync python scripts/compute_alpha_release_version.py \
-                --release-train "$TRAIN" <<< "$EXISTING_VERSIONS")
-              REUSING_RESERVED_ALPHA=false
+              mapfile -t SOURCE_ALPHA_TAGS < <(
+                git tag --points-at "$SOURCE_SHA" --list "alpha/v${TRAIN}.0a*" | sed 's#^alpha/v##'
+              )
+              if [[ "${#SOURCE_ALPHA_TAGS[@]}" -gt 1 ]]; then
+                echo "Source commit has multiple reserved alpha versions" >&2
+                exit 1
+              fi
+              if [[ "${#SOURCE_ALPHA_TAGS[@]}" -eq 1 ]]; then
+                RELEASE_VERSION="${SOURCE_ALPHA_TAGS[0]}"
+                REUSING_RESERVED_ALPHA=true
+                uv run --no-sync python scripts/compute_alpha_release_version.py \
+                  --release-train "$TRAIN" --validate-phase-only <<< "$EXISTING_VERSIONS"
+              else
+                RELEASE_VERSION=$(uv run --no-sync python scripts/compute_alpha_release_version.py \
+                  --release-train "$TRAIN" <<< "$EXISTING_VERSIONS")
+                REUSING_RESERVED_ALPHA=false
+              fi
+              EXISTING_VERSIONS_ARRAY=()
+              if [[ "$REUSING_RESERVED_ALPHA" != "true" ]]; then
+                mapfile -t EXISTING_VERSIONS_ARRAY < <(jq -r '.[]' <<< "$EXISTING_VERSIONS")
+              fi
+              VALIDATOR_ARGS=(
+                --channel "$CHANNEL"
+                --version "$RELEASE_VERSION"
+                --git-ref "$TRAIN_REF"
+                --actual-ref "$ACTUAL_REF"
+                --github-sha "$SOURCE_SHA"
+                --expected-sha "$SOURCE_SHA"
+              )
+              for existing_version in "${EXISTING_VERSIONS_ARRAY[@]}"; do
+                VALIDATOR_ARGS+=(--existing-version "$existing_version")
+              done
+              VERSION=$(uv run --no-sync python scripts/validate_alpha_release.py "${VALIDATOR_ARGS[@]}")
             fi
-            EXISTING_VERSIONS_ARRAY=()
-            if [[ "$REUSING_RESERVED_ALPHA" != "true" ]]; then
-              mapfile -t EXISTING_VERSIONS_ARRAY < <(jq -r '.[]' <<< "$EXISTING_VERSIONS")
-            fi
-            VALIDATOR_ARGS=(
-              --channel "$CHANNEL"
-              --version "$RELEASE_VERSION"
-              --git-ref "$TRAIN_REF"
-              --actual-ref "$ACTUAL_REF"
-              --github-sha "$SOURCE_SHA"
-              --expected-sha "$SOURCE_SHA"
-            )
-            for existing_version in "${EXISTING_VERSIONS_ARRAY[@]}"; do
-              VALIDATOR_ARGS+=(--existing-version "$existing_version")
-            done
-            VERSION=$(uv run --no-sync python scripts/validate_alpha_release.py "${VALIDATOR_ARGS[@]}")
           elif [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             CHANNEL="canary"
             VERSION=$(BASE_VERSION="$BASE_VERSION" PR_NUMBER="$PR_NUMBER" GITHUB_RUN_NUMBER="$GITHUB_RUN_NUMBER" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" python - <<'PY'

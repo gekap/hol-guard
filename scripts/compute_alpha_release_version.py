@@ -7,11 +7,16 @@ import argparse
 import json
 import sys
 from collections.abc import Iterable
-from typing import cast
+from typing import Literal, cast
 
 from packaging.version import InvalidVersion, Version
 
 SUPPORTED_TRAINS = {"2.2": (2, 2, 0), "3.0": (3, 0, 0), "3.1": (3, 1, 0)}
+AlphaPhaseStatus = Literal["open", "closed"]
+
+
+class AlphaPhaseClosedError(ValueError):
+    """Raised when a release train has advanced beyond public alpha releases."""
 
 
 def _alpha_versions(release_train: str, existing_versions: Iterable[str]) -> list[int]:
@@ -30,11 +35,13 @@ def _alpha_versions(release_train: str, existing_versions: Iterable[str]) -> lis
         if version.release != release:
             continue
         if version.post is not None:
-            raise ValueError(f"Existing post release {version} closes the alpha phase for train {release_train}")
+            raise AlphaPhaseClosedError(
+                f"Existing post release {version} closes the alpha phase for train {release_train}"
+            )
         if version.pre is None and version.dev is None and version.post is None:
-            raise ValueError(f"Existing stable release {version} closes release train {release_train}")
+            raise AlphaPhaseClosedError(f"Existing stable release {version} closes release train {release_train}")
         if version.pre is not None and version.pre[0] != "a":
-            raise ValueError(
+            raise AlphaPhaseClosedError(
                 f"Existing non-alpha prerelease {version} closes the alpha phase for train {release_train}"
             )
         if version.pre is not None and version.pre[0] == "a" and version.dev is not None:
@@ -49,6 +56,14 @@ def validate_alpha_phase_open(release_train: str, existing_versions: Iterable[st
     _ = _alpha_versions(release_train, existing_versions)
 
 
+def alpha_phase_status(release_train: str, existing_versions: Iterable[str]) -> AlphaPhaseStatus:
+    try:
+        validate_alpha_phase_open(release_train, existing_versions)
+    except AlphaPhaseClosedError:
+        return "closed"
+    return "open"
+
+
 def compute_alpha_release_version(release_train: str, existing_versions: Iterable[str]) -> str:
     alpha_numbers = _alpha_versions(release_train, existing_versions)
     version_prefix = ".".join(str(part) for part in SUPPORTED_TRAINS[release_train])
@@ -61,6 +76,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     _ = parser.add_argument("--release-train", required=True)
     _ = parser.add_argument("--validate-phase-only", action="store_true")
+    _ = parser.add_argument("--phase-status", action="store_true")
     args = parser.parse_args()
 
     try:
@@ -73,7 +89,12 @@ def main() -> int:
         existing_versions = cast(list[str], items)
         release_train = cast(str, args.release_train)
         validate_phase_only = cast(bool, args.validate_phase_only)
-        if validate_phase_only:
+        phase_status = cast(bool, args.phase_status)
+        if validate_phase_only and phase_status:
+            raise ValueError("Choose only one phase inspection mode")
+        if phase_status:
+            print(alpha_phase_status(release_train, existing_versions))
+        elif validate_phase_only:
             validate_alpha_phase_open(release_train, existing_versions)
         else:
             print(compute_alpha_release_version(release_train, existing_versions))
