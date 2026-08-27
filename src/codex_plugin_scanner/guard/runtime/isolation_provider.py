@@ -15,12 +15,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import ntpath
 import os
 import platform
 import stat
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Final, Protocol, runtime_checkable
 
 from codex_plugin_scanner.guard.runtime.execution_assurance_contract import (
@@ -178,7 +179,7 @@ class ProviderRegistry:
         root = str(Path(self._provider_root).expanduser().resolve(strict=False))
         configured = Path(configured_path).expanduser()
         normalized = str(configured.resolve(strict=False))
-        if normalized != root and not normalized.startswith(root + "/"):
+        if not _path_is_within(normalized, root):
             raise ValueError("provider path is outside the Guard-owned provider root")
         if _path_has_symlink_below_root(configured, Path(root)):
             raise ValueError("provider artifact path must not contain symlinks")
@@ -302,6 +303,30 @@ def _provider_root_is_guard_owned(path: str) -> bool:
         or normalized.startswith("/library/application support/hol guard/")
         or normalized.startswith("c:/programdata/hol guard/")
     )
+
+
+def _path_is_within(path_value: str | Path, root_value: str | Path) -> bool:
+    """Return whether an already-normalized path is contained by its root.
+
+    Windows paths are compared with Windows flavor semantics even when tests run
+    on a non-Windows host, so drive letters, case folding, and backslash
+    separators cannot make a valid ProgramData provider appear out of scope.
+    """
+
+    path_text = os.fspath(path_value)
+    root_text = os.fspath(root_value)
+    root_drive, _ = ntpath.splitdrive(root_text)
+    if root_drive:
+        normalized_path = PureWindowsPath(ntpath.normcase(ntpath.normpath(path_text)))
+        normalized_root = PureWindowsPath(ntpath.normcase(ntpath.normpath(root_text)))
+    else:
+        normalized_path = Path(path_text)
+        normalized_root = Path(root_text)
+    try:
+        normalized_path.relative_to(normalized_root)
+    except ValueError:
+        return False
+    return True
 
 
 def _path_has_symlink_below_root(path: Path, root: Path) -> bool:
