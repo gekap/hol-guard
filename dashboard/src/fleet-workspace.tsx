@@ -22,6 +22,7 @@ import {
   SUPPORTED_APPS_BRIEF,
   resolveAppInstallStatus,
   APP_STATUS_LABELS,
+  defaultConnectHarness,
 } from "./apps/app-catalog";
 import { isConnectableAppHarness } from "./apps/harness-setup-target";
 import {
@@ -342,8 +343,9 @@ export function FleetWorkspace(props: FleetWorkspaceProps) {
           health={protectionHealth}
           repairHarness={repairHarness}
           repairHarnesses={repairHarnesses}
+          connectHarness={defaultConnectHarness(repairHarness, visibleHarnesses)}
           onRepairProtection={props.onRepairProtection}
-          onRepairHarness={props.onRepairHarness}
+          onRepairHarness={props.onRepairHarness ?? props.onConnectHarness}
         />
       ) : null}
 

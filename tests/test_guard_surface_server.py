@@ -269,6 +269,8 @@ class TestGuardSurfaceServer:
             lambda self: SimpleNamespace(active_error_count=0),
         )
         monkeypatch.setattr(GuardStore, "count_command_activities", lambda self: 0)
+        monkeypatch.setattr(daemon_server_module, "repair_failing_managed_harness_hooks", lambda _store: ((), ()))
+        monkeypatch.setattr(GuardStore, "list_managed_installs", lambda self: [{"harness": "codex", "active": True}])
         daemon = GuardDaemonServer(store, host="127.0.0.1", port=0)
         daemon.start()
         request = urllib.request.Request(
@@ -291,6 +293,7 @@ class TestGuardSurfaceServer:
             "policy_engine",
             "rule_packs",
             "tamper_checks",
+            "harness_hooks",
             "decision_plane_compatibility",
             "containment_compatibility",
             "sandbox",
