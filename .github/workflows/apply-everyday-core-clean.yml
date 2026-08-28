@@ -1,0 +1,129 @@
+name: Apply clean Everyday Mode delivery
+
+on:
+  push:
+    branches:
+      - automation/apply-everyday-core-clean-v2
+    paths:
+      - .github/workflows/apply-everyday-core-clean.yml
+      - .github/everyday-mode/core-patch.b64.part-*
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-everyday-core-clean-v2
+  cancel-in-progress: false
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out immutable staging commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Reconstruct and verify deterministic patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/everyday-mode/core-patch.b64.part-* > "$RUNNER_TEMP/core.patch.gz.b64"
+          test "$(wc -c < "$RUNNER_TEMP/core.patch.gz.b64")" -eq 17588
+          base64 --decode "$RUNNER_TEMP/core.patch.gz.b64" > "$RUNNER_TEMP/core.patch.gz"
+          gzip --decompress --stdout "$RUNNER_TEMP/core.patch.gz" > "$RUNNER_TEMP/core.patch"
+          echo '5bd8ace6cb05231d897d521907f08b22d0dec6cc8aac2df7802745d10d94dba1  '"$RUNNER_TEMP/core.patch" | sha256sum --check
+
+      - name: Build clean release/3.2 worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin release/3.2
+          git worktree add "$RUNNER_TEMP/delivery" origin/release/3.2
+          cd "$RUNNER_TEMP/delivery"
+          git apply --check "$RUNNER_TEMP/core.patch"
+          git apply --index "$RUNNER_TEMP/core.patch"
+          git diff --cached --check
+          ! find . -type f \( -name 'HOL_GUARD_EVERYDAY_MODE_PRD*' -o -name 'HOL_GUARD_EVERYDAY_MODE_TODO*' -o -name '*TAKEAWAY_PROMPT*' \) | grep -q .
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: '0.9.26'
+
+      - name: Install Python dependencies
+        shell: bash
+        working-directory: ${{ runner.temp }}/delivery
+        run: uv sync --frozen --extra dev --python 3.12
+
+      - name: Validate Python implementation
+        shell: bash
+        working-directory: ${{ runner.temp }}/delivery
+        run: |
+          set -euo pipefail
+          uv run --no-sync ruff check \
+            src/codex_plugin_scanner/guard/presentation_mode.py \
+            src/codex_plugin_scanner/guard/presentation_migration.py \
+            src/codex_plugin_scanner/guard/presentation_capabilities.py \
+            src/codex_plugin_scanner/guard/presentation_telemetry.py \
+            src/codex_plugin_scanner/guard/action_explanation_projection.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_builder.py \
+            src/codex_plugin_scanner/guard/runtime/typed_action_explanations.py \
+            src/codex_plugin_scanner/guard/runtime/semantic_explanations.py \
+            src/codex_plugin_scanner/guard/store_command_activity_api.py \
+            tests/test_guard_action_explanation_contract.py \
+            tests/test_guard_action_explanation_projection.py \
+            tests/test_guard_everyday_semantic_coverage.py \
+            tests/test_guard_presentation_mode.py \
+            tests/test_guard_presentation_telemetry.py
+          uv run --no-sync python -m compileall -q src/codex_plugin_scanner/guard
+          uv run --no-sync pytest -q \
+            tests/test_guard_presentation_mode.py \
+            tests/test_guard_presentation_telemetry.py \
+            tests/test_guard_action_explanation_contract.py \
+            tests/test_guard_action_explanation_builder.py \
+            tests/test_guard_action_explanation_projection.py \
+            tests/test_guard_semantic_explanations.py \
+            tests/test_guard_everyday_semantic_coverage.py \
+            tests/test_guard_command_extension_explanations.py \
+            tests/test_guard_extension_control_semantic_preview.py \
+            tests/test_guard_desktop_contract.py
+          uv run --no-sync python tests/guard_command_decision_diff.py --check
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76
+        with:
+          bun-version: '1.3.6'
+
+      - name: Validate dashboard
+        shell: bash
+        working-directory: ${{ runner.temp }}/delivery/dashboard
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run test
+          bun run build
+
+      - name: Run complete Python regression suite
+        shell: bash
+        working-directory: ${{ runner.temp }}/delivery
+        run: uv run --no-sync pytest -q
+
+      - name: Publish clean validated result branch
+        shell: bash
+        working-directory: ${{ runner.temp }}/delivery
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat: complete Everyday Mode on release/3.2'
+          git push --force origin HEAD:refs/heads/automation/everyday-core-clean-result
