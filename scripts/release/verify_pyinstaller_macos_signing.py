@@ -45,14 +45,16 @@ def _find_cookie(handle) -> int:
     raise ValueError("PyInstaller CArchive cookie was not found")
 
 
-def _archive_layout(binary: Path) -> tuple[int, str, list[tuple[str, int, int, bool, str]]]:
+def _archive_toc(
+    binary: Path,
+) -> tuple[int, int, int, str, list[tuple[str, int, int, int, bool, str]]]:
     with binary.open("rb") as handle:
         cookie_offset = _find_cookie(handle)
         handle.seek(cookie_offset)
         cookie = handle.read(COOKIE_LENGTH)
         if len(cookie) != COOKIE_LENGTH:
             raise ValueError("Truncated PyInstaller CArchive cookie")
-        magic, archive_length, toc_offset, toc_length, _pyvers, raw_pylib_name = struct.unpack(
+        magic, archive_length, toc_offset, toc_length, pyvers, raw_pylib_name = struct.unpack(
             COOKIE_FORMAT, cookie
         )
         try:
@@ -71,13 +73,13 @@ def _archive_layout(binary: Path) -> tuple[int, str, list[tuple[str, int, int, b
         if len(toc) != toc_length:
             raise ValueError("Truncated PyInstaller CArchive TOC")
 
-    entries: list[tuple[str, int, int, bool, str]] = []
+    entries: list[tuple[str, int, int, int, bool, str]] = []
     cursor = 0
     while cursor < len(toc):
         header = toc[cursor : cursor + TOC_HEADER_LENGTH]
         if len(header) != TOC_HEADER_LENGTH:
             raise ValueError("Truncated PyInstaller TOC header")
-        entry_length, offset, length, _uncompressed, compressed, raw_typecode = struct.unpack(
+        entry_length, offset, length, uncompressed, compressed, raw_typecode = struct.unpack(
             TOC_FORMAT, header
         )
         name_length = entry_length - TOC_HEADER_LENGTH
@@ -93,9 +95,17 @@ def _archive_layout(binary: Path) -> tuple[int, str, list[tuple[str, int, int, b
             raise ValueError("Invalid PyInstaller TOC text encoding") from exc
         if not name:
             raise ValueError("PyInstaller TOC entry has an empty name")
-        entries.append((name, offset, length, bool(compressed), typecode))
+        entries.append((name, offset, length, uncompressed, bool(compressed), typecode))
         cursor += entry_length
-    return archive_start, pylib_name, entries
+    return archive_start, cookie_offset, pyvers, pylib_name, entries
+
+
+def _archive_layout(binary: Path) -> tuple[int, str, list[tuple[str, int, int, bool, str]]]:
+    archive_start, _cookie_offset, _pyvers, pylib_name, entries = _archive_toc(binary)
+    return archive_start, pylib_name, [
+        (name, offset, length, compressed, typecode)
+        for name, offset, length, _uncompressed, compressed, typecode in entries
+    ]
 
 
 def _entry_bytes(
