@@ -1,5 +1,5 @@
-import { R as startGuardCloudConnect, T as fetchGuardCloudConnectStatus, r as reactExports, U as ProtectionRepairFlowError, V as openPackageFirewallAuthorizeFallback, X as activeFailedHarnesses, j as jsxRuntimeExports, Y as HiMiniWrenchScrewdriver, A as ActionButton, o as HiMiniCheckCircle, C as HiMiniChevronDown, i as harnessDisplayName, Z as HiMiniExclamationCircle, p as protectionHealthFor, k as useProtectionPresentationState, q as GuardHero, _ as ProofStrip, S as SectionLabel, m as EmptyState, c as HiMiniChevronRight, $ as HiMiniEye, a0 as HiMiniXCircle, a1 as HiMiniClipboardDocumentCheck, a2 as HiMiniClipboard } from "../guard-dashboard.js";
-import { S as SUPPORTED_APPS_BRIEF, A as APP_STATUS_LABELS } from "./app-catalog.js";
+import { R as startGuardCloudConnect, T as fetchGuardCloudConnectStatus, r as reactExports, U as remainingProtectionRepairParts, V as ProtectionRepairFlowError, X as openPackageFirewallAuthorizeFallback, Y as activeFailedHarnesses, j as jsxRuntimeExports, Z as HiMiniWrenchScrewdriver, A as ActionButton, o as HiMiniCheckCircle, C as HiMiniChevronDown, i as harnessDisplayName, _ as HiMiniExclamationCircle, p as protectionHealthFor, k as useProtectionPresentationState, q as GuardHero, $ as ProofStrip, S as SectionLabel, m as EmptyState, c as HiMiniChevronRight, a0 as HiMiniEye, a1 as HiMiniXCircle, a2 as HiMiniClipboardDocumentCheck, a3 as HiMiniClipboard } from "../guard-dashboard.js";
+import { d as defaultConnectHarness, S as SUPPORTED_APPS_BRIEF, A as APP_STATUS_LABELS } from "./app-catalog.js";
 import { i as isConnectableAppHarness } from "./harness-setup-target.js";
 class CloudRequestTimeoutError extends Error {
   constructor() {
@@ -89,6 +89,26 @@ async function waitForCloudConnection(initialStatus, {
     status = await withCloudRequestTimeout(fetchStatus, signal);
   }
   return status;
+}
+function recoverySummary(failCount, unknownCount, needsConnectedApp) {
+  if (needsConnectedApp) {
+    return "Connect an AI app to start local protection. Repair cannot finish until at least one app is connected.";
+  }
+  if (failCount === 0) {
+    return "Complete the remaining local proof here. Guard repairs and rechecks every local protection layer in one pass.";
+  }
+  const failedChecks = `${failCount} failed check${failCount === 1 ? "" : "s"}`;
+  let remainingProofs = "";
+  if (unknownCount > 0) {
+    remainingProofs = `, then confirm the remaining ${unknownCount} proof${unknownCount === 1 ? "" : "s"}`;
+  }
+  return `Repair the ${failedChecks} here${remainingProofs}. Guard repairs and rechecks every local protection layer in one pass.`;
+}
+function repairButtonLabel(repairState, needsConnectedApp) {
+  if (repairState?.status === "working") return "Repairing…";
+  if (needsConnectedApp) return "Connect an app";
+  if (repairState?.status === "error") return "Retry repair";
+  return "Repair protection";
 }
 const PROTECTION_CHECK_ACTIONS = {
   harness_hooks: {
@@ -188,26 +208,6 @@ function TargetedRepairButton({
     " repair"
   ] });
 }
-function recoverySummary(failCount, unknownCount, needsConnectedApp) {
-  if (needsConnectedApp) {
-    return "Connect an AI app to start local protection. Repair cannot finish until at least one app is connected.";
-  }
-  if (failCount === 0) {
-    return "Complete the remaining local proof here. Guard repairs and rechecks every local protection layer in one pass.";
-  }
-  const failedChecks = `${failCount} failed check${failCount === 1 ? "" : "s"}`;
-  let remainingProofs = "";
-  if (unknownCount > 0) {
-    remainingProofs = `, then confirm the remaining ${unknownCount} proof${unknownCount === 1 ? "" : "s"}`;
-  }
-  return `Repair the ${failedChecks} here${remainingProofs}. Guard repairs and rechecks every local protection layer in one pass.`;
-}
-function repairButtonLabel(repairState, needsConnectedApp) {
-  if (repairState?.status === "working") return "Repairing…";
-  if (needsConnectedApp) return "Connect an app";
-  if (repairState?.status === "error") return "Retry repair";
-  return "Repair protection";
-}
 function cloudConnectPendingMessage(hasAuthorizeUrl, opened) {
   if (!hasAuthorizeUrl) {
     return "Open the secure sign-in link below. This page will update automatically.";
@@ -244,9 +244,7 @@ function FleetProtectionRecovery(props) {
   const gaps = props.health.checks.filter((check) => check.status !== "pass");
   const failCount = gaps.filter((check) => check.status === "fail").length;
   const unknownCount = gaps.length - failCount;
-  const needsConnectedApp = props.health.checks.some(
-    (check) => check.check_id === "harness_hooks" && check.reason_code === "no_managed_harness" && check.status === "fail"
-  );
+  const needsConnectedApp = remainingProtectionRepairParts(props.health).needsConnectedApp;
   const cloudPolicyHint = cloudPolicyRecoveryHint(props.cloudPolicy);
   const repairHarnessKey = props.repairHarnesses.join("\0");
   const repairHarnessList = reactExports.useMemo(
@@ -694,7 +692,7 @@ function FleetWorkspace(props) {
         health: protectionHealth,
         repairHarness,
         repairHarnesses,
-        connectHarness: repairHarness ?? visibleHarnesses[0],
+        connectHarness: defaultConnectHarness(repairHarness, visibleHarnesses),
         onRepairProtection: props.onRepairProtection,
         onRepairHarness: props.onRepairHarness ?? props.onConnectHarness
       }

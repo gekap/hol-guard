@@ -17,6 +17,8 @@ import type {
   GuardProtectionCheck,
   GuardProtectionHealth,
 } from "./guard-types";
+import { remainingProtectionRepairParts } from "./protection-health";
+import { recoverySummary, repairButtonLabel } from "./fleet-protection-recovery-copy";
 import { activeFailedHarnesses, ProtectionRepairFlowError } from "./protection-repair-flow";
 
 type GapAction = {
@@ -189,35 +191,6 @@ type FleetProtectionRecoveryProps = {
   onRepairHarness?: (harness: string) => void;
 };
 
-function recoverySummary(
-  failCount: number,
-  unknownCount: number,
-  needsConnectedApp: boolean,
-): string {
-  if (needsConnectedApp) {
-    return "Connect an AI app to start local protection. Repair cannot finish until at least one app is connected.";
-  }
-  if (failCount === 0) {
-    return "Complete the remaining local proof here. Guard repairs and rechecks every local protection layer in one pass.";
-  }
-  const failedChecks = `${failCount} failed check${failCount === 1 ? "" : "s"}`;
-  let remainingProofs = "";
-  if (unknownCount > 0) {
-    remainingProofs = `, then confirm the remaining ${unknownCount} proof${unknownCount === 1 ? "" : "s"}`;
-  }
-  return `Repair the ${failedChecks} here${remainingProofs}. Guard repairs and rechecks every local protection layer in one pass.`;
-}
-
-function repairButtonLabel(
-  repairState: RepairState | null,
-  needsConnectedApp: boolean,
-): string {
-  if (repairState?.status === "working") return "Repairing…";
-  if (needsConnectedApp) return "Connect an app";
-  if (repairState?.status === "error") return "Retry repair";
-  return "Repair protection";
-}
-
 function cloudConnectPendingMessage(hasAuthorizeUrl: boolean, opened: boolean): string {
   if (!hasAuthorizeUrl) {
     return "Open the secure sign-in link below. This page will update automatically.";
@@ -260,12 +233,7 @@ export function FleetProtectionRecovery(props: FleetProtectionRecoveryProps) {
   const gaps = props.health.checks.filter((check) => check.status !== "pass");
   const failCount = gaps.filter((check) => check.status === "fail").length;
   const unknownCount = gaps.length - failCount;
-  const needsConnectedApp = props.health.checks.some(
-    (check) =>
-      check.check_id === "harness_hooks"
-      && check.reason_code === "no_managed_harness"
-      && check.status === "fail",
-  );
+  const needsConnectedApp = remainingProtectionRepairParts(props.health).needsConnectedApp;
   const cloudPolicyHint = cloudPolicyRecoveryHint(props.cloudPolicy);
   const repairHarnessKey = props.repairHarnesses.join("\u0000");
   const repairHarnessList = useMemo(

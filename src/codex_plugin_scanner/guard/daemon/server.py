@@ -260,7 +260,7 @@ from .manager import (
     repair_approval_center_locator,
     write_guard_daemon_state,
 )
-from .protection_repair_retry import confirmed_containment_repair_signals
+from .protection_repair_retry import confirmed_containment_repair_signals, incomplete_protection_repair_payload
 from .request_executor import BoundedRequestExecutor as _BoundedRequestExecutor
 from .runtime_heartbeat import RuntimeHeartbeatWriter
 from .runtime_hook_deadline import RuntimeHookDeadline
@@ -4777,12 +4777,10 @@ class _GuardDaemonHandler(BaseHTTPRequestHandler):
                     isinstance(install.get("harness"), str) and install.get("active") is True
                     for install in store.list_managed_installs()
                 )
-                if hook_failures or hook_repair_unknown:
+                if hook_failures or hook_repair_unknown or not has_active_hooks:
                     failed_check_ids.append("harness_hooks")
-                elif has_active_hooks:
-                    repaired_check_ids.append("harness_hooks")
                 else:
-                    failed_check_ids.append("harness_hooks")
+                    repaired_check_ids.append("harness_hooks")
                 if repaired:
                     containment_repaired, containment_failed = confirmed_containment_repair_signals(
                         lambda: self._containment_health_payload(force_refresh=True)
@@ -4804,30 +4802,16 @@ class _GuardDaemonHandler(BaseHTTPRequestHandler):
                     except (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error):
                         failed_check_ids.append("decision_stream")
                 if failed_check_ids or pending_check_ids:
-                    missing_connected_app = (
-                        "harness_hooks" in failed_check_ids
-                        and not has_active_hooks
-                        and not hook_failures
-                        and not hook_repair_unknown
-                    )
                     self._write_json(
-                        {
-                            "error": "protection_repair_incomplete",
-                            "repaired": False,
-                            "check_ids": repaired_check_ids,
-                            "failed_check_ids": failed_check_ids,
-                            "failed_harnesses": hook_failures,
-                            "pending_check_ids": pending_check_ids,
-                            "message": (
-                                "Connect an AI app to start local protection. "
-                                "Repair cannot finish until at least one app is connected."
-                                if missing_connected_app
-                                else (
-                                    "Repair paused before every protection layer could be confirmed. "
-                                    "Retry repair here."
-                                )
-                            ),
-                        },
+                        incomplete_protection_repair_payload(
+                            repaired_check_ids=repaired_check_ids,
+                            failed_check_ids=failed_check_ids,
+                            failed_harnesses=hook_failures,
+                            pending_check_ids=pending_check_ids,
+                            has_active_hooks=has_active_hooks,
+                            hook_failures=hook_failures,
+                            hook_repair_unknown=hook_repair_unknown,
+                        ),
                         status=409,
                     )
                     return

@@ -246,3 +246,28 @@ export function remainingProtectionRepairParts(health: GuardProtectionHealth): {
       hooksCheck?.status === "fail" && hooksCheck.reason_code === "no_managed_harness",
   };
 }
+
+export function remainingProtectionRepairMessage(
+  health: GuardProtectionHealth,
+  displayName: (harness: string) => string,
+): { failedHookHarnesses: string[]; message: string } {
+  const remainingParts = remainingProtectionRepairParts(health);
+  const failedHookApps = remainingParts.failedHookHarnesses.map(displayName);
+  const remainingMessages: string[] = [];
+  if (remainingParts.needsConnectedApp) {
+    remainingMessages.push("Connect an AI app to start local protection.");
+  }
+  if (failedHookApps.length > 0) {
+    remainingMessages.push(
+      `${failedHookApps.join(", ")} still ${failedHookApps.length === 1 ? "needs" : "need"} hook repair.`,
+    );
+  }
+  if (remainingParts.evidenceFailed) remainingMessages.push("Command evidence still needs repair.");
+  const remaining = remainingMessages.length > 0
+    ? remainingMessages.join(" ")
+    : "A local protection check still needs attention.";
+  return {
+    failedHookHarnesses: remainingParts.failedHookHarnesses,
+    message: `${remaining} Open the repair details below for the exact check.`,
+  };
+}
