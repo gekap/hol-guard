@@ -1,0 +1,29 @@
+name: Supersede non-resumable Everyday Mode Core runs
+
+on:
+  push:
+    branches:
+      - automation/everyday-mode-finalize-20260828
+    paths:
+      - .github/everyday-mode/supersede-core
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  supersede:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Cancel obsolete finalizer and recovery runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for workflow in finalize-everyday-mode-core.yml recover-everyday-mode-core.yml; do
+            gh run list --repo hashgraph-online/hol-guard --workflow "$workflow" --branch automation/everyday-mode-finalize-20260828 --limit 20 --json databaseId,status --jq '.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending") | .databaseId' | while read -r run_id; do
+              [ -n "$run_id" ] || continue
+              gh run cancel "$run_id" --repo hashgraph-online/hol-guard || true
+            done
+          done
