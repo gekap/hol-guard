@@ -639,7 +639,7 @@ function FleetWorkspace(props) {
   const receiptHarnesses = new Set(props.runtime.latest_receipts.map((r) => r.harness).filter(isConnectableAppHarness));
   const repairHarness = managedInstalls.find((install) => !install.active)?.harness ?? visibleHarnesses.find((harness) => protectionHealthFor(props.runtime, harness).checks.some(
     (check) => check.check_id === "harness_hooks" && check.status === "fail"
-  ));
+  )) ?? visibleHarnesses[0];
   const repairHarnesses = repairHarnessesFor(managedInstalls, protectionHealth);
   const heroCopy = resolveFleetHeroCopy(
     props.runtime.cloud_state,

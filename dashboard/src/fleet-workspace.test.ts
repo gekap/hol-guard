@@ -24,6 +24,10 @@ assert(
   defaultConnectHarness(undefined, ["grok", "claude-code"]) === "grok",
   "observed apps keep their own connect target",
 );
+assert(
+  defaultConnectHarness("grok", []) === "grok",
+  "empty managed installs still connect the first visible fleet app",
+);
 
 const noProtectionHealth = {
   harness: "omp",
