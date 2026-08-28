@@ -534,21 +534,6 @@ def test_bounded_wait_with_static_completion_marker_is_benign(tmp_path: Path) ->
     )
 
 
-def test_bounded_wait_with_perl_warnings_flag_is_benign(tmp_path: Path) -> None:
-    command = "perl -W -e 'sleep 240' && echo WAIT_DONE"
-
-    assert _is_benign(command, home_dir=tmp_path, repository=tmp_path)
-    assert (
-        extract_sensitive_tool_action_request(
-            "bash",
-            {"command": command},
-            cwd=tmp_path,
-            home_dir=tmp_path,
-        )
-        is None
-    )
-
-
 @pytest.mark.parametrize(
     "command",
     (

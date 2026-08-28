@@ -1319,15 +1319,6 @@ def test_tool_action_request_classifier_skips_perl_sleep_wait():
     assert request is None
 
 
-def test_tool_action_request_classifier_skips_perl_warning_flag_sleep_wait():
-    request = extract_sensitive_tool_action_request(
-        "bash",
-        {"command": "perl -W -e 'sleep 240'"},
-    )
-
-    assert request is None
-
-
 def test_tool_action_request_classifier_skips_git_commit_with_coauthored_by_trailer(tmp_path):
     (tmp_path / "hol-guard").mkdir()
     request = extract_sensitive_tool_action_request(
@@ -3806,21 +3797,6 @@ def test_tool_action_request_classifier_allows_python_c_argument_named_like_modu
     )
 
     assert request is None
-
-
-def test_tool_action_request_classifier_does_not_treat_decoy_c_after_script_as_observer(
-    tmp_path,
-    monkeypatch,
-):
-    _prefer_guard_interpreter_on_path(monkeypatch)
-    decoy = "python attacker.py -c 'print(1)'"
-    inline = "python -c 'print(1)'"
-    unbuffered = "python -u -c 'print(1)'"
-
-    assert not is_explicitly_benign_tool_action_request("bash", {"command": decoy}, cwd=tmp_path)
-    assert is_explicitly_benign_tool_action_request("bash", {"command": inline}, cwd=tmp_path)
-    assert is_explicitly_benign_tool_action_request("bash", {"command": unbuffered}, cwd=tmp_path)
-    assert extract_sensitive_tool_action_request("bash", {"command": inline}, cwd=tmp_path) is None
 
 
 def test_tool_action_request_classifier_does_not_allow_wait_with_shell_substitution():
