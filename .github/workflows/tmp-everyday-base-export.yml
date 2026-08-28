@@ -1,0 +1,29 @@
+name: Export release 3.2 source for Everyday Mode reconciliation
+
+on:
+  push:
+    branches:
+      - tmp/everyday-base-export-20260828
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Build immutable source archive
+        shell: bash
+        run: git archive --format=tar.gz --output="$RUNNER_TEMP/release-3.2-source.tar.gz" HEAD
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hol-guard-release-3.2-source-${{ github.sha }}
+          path: ${{ runner.temp }}/release-3.2-source.tar.gz
+          retention-days: 1
+          if-no-files-found: error
