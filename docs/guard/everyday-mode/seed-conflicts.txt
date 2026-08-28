@@ -1,0 +1,4 @@
+dashboard/src/guard-types.ts
+dashboard/src/main.tsx
+src/codex_plugin_scanner/guard/config.py
+tests/fixtures/guard-command-corpus/decision-diff-report.json
