@@ -75,5 +75,5 @@ ARBITRARY_STDOUT_FULL_ALLOW_BYTES = 256 * 1024  # Max arbitrary stdout for full 
 ## Integration Points
 
 - **Daemon**: `daemon/server.py` `_handle_runtime_hook()` dispatches to fast worker or legacy CLI
-- **CLI**: `cli/commands_hook.py` `_try_source_ref_fast_path()` calls the engine for source-ref payloads
+- **CLI**: `cli/commands_hook_native_authority.py` sends auto/force source-ref payloads to the native worker; off/shadow still uses `_try_source_ref_fast_path()`
 - **Adapter**: Pi extension generates `guard_source_ref` and verifies `reviewed_output_sha256`

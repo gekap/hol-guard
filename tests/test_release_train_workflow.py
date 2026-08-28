@@ -293,15 +293,14 @@ def test_release_publication_reuses_one_hashed_build_artifact() -> None:
         if step.get("name") == "Prepare project-specific distributions"
     )
     assert '"${#guard_files[@]}" -ge "6"' in stable_prepare["run"]
-    native_validate = next(
-        step for step in jobs["publish-main-pypi"]["steps"] if step.get("name") == "Validate native Guard release set"
+    main_steps = jobs["publish-main-pypi"]["steps"]
+    native_validate = next(step for step in main_steps if step.get("name") == "Validate native Guard release set")
+    assert "validate-local" in native_validate["run"] and "--artifact-set full" in native_validate["run"]
+    main_quota = next(
+        step for step in main_steps if step.get("name") == "Refuse PyPI upload when the project is over quota"
     )
-    assert "validate-local" in native_validate["run"]
-    main_verify = next(
-        step
-        for step in jobs["publish-main-pypi"]["steps"]
-        if step.get("name") == "Download and verify exact PyPI artifacts"
-    )
+    assert "--pending-dir dist-hol-guard" in main_quota["run"]
+    main_verify = next(step for step in main_steps if step.get("name") == "Download and verify exact PyPI artifacts")
     assert "--artifact-set full" in main_verify["run"]
     assert "verify-published" in main_verify["run"]
 

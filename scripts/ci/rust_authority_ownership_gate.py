@@ -91,8 +91,7 @@ def _pretool_gate() -> None:
         raise RuntimeError("native PreToolUse transport imports the Python command evaluator")
     if "evaluate_command(" in _read(pretool):
         raise RuntimeError("native PreToolUse transport calls the Python command evaluator")
-    if 'if status.available or native_mode() == "force":' in _read(pretool):
-        raise RuntimeError("PreToolUse policy floor still availability-gates native authority")
+    _assert_policy_floor_fail_closed(pretool)
 
     hook = _read(Path("src/codex_plugin_scanner/guard/daemon/hook_worker.py"))
     if "review_pre_tool_native" not in hook:
@@ -238,6 +237,73 @@ def _hygiene_gate() -> None:
         raise RuntimeError(f"temporary Rust migration delivery residue remains: {residue}")
 
 
+def _ordered_call_names(node: ast.AST) -> list[str]:
+    names: list[str] = []
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
+            names.append(child.func.id)
+        names.extend(_ordered_call_names(child))
+    return names
+
+
+def _assert_policy_floor_fail_closed(path: Path) -> None:
+    tree = ast.parse(_read(path), filename=str(path))
+    fn = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "native_pre_tool_policy_floor"
+        ),
+        None,
+    )
+    if fn is None:
+        raise RuntimeError("native PreToolUse policy floor is missing")
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Attribute) and node.attr == "available":
+            raise RuntimeError("PreToolUse policy floor still inspects native availability")
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "native_mode"
+        ):
+            raise RuntimeError("PreToolUse policy floor still calls native_mode")
+    returns_block = any(
+        isinstance(node, ast.Return) and isinstance(node.value, ast.Constant) and node.value.value == "block"
+        for node in ast.walk(fn)
+    )
+    if not returns_block:
+        raise RuntimeError("PreToolUse policy floor does not fail closed")
+
+
+def _cli_gate() -> None:
+    hook = _read(Path("src/codex_plugin_scanner/guard/cli/commands_hook.py"))
+    if "try_native_or_source_ref_hook" not in hook:
+        raise RuntimeError("CLI hook path does not consult native authority")
+    path = Path("src/codex_plugin_scanner/guard/cli/commands_hook_native_authority.py")
+    tree = ast.parse(_read(path), filename=str(path))
+    fn = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "try_native_or_source_ref_hook"
+        ),
+        None,
+    )
+    if fn is None:
+        raise RuntimeError("CLI native authority helper is missing")
+    calls = _ordered_call_names(fn)
+    try:
+        native_idx = calls.index("try_native_hook_authority")
+        source_idx = calls.index("_try_source_ref_fast_path")
+    except ValueError as exc:
+        raise RuntimeError("CLI hook path is missing native authority or source-ref routing") from exc
+    if native_idx > source_idx:
+        raise RuntimeError("CLI hook path consults Python source-ref review before native authority")
+    native_cli = _read(path)
+    if "HookReviewEngine" in native_cli or "evaluate_command(" in native_cli:
+        raise RuntimeError("CLI native authority path still imports a Python semantic replica")
+
+
 def run(root: Path) -> dict[str, object]:
     original = Path.cwd()
     try:
@@ -253,6 +319,7 @@ def run(root: Path) -> dict[str, object]:
         _workflow_gate()
         _docs_gate()
         _hygiene_gate()
+        _cli_gate()
         return {
             "schema": SCHEMA,
             "status": "passed",

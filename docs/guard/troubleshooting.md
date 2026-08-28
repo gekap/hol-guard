@@ -54,6 +54,6 @@
 
 **Symptom**: CLI fallback returns an error or doesn't handle `guard_source_ref`.
 
-**Check**: Ensure you're running a recent version of `hol-guard` that includes `_try_source_ref_fast_path()` in `commands_hook.py`.
+**Check**: Ensure you're running a recent version of HOL Guard whose CLI routes source-ref payloads through native hook authority, with Python source-ref review only for off/shadow rollback.
 
 **Resolution**: Update HOL Guard: `hol-guard update`.
