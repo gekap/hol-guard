@@ -1,0 +1,57 @@
+name: Verify GitHub Models access for review remediation
+
+on:
+  push:
+    branches:
+      - fix/pr-2629-post-merge-review-remediation
+    paths:
+      - .github/workflows/everyday-mode-model-probe.yml
+
+permissions:
+  contents: write
+  models: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: fix/pr-2629-post-merge-review-remediation
+          persist-credentials: true
+      - name: Probe models endpoint
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request, urllib.error
+          models=['openai/gpt-5','openai/gpt-4.1','xai/grok-code-fast-1']
+          failures=[]
+          chosen=None
+          for model in models:
+              request=urllib.request.Request(
+                  'https://models.github.ai/inference/chat/completions',
+                  data=json.dumps({'model':model,'messages':[{'role':'user','content':'Reply READY.'}],'max_tokens':16,'temperature':0}).encode(),
+                  method='POST',
+                  headers={'Authorization':f"Bearer {os.environ['GITHUB_TOKEN']}",'Content-Type':'application/json','Accept':'application/json','User-Agent':'everyday-mode-model-probe'},
+              )
+              try:
+                  with urllib.request.urlopen(request,timeout=180) as response:
+                      payload=json.load(response)
+                  if payload.get('choices'):
+                      chosen=model
+                      break
+              except Exception as exc:
+                  failures.append(f'{model}: {exc}')
+          if not chosen:
+              raise SystemExit('\n'.join(failures))
+          open('docs/guard/everyday-mode/model-probe.txt','w').write(chosen+'\n')
+          PY
+      - name: Commit probe marker
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/guard/everyday-mode/model-probe.txt
+          git commit -m 'chore: record review remediation model availability'
+          git push origin HEAD:fix/pr-2629-post-merge-review-remediation
