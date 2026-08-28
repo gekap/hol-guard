@@ -171,7 +171,7 @@ def test_enrollment_proof_rejects_remote_terminal(tmp_path: Path, monkeypatch: p
     (
         ("local-admin ttys020 Jul 21 09:07\n", True),
         ("local-admin ttys020 Jul 21 09:07 (203.0.113.8)\n", False),
-        ("local-admin ttys021 Jul 21 09:07\n", True),
+        ("local-admin ttys021 Jul 21 09:07\n", False),
     ),
 )
 def test_terminal_locality_accepts_hostless_matching_login_record(
@@ -199,11 +199,12 @@ def test_terminal_locality_accepts_owned_desktop_pty_without_login_record(
         "codex_plugin_scanner.guard.runtime.extension_control_proof._current_login_name",
         lambda: "local-admin",
     )
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(("/usr/bin/who",), 0, "", ""),
-    )
+
+    def run(command: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        output = "no\n" if command[0] == "/usr/bin/loginctl" else ""
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(
         "codex_plugin_scanner.guard.runtime.extension_control_proof.os.geteuid",
         lambda: 1000,
@@ -223,11 +224,12 @@ def test_terminal_locality_rejects_foreign_desktop_pty_without_login_record(
         "codex_plugin_scanner.guard.runtime.extension_control_proof._current_login_name",
         lambda: "local-admin",
     )
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(("/usr/bin/who",), 0, "", ""),
-    )
+
+    def run(command: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        output = "no\n" if command[0] == "/usr/bin/loginctl" else ""
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(
         "codex_plugin_scanner.guard.runtime.extension_control_proof.os.geteuid",
         lambda: 1000,
@@ -238,6 +240,30 @@ def test_terminal_locality_rejects_foreign_desktop_pty_without_login_record(
     )
 
     assert _terminal_session_is_local("/dev/pts/7") is False
+
+
+def test_terminal_locality_rejects_remote_logind_session_without_login_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "codex_plugin_scanner.guard.runtime.extension_control_proof._current_login_name",
+        lambda: "local-admin",
+    )
+
+    def run(command: tuple[str, ...], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        output = "yes\n" if command[0] == "/usr/bin/loginctl" else ""
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert _terminal_session_is_local("/dev/pts/7") is False
+
+
+def test_enrollment_proof_rejects_mosh_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MOSH_CONNECTION", "client server")
+
+    with pytest.raises(ExtensionControlProofError, match="requires a local terminal"):
+        _require_local_terminal_confirmation(_enrollment())
 
 
 def test_extension_control_proof_rejects_stale_grant(tmp_path: Path) -> None:

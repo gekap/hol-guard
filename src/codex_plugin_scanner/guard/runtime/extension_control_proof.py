@@ -28,7 +28,7 @@ EXTENSION_CONTROL_ENROLLMENT_SCHEMA = "guard.extension-control-enrollment.v1"
 EXTENSION_CONTROL_ENROLLMENT_ACTION = "enroll-authority"
 _MAX_IDENTITY_LENGTH = 256
 _ENROLLMENT_CONFIRMATION_PREFIX = "ENROLL EXTENSION CONTROL"
-_REMOTE_TERMINAL_ENVIRONMENT = ("SSH_CLIENT", "SSH_CONNECTION", "SSH_TTY")
+_REMOTE_TERMINAL_ENVIRONMENT = ("SSH_CLIENT", "SSH_CONNECTION", "SSH_TTY", "MOSH_CONNECTION")
 
 
 class ExtensionControlProofError(PermissionError):
@@ -112,8 +112,21 @@ def _terminal_session_is_local(terminal_name: str) -> bool:
                 continue
             return not (fields[-1].startswith("(") and fields[-1].endswith(")"))
     # GNOME and other desktop terminal emulators often do not create utmp
-    # records. The controlling TTY must still be a character device owned by
-    # this user; remote sessions are rejected before this function is called.
+    # records. systemd-logind provides the session origin independently of
+    # mutable child-process environment variables.
+    try:
+        session = subprocess.run(
+            ("/usr/bin/loginctl", "show-session", "self", "--property=Remote", "--value"),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            env={"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if session.stdout.strip().lower() != "no":
+        return False
     try:
         terminal = os.stat(terminal_name, follow_symlinks=True)
     except OSError:
@@ -134,7 +147,10 @@ def _require_local_terminal_confirmation(enrollment: ExtensionControlEnrollment)
             # Opening /dev/tty can preserve that alias rather than returning
             # the concrete /dev/pts or /dev/ttys device. stdin identifies the
             # same controlling terminal for an interactive CLI invocation.
-            terminal_name = os.ttyname(sys.stdin.fileno())
+            stdin_descriptor = sys.stdin.fileno()
+            if os.fstat(descriptor).st_rdev != os.fstat(stdin_descriptor).st_rdev:
+                raise ExtensionControlProofError("extension control enrollment requires one interactive local terminal")
+            terminal_name = os.ttyname(stdin_descriptor)
         if not os.isatty(descriptor) or not _terminal_session_is_local(terminal_name):
             raise ExtensionControlProofError("extension control enrollment requires an interactive local terminal")
         expected = f"{_ENROLLMENT_CONFIRMATION_PREFIX} {enrollment.actor_id}"
