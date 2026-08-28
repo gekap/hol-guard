@@ -55,7 +55,12 @@ def try_native_or_source_ref_hook(
     runtime_workspace: Path | None,
     store: GuardStore,
 ) -> int | None:
-    """Prefer native authority, then the off/shadow Python source-ref path."""
+    """Prefer native authority, then Python source-ref when native does not apply.
+
+    ``off`` and ``shadow`` stay on the Python source-ref path. ``auto`` and
+    ``force`` use that path only after the native worker reports the event as
+    unsupported, such as file PreToolUse with a source reference.
+    """
     native_result = try_native_hook_authority(
         payload=payload,
         harness=args.harness,

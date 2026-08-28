@@ -492,7 +492,7 @@
     "src/codex_plugin_scanner/guard/adapters/hermes.py": 1411,
     "src/codex_plugin_scanner/guard/adapters/hook_python.py": 505,
     "src/codex_plugin_scanner/guard/adapters/opencode.py": 838,
-    "src/codex_plugin_scanner/guard/adapters/opencode_pretool.py": 725,
+    "src/codex_plugin_scanner/guard/adapters/opencode_pretool.py": 734,
     "src/codex_plugin_scanner/guard/adapters/pi.py": 687,
     "src/codex_plugin_scanner/guard/adapters/pi_extension_source.py": 571,
     "src/codex_plugin_scanner/guard/adapters/zcode.py": 528,
@@ -745,7 +745,7 @@
     "tests/test_policy_decision_source_context.py": 570,
     "tests/test_policy_document_io.py": 679,
     "tests/test_release_train_workflow.py": 628,
-    "tests/test_update_desktop_core.py": 716,
+    "tests/test_update_desktop_core.py": 644,
     "tests/test_verify_release_registry.py": 567,
     "tests/test_zcode_adapter.py": 685
   },
