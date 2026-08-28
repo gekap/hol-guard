@@ -147,7 +147,9 @@ _PYTEST_RUNNER_OPTIONS_WITH_VALUES = {
             "--with",
             "--with-editable",
             "--with-requirements",
+            "-f",
             "-p",
+            "-w",
         }
     ),
 }
