@@ -1172,8 +1172,8 @@ jobs:
           wheel="${wheels[0]}"
           [[ "$(uv tool run --from "$wheel" hol-guard --version)" == "hol-guard $VERSION" ]]
 
-  publish-main-pypi:
-    name: Publish main release to PyPI
+  reserve-main-tag:
+    name: Reserve stable tag
     if: >-
       always() &&
       vars.RELEASE_PUBLISHING_ENABLED == 'true' &&
@@ -1184,6 +1184,51 @@ jobs:
       needs.assemble-native-guard-distributions.result == 'success' &&
       needs.build.outputs.channel == 'stable'
     needs: [build, assemble-native-guard-distributions]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.build.outputs.source_sha }}
+      - name: Bind stable tag to the exact main source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          remote_main_sha=$(git ls-remote --exit-code origin refs/heads/main | awk '{print $1}')
+          if [[ "$remote_main_sha" != "$SOURCE_SHA" ]]; then
+            echo "Stable tag source is no longer the main branch head" >&2
+            exit 1
+          fi
+          tag="v${VERSION}"
+          remote_tag_sha=$(git ls-remote origin "refs/tags/${tag}" | awk '{print $1}')
+          if [[ -z "$remote_tag_sha" ]]; then
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${tag}" \
+              -f sha="$SOURCE_SHA" >/dev/null
+            remote_tag_sha=$(git ls-remote --exit-code origin "refs/tags/${tag}" | awk '{print $1}')
+          fi
+          if [[ "$remote_tag_sha" != "$SOURCE_SHA" ]]; then
+            echo "Stable tag does not target the exact main source" >&2
+            exit 1
+          fi
+
+  publish-main-pypi:
+    name: Publish main release to PyPI
+    if: >-
+      always() &&
+      vars.RELEASE_PUBLISHING_ENABLED == 'true' &&
+      github.event_name == 'push' &&
+      github.run_attempt == 1 &&
+      github.ref == 'refs/heads/main' &&
+      needs.build.result == 'success' &&
+      needs.assemble-native-guard-distributions.result == 'success' &&
+      needs.reserve-main-tag.result == 'success' &&
+      needs.build.outputs.channel == 'stable'
+    needs: [build, assemble-native-guard-distributions, reserve-main-tag]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

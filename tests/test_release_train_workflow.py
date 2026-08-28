@@ -62,13 +62,28 @@ def test_release_branch_pushes_publish_alpha_while_main_pushes_publish_stable() 
         assert "github.event_name == 'push'" in condition
         assert "github.ref == 'refs/heads/release/3.0'" in condition
         assert "github.event.action == 'closed'" not in condition
-    for job_name in ("publish-main-testpypi", "publish-main-pypi", "release-main"):
+    for job_name in ("publish-main-testpypi", "reserve-main-tag", "publish-main-pypi", "release-main"):
         condition = jobs[job_name]["if"]
         assert "github.event_name == 'push'" in condition
         assert "github.run_attempt == 1" in condition
         assert "github.ref == 'refs/heads/main'" in condition
         assert "needs.build.outputs.channel == 'stable'" in condition
-    assert jobs["publish-main-pypi"]["needs"] == ["build", "assemble-native-guard-distributions"]
+    assert jobs["reserve-main-tag"]["needs"] == ["build", "assemble-native-guard-distributions"]
+    assert jobs["reserve-main-tag"]["permissions"] == {"contents": "write"}
+    reserve_run = next(
+        step["run"]
+        for step in jobs["reserve-main-tag"]["steps"]
+        if step.get("name") == "Bind stable tag to the exact main source"
+    )
+    assert "git ls-remote --exit-code origin refs/heads/main" in reserve_run
+    assert '-f ref="refs/tags/${tag}"' in reserve_run
+    assert '-f sha="$SOURCE_SHA"' in reserve_run
+    assert jobs["publish-main-pypi"]["needs"] == [
+        "build",
+        "assemble-native-guard-distributions",
+        "reserve-main-tag",
+    ]
+    assert "needs.reserve-main-tag.result == 'success'" in jobs["publish-main-pypi"]["if"]
     assert "needs.publish-main-testpypi.result == 'success'" not in jobs["publish-main-pypi"]["if"]
     assert "vars.MAIN_TESTPYPI_ENABLED == 'true'" in jobs["publish-main-testpypi"]["if"]
     assert jobs["release-main"]["needs"] == [
