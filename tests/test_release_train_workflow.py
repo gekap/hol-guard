@@ -118,7 +118,8 @@ def test_main_push_build_computes_a_registry_derived_stable_version() -> None:
     assert "verify_release_registry.py" in compute_run
     assert "list-versions --registry pypi" in compute_run
     assert "list-versions --registry testpypi" in compute_run
-    assert "'$pypi + $testpypi | unique'" in compute_run
+    assert "git tag --list 'v*'" in compute_run
+    assert "'$pypi + $testpypi + $tags | unique'" in compute_run
     assert "compute_main_release_version.py" in compute_run
     assert "if" not in stamp_step
     assert "sync_repo_version.py --check" in stamp_run
@@ -397,17 +398,22 @@ def test_registry_state_is_revalidated_at_each_publication_boundary() -> None:
         for step in jobs["publish-main-testpypi"]["steps"]
         if step.get("name") == "Revalidate main source before TestPyPI"
     )
-    for main_source_revalidation in (main_testpypi_revalidation, main_revalidation):
-        assert "git ls-remote --exit-code origin refs/heads/main" in main_source_revalidation
-        assert '[[ "$remote_main_sha" != "$SOURCE_SHA" ]]' in main_source_revalidation
-        assert "Main publication source is no longer the branch head" in main_source_revalidation
-        assert 'git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main' not in main_source_revalidation
+    assert "git ls-remote --exit-code origin refs/heads/main" in main_testpypi_revalidation
+    assert '[[ "$remote_main_sha" != "$SOURCE_SHA" ]]' in main_testpypi_revalidation
+    assert "Main publication source is no longer the branch head" in main_testpypi_revalidation
+    assert 'git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main' not in main_testpypi_revalidation
+    assert 'git fetch --no-tags origin "+refs/tags/v${VERSION}:refs/tags/v${VERSION}"' in main_revalidation
+    assert 'git rev-parse "v${VERSION}^{commit}"' in main_revalidation
+    assert '[[ "$reserved_source_sha" != "$SOURCE_SHA" ]]' in main_revalidation
+    assert "Stable tag does not target the exact publication source" in main_revalidation
+    assert "refs/heads/main" not in main_revalidation
     assert "compute_main_release_version.py" in main_revalidation
     assert main_revalidation.count("uv run --with packaging==25.0") == 5
     assert "uv run --no-sync" not in main_revalidation
     assert "list-versions --registry pypi" in main_revalidation
     assert "list-versions --registry testpypi" in main_revalidation
-    assert "'$pypi + $testpypi + [$version] | unique'" in main_revalidation
+    assert "git tag --list 'v*'" in main_revalidation
+    assert "'$pypi + $testpypi + $tags + [$version] | unique'" in main_revalidation
     assert '<<< "$RELEASE_VERSIONS"' in main_revalidation
     assert '[[ "$LATEST_RELEASE_VERSION" != "$VERSION" ]]' in main_revalidation
     assert "--latest-existing" in main_revalidation

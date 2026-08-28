@@ -267,10 +267,13 @@ jobs:
               list-versions --registry pypi)
             TESTPYPI_VERSIONS=$(uv run --no-sync python scripts/verify_release_registry.py \
               list-versions --registry testpypi)
+            TAG_VERSIONS=$(git tag --list 'v*' | sed 's/^v//' | jq -R -s \
+              'split("\n") | map(select(length > 0))')
             VERSIONS=$(jq -n \
               --argjson pypi "$PYPI_VERSIONS" \
               --argjson testpypi "$TESTPYPI_VERSIONS" \
-              '$pypi + $testpypi | unique')
+              --argjson tags "$TAG_VERSIONS" \
+              '$pypi + $testpypi + $tags | unique')
             VERSION=$(uv run --no-sync python scripts/compute_main_release_version.py \
               --base-version "$BASE_VERSION" <<< "$VERSIONS")
           fi
@@ -1265,9 +1268,10 @@ jobs:
           SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          remote_main_sha=$(git ls-remote --exit-code origin refs/heads/main | awk '{print $1}')
-          if [[ "$remote_main_sha" != "$SOURCE_SHA" ]]; then
-            echo "Main publication source is no longer the branch head" >&2
+          git fetch --no-tags origin "+refs/tags/v${VERSION}:refs/tags/v${VERSION}"
+          reserved_source_sha=$(git rev-parse "v${VERSION}^{commit}")
+          if [[ "$reserved_source_sha" != "$SOURCE_SHA" ]]; then
+            echo "Stable tag does not target the exact publication source" >&2
             exit 1
           fi
           BASE_VERSION=$(uv run --with packaging==25.0 python scripts/sync_repo_version.py --check)
@@ -1275,11 +1279,14 @@ jobs:
             list-versions --registry pypi)
           TESTPYPI_VERSIONS=$(uv run --with packaging==25.0 python scripts/verify_release_registry.py \
             list-versions --registry testpypi)
+          TAG_VERSIONS=$(git tag --list 'v*' | sed 's/^v//' | jq -R -s \
+            'split("\n") | map(select(length > 0))')
           RELEASE_VERSIONS=$(jq -n \
             --arg version "$VERSION" \
             --argjson pypi "$PYPI_VERSIONS" \
             --argjson testpypi "$TESTPYPI_VERSIONS" \
-            '$pypi + $testpypi + [$version] | unique')
+            --argjson tags "$TAG_VERSIONS" \
+            '$pypi + $testpypi + $tags + [$version] | unique')
           LATEST_RELEASE_VERSION=$(uv run --with packaging==25.0 python scripts/compute_main_release_version.py \
             --base-version "$BASE_VERSION" --latest-existing <<< "$RELEASE_VERSIONS")
           if [[ "$LATEST_RELEASE_VERSION" != "$VERSION" ]]; then
