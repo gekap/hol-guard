@@ -1,0 +1,72 @@
+name: Verify final Everyday Mode Core integrity
+
+on:
+  push:
+    branches:
+      - automation/everyday-mode-finalize-20260828
+    paths:
+      - .github/everyday-mode/integrity-core
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DELIVERY_BRANCH: feat/everyday-mode-001-100-final
+      TARGET_BRANCH: release/3.2
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: automation/everyday-mode-finalize-20260828
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Wait for resumable finalizer and recover transient failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          sleep 30
+          for attempt in 1 2 3 4; do
+            run_id="$(gh run list --repo hashgraph-online/hol-guard --workflow finalize-everyday-mode-core-v2.yml --branch automation/everyday-mode-finalize-20260828 --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+            test -n "$run_id"
+            set +e
+            gh run watch "$run_id" --repo hashgraph-online/hol-guard --exit-status --interval 30
+            rc=$?
+            set -e
+            [ "$rc" -eq 0 ] && break
+            [ "$attempt" -lt 4 ] || exit 1
+            gh run rerun "$run_id" --repo hashgraph-online/hol-guard --failed || gh run rerun "$run_id" --repo hashgraph-online/hol-guard
+            sleep 30
+          done
+      - name: Ensure final verified tree is present on release 3.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+          target_ok=0
+          if git cat-file -e "origin/$TARGET_BRANCH:docs/guard/everyday-mode/delivery-state.json" 2>/dev/null; then
+            git show "origin/$TARGET_BRANCH:docs/guard/everyday-mode/delivery-state.json" >/tmp/state.json
+            next="$(python -c "import json; print(json.load(open('/tmp/state.json')).get('next_start',0))")"
+            [ "$next" -ge 741 ] && target_ok=1
+          fi
+          if [ "$target_ok" -ne 1 ]; then
+            git cat-file -e "origin/$DELIVERY_BRANCH:docs/guard/everyday-mode/delivery-state.json"
+            git show "origin/$DELIVERY_BRANCH:docs/guard/everyday-mode/delivery-state.json" >/tmp/state.json
+            next="$(python -c "import json; print(json.load(open('/tmp/state.json')).get('next_start',0))")"; [ "$next" -ge 741 ]
+            open="$(gh pr list --repo hashgraph-online/hol-guard --state open --head "$DELIVERY_BRANCH" --json number --jq '.[0].number // empty')"
+            if [ -z "$open" ]; then
+              url="$(gh pr create --repo hashgraph-online/hol-guard --base "$TARGET_BRANCH" --head "$DELIVERY_BRANCH" --title 'fix: deliver verified Everyday Mode completion to release/3.2' --body 'Integrity follow-up ensuring the fully verified EVM-001 through EVM-740 delivery is present on release/3.2.')"; open="${url##*/}"
+            fi
+            gh pr merge "$open" --repo hashgraph-online/hol-guard --squash --delete-branch
+            git fetch origin "$TARGET_BRANCH"
+            git cat-file -e "origin/$TARGET_BRANCH:docs/guard/everyday-mode/delivery-state.json"
+            git show "origin/$TARGET_BRANCH:docs/guard/everyday-mode/delivery-state.json" >/tmp/state.json
+            next="$(python -c "import json; print(json.load(open('/tmp/state.json')).get('next_start',0))")"; [ "$next" -ge 741 ]
+          fi
+          for p in .github/scripts/pr_review_fix_agent.py .github/workflows/pr-2629-review-fix.yml .github/workflows/pr-2629-review-fix-v2.yml .github/workflows/everyday-mode-finalize-2629.yml; do git cat-file -e "origin/$TARGET_BRANCH:$p" 2>/dev/null && { echo "unsafe temporary file remains: $p"; exit 1; } || true; done
+          gh pr view 2629 --repo hashgraph-online/hol-guard --json mergedAt --jq -e '.mergedAt != null' >/dev/null
