@@ -1209,11 +1209,14 @@ jobs:
           tag="v${VERSION}"
           remote_tag_sha=$(git ls-remote origin "refs/tags/${tag}" | awk '{print $1}')
           if [[ -z "$remote_tag_sha" ]]; then
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            if ! gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
               -f ref="refs/tags/${tag}" \
-              -f sha="$SOURCE_SHA" >/dev/null
-            remote_tag_sha=$(git ls-remote --exit-code origin "refs/tags/${tag}" | awk '{print $1}')
+              -f sha="$SOURCE_SHA" >/dev/null; then
+              echo "Stable tag creation raced or failed; verifying the resulting remote ref" >&2
+            fi
           fi
+          git fetch --force --no-tags origin "+refs/tags/${tag}:refs/tags/${tag}"
+          remote_tag_sha=$(git rev-parse "${tag}^{commit}")
           if [[ "$remote_tag_sha" != "$SOURCE_SHA" ]]; then
             echo "Stable tag does not target the exact main source" >&2
             exit 1
@@ -1426,13 +1429,8 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           tag="v${VERSION}"
-          remote_tag_sha=$(git ls-remote origin "refs/tags/${tag}" | awk '{print $1}')
-          if [[ -z "$remote_tag_sha" ]]; then
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/tags/${tag}" \
-              -f sha="$SOURCE_SHA" >/dev/null
-            remote_tag_sha=$(git ls-remote --exit-code origin "refs/tags/${tag}" | awk '{print $1}')
-          fi
+          git fetch --force --no-tags origin "+refs/tags/${tag}:refs/tags/${tag}"
+          remote_tag_sha=$(git rev-parse "${tag}^{commit}")
           if [[ "$remote_tag_sha" != "$SOURCE_SHA" ]]; then
             echo "Stable tag does not target the published source" >&2
             exit 1

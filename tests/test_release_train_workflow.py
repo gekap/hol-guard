@@ -78,6 +78,9 @@ def test_release_branch_pushes_publish_alpha_while_main_pushes_publish_stable() 
     assert "git ls-remote --exit-code origin refs/heads/main" in reserve_run
     assert '-f ref="refs/tags/${tag}"' in reserve_run
     assert '-f sha="$SOURCE_SHA"' in reserve_run
+    assert 'git fetch --force --no-tags origin "+refs/tags/${tag}:refs/tags/${tag}"' in reserve_run
+    assert 'git rev-parse "${tag}^{commit}"' in reserve_run
+    assert "verifying the resulting remote ref" in reserve_run
     assert jobs["publish-main-pypi"]["needs"] == [
         "build",
         "assemble-native-guard-distributions",
@@ -542,8 +545,8 @@ def test_release_tags_are_bound_to_the_exact_published_source() -> None:
         step["run"] for step in jobs["release-main"]["steps"] if step.get("name") == "Create discoverable main release"
     )
     assert 'tag="v${VERSION}"' in stable_run
-    assert 'gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs"' in stable_run
-    assert '-f sha="$SOURCE_SHA"' in stable_run
+    assert 'git fetch --force --no-tags origin "+refs/tags/${tag}:refs/tags/${tag}"' in stable_run
+    assert 'git rev-parse "${tag}^{commit}"' in stable_run
     assert 'remote_tag_sha" != "$SOURCE_SHA"' in stable_run
     assert 'gh release view "$tag" --json isDraft,isPrerelease' in stable_run
     assert "Existing stable release is a draft or prerelease" in stable_run
