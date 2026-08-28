@@ -1,0 +1,49 @@
+name: Watch parallel Everyday Mode Core delivery
+
+on:
+  push:
+    branches:
+      - automation/everyday-mode-finalize-20260828
+    paths:
+      - .github/everyday-mode/watch-core-v3
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait, retry failures, and enforce merged target state
+        shell: bash
+        run: |
+          set -euo pipefail
+          sleep 30
+          for attempt in 1 2 3 4 5; do
+            merged="$(gh pr view 2629 --repo hashgraph-online/hol-guard --json mergedAt --jq '.mergedAt != null')"
+            if [ "$merged" = true ]; then
+              git clone --depth 1 --branch release/3.2 https://x-access-token:${GH_TOKEN}@github.com/hashgraph-online/hol-guard.git /tmp/verify >/dev/null 2>&1
+              if [ -f /tmp/verify/docs/guard/everyday-mode/delivery-state.json ]; then
+                next="$(python -c "import json; print(json.load(open('/tmp/verify/docs/guard/everyday-mode/delivery-state.json')).get('next_start',0))")"
+                [ "$next" -ge 741 ] && exit 0
+              fi
+            fi
+            run_id="$(gh run list --repo hashgraph-online/hol-guard --workflow finalize-everyday-mode-core-v3-parallel.yml --branch automation/everyday-mode-finalize-20260828 --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+            test -n "$run_id"
+            set +e
+            gh run watch "$run_id" --repo hashgraph-online/hol-guard --exit-status --interval 30
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              merged="$(gh pr view 2629 --repo hashgraph-online/hol-guard --json mergedAt --jq '.mergedAt != null')"
+              [ "$merged" = true ] && continue
+            fi
+            [ "$attempt" -lt 5 ] || exit 1
+            gh run rerun "$run_id" --repo hashgraph-online/hol-guard --failed || gh run rerun "$run_id" --repo hashgraph-online/hol-guard
+            sleep 30
+          done
