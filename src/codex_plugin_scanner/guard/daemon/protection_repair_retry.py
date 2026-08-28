@@ -55,10 +55,7 @@ def incomplete_protection_repair_payload(
     """Describe an all-check repair that could not finish every local layer."""
 
     missing_connected_app = (
-        "harness_hooks" in failed_check_ids
-        and not has_active_hooks
-        and not hook_failures
-        and not hook_repair_unknown
+        "harness_hooks" in failed_check_ids and not has_active_hooks and not hook_failures and not hook_repair_unknown
     )
     return {
         "error": "protection_repair_incomplete",
@@ -68,12 +65,8 @@ def incomplete_protection_repair_payload(
         "failed_harnesses": list(failed_harnesses),
         "pending_check_ids": pending_check_ids,
         "message": (
-            "Connect an AI app to start local protection. "
-            "Repair cannot finish until at least one app is connected."
+            "Connect an AI app to start local protection. Repair cannot finish until at least one app is connected."
             if missing_connected_app
-            else (
-                "Repair paused before every protection layer could be confirmed. "
-                "Retry repair here."
-            )
+            else ("Repair paused before every protection layer could be confirmed. Retry repair here.")
         ),
     }
