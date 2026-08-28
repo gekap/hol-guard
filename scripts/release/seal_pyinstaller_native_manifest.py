@@ -103,12 +103,16 @@ def seal(binary: Path) -> None:
                     runtime = signing._entry_bytes(handle, archive_start, name, offset, stored_length, compressed)
                 except (OSError, ValueError, zlib.error) as error:
                     raise NativeManifestSealError(f"Bundled native runtime is not readable: {name}") from error
+                if len(runtime) != uncompressed:
+                    raise NativeManifestSealError("Bundled native runtime size does not match its TOC entry")
             if native._is_native_manifest_entry(name):
                 try:
                     decoded = signing._entry_bytes(handle, archive_start, name, offset, stored_length, compressed)
                     parsed = json.loads(decoded.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError, ValueError, OSError, zlib.error) as error:
                     raise NativeManifestSealError("Bundled native manifest is not valid JSON") from error
+                if len(decoded) != uncompressed:
+                    raise NativeManifestSealError("Bundled native manifest size does not match its TOC entry")
                 if not isinstance(parsed, dict) or parsed.get("schema") != _MANIFEST_SCHEMA:
                     raise NativeManifestSealError("Bundled native manifest failed identity checks")
                 payload = parsed

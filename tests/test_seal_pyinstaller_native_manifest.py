@@ -30,6 +30,7 @@ def _fake_archive(
     declared_runtime: str,
     entries: list[tuple[str, bytes, str] | tuple[str, bytes, str, bool]],
     prefix: bytes = b"",
+    uncompressed_by_name: dict[str, int] | None = None,
 ) -> None:
     signing = _load(SIGNING, "verify_pyinstaller_macos_signing")
     payload = bytearray()
@@ -44,13 +45,18 @@ def _fake_archive(
         offset = len(payload)
         payload.extend(stored)
         raw_name = name.encode("utf-8") + b"\0"
+        toc_uncompressed = (
+            uncompressed_by_name[name]
+            if uncompressed_by_name is not None and name in uncompressed_by_name
+            else len(data)
+        )
         toc.extend(
             struct.pack(
                 signing.TOC_FORMAT,
                 signing.TOC_HEADER_LENGTH + len(raw_name),
                 offset,
                 len(stored),
-                len(data),
+                toc_uncompressed,
                 1 if compressed else 0,
                 typecode.encode("ascii"),
             )
@@ -175,3 +181,50 @@ def test_sealer_accepts_matching_compressed_manifest_without_rewrite(tmp_path: P
     _archive_start, _pylib, entries = signing._archive_layout(archive)
     manifest = next(entry for entry in entries if entry[0].endswith("runtime-manifest.json"))
     assert manifest[3] is True
+
+
+def test_archive_toc_rejects_entry_that_overlaps_toc(tmp_path: Path) -> None:
+    signing = _load(SIGNING, "verify_pyinstaller_macos_signing")
+    payload = b"data"
+    name = "codex_plugin_scanner/_native/hol-guard-runtime"
+    raw_name = name.encode("utf-8") + b"\0"
+    toc = struct.pack(
+        signing.TOC_FORMAT,
+        signing.TOC_HEADER_LENGTH + len(raw_name),
+        len(payload),
+        4,
+        4,
+        0,
+        b"x",
+    )
+    toc += raw_name
+    raw_runtime = b"Python"
+    cookie = struct.pack(
+        signing.COOKIE_FORMAT,
+        signing.COOKIE_MAGIC,
+        len(payload) + len(toc) + signing.COOKIE_LENGTH,
+        len(payload),
+        len(toc),
+        312,
+        raw_runtime + (b"\0" * (64 - len(raw_runtime))),
+    )
+    archive = tmp_path / "hol-guard"
+    archive.write_bytes(payload + toc + cookie)
+
+    with pytest.raises(ValueError, match="overlaps the archive TOC"):
+        signing._archive_toc(archive)
+
+
+def test_sealer_rejects_runtime_uncompressed_size_mismatch(tmp_path: Path) -> None:
+    sealer = _load(SEALER, "seal_pyinstaller_native_manifest")
+    runtime = b"size-mismatch-runtime"
+    archive = tmp_path / "hol-guard"
+    _fake_archive(
+        archive,
+        declared_runtime="Python",
+        entries=_native_entries(runtime, digest=None, compressed=False),
+        uncompressed_by_name={"codex_plugin_scanner/_native/hol-guard-runtime": 999},
+    )
+
+    with pytest.raises(ValueError, match="size does not match"):
+        sealer.seal(archive)
