@@ -4801,7 +4801,7 @@ class _GuardDaemonHandler(BaseHTTPRequestHandler):
                             repaired_check_ids.append("decision_stream")
                     except (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error):
                         failed_check_ids.append("decision_stream")
-                if failed_check_ids or pending_check_ids:
+                if repaired and (failed_check_ids or pending_check_ids):
                     self._write_json(
                         incomplete_protection_repair_payload(
                             repaired_check_ids=repaired_check_ids,

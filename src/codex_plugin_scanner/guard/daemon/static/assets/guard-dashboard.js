@@ -30779,6 +30779,50 @@ function activeFailedHarnesses(failedHarnesses, repairHarnesses) {
   const repairable = new Set(repairHarnesses);
   return Array.from(new Set(failedHarnesses)).filter((harness) => repairable.has(harness));
 }
+async function runAutomaticProtectionRepair(input) {
+  const failures = [];
+  const failedHarnesses = /* @__PURE__ */ new Set();
+  try {
+    await repairApprovalCenter();
+  } catch {
+    failures.push("local runtime");
+  }
+  for (const harness of input.harnesses) {
+    try {
+      await runHarnessAction({ harness, action: "repair", dryRun: false });
+    } catch (error) {
+      failedHarnesses.add(harness);
+      failures.push(
+        error instanceof Error && error.message.trim() ? error.message : `${input.displayName(harness)} hooks`
+      );
+    }
+  }
+  try {
+    await repairProtectionCheck("all");
+  } catch (error) {
+    if (error instanceof GuardProtectionRepairError) {
+      for (const harness of error.failedHarnesses) failedHarnesses.add(harness);
+    }
+    failures.push(error instanceof Error ? error.message : "integrity protection");
+  }
+  const refreshedSnapshot = await input.refreshStateAfterAction();
+  if (refreshedSnapshot === null) {
+    const detail = failures.length > 0 ? ` Repair reported: ${failures.join(", ")}.` : "";
+    throw new ProtectionRepairFlowError(
+      `Guard could not recheck protection. Check again in a moment.${detail}`,
+      []
+    );
+  }
+  const remainingHealth = protectionHealthFor(refreshedSnapshot);
+  if (remainingHealth.state === "protected") {
+    return "Automatic repairs completed. Guard rechecked every protection layer below.";
+  }
+  const remaining = remainingProtectionRepairMessage(remainingHealth, input.displayName);
+  throw new ProtectionRepairFlowError(
+    remaining.message,
+    [...failedHarnesses].filter((harness) => remaining.failedHookHarnesses.includes(harness))
+  );
+}
 function useRouteFocus(view, mainSelector = "main#main-content") {
   const prevViewRef = reactExports.useRef(null);
   reactExports.useEffect(() => {
@@ -31442,48 +31486,11 @@ function App() {
     }
   }, []);
   const handleRepairProtection = reactExports.useCallback(async (harnesses) => {
-    const failures = [];
-    const failedHarnesses = /* @__PURE__ */ new Set();
-    try {
-      await repairApprovalCenter();
-    } catch {
-      failures.push("local runtime");
-    }
-    for (const harness of harnesses) {
-      try {
-        await runHarnessAction({ harness, action: "repair", dryRun: false });
-      } catch (error) {
-        failedHarnesses.add(harness);
-        failures.push(
-          error instanceof Error && error.message.trim() ? error.message : `${harnessDisplayName(harness)} hooks`
-        );
-      }
-    }
-    try {
-      await repairProtectionCheck("all");
-    } catch (error) {
-      if (error instanceof GuardProtectionRepairError) {
-        for (const harness of error.failedHarnesses) failedHarnesses.add(harness);
-      }
-      failures.push(error instanceof Error ? error.message : "integrity protection");
-    }
-    const refreshedSnapshot = await refreshStateAfterAction();
-    if (refreshedSnapshot === null) {
-      const detail2 = failures.length > 0 ? ` Repair reported: ${failures.join(", ")}.` : "";
-      throw new ProtectionRepairFlowError(
-        `Guard could not recheck protection. Check again in a moment.${detail2}`,
-        []
-      );
-    }
-    const remainingHealth = protectionHealthFor(refreshedSnapshot);
-    if (remainingHealth.state === "protected") {
-      return "Automatic repairs completed. Guard rechecked every protection layer below.";
-    }
-    const remaining = remainingProtectionRepairMessage(remainingHealth, harnessDisplayName);
-    throw new ProtectionRepairFlowError(
-      remaining.message,
-      [...failedHarnesses].filter((harness) => remaining.failedHookHarnesses.includes(harness))
-    );
+    return runAutomaticProtectionRepair({
+      harnesses,
+      displayName: harnessDisplayName,
+      refreshStateAfterAction
+    });
   }, [refreshStateAfterAction]);
   const appDetailContent = reactExports.useMemo(() => {
     if (view !== "app-detail" || !appDetailHarness || runtime.kind !== "ready") {

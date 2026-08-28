@@ -269,13 +269,14 @@ function FleetProtectionRecovery(props) {
       setDetailsOpen(true);
     }
   }, [props.onRepairProtection, props.repairHarnesses]);
+  const connectHarness = props.connectHarness ?? defaultConnectHarness(props.repairHarness, props.repairHarnesses);
   const handleRepairClick = reactExports.useCallback(() => {
-    if (needsConnectedApp && props.connectHarness && props.onRepairHarness) {
-      props.onRepairHarness(props.connectHarness);
+    if (needsConnectedApp && props.onRepairHarness) {
+      props.onRepairHarness(connectHarness);
       return;
     }
     void handleRepair();
-  }, [handleRepair, needsConnectedApp, props.connectHarness, props.onRepairHarness]);
+  }, [connectHarness, handleRepair, needsConnectedApp, props.onRepairHarness]);
   const handleDetailsToggle = reactExports.useCallback(() => {
     setDetailsOpen((open) => !open);
   }, []);
@@ -684,7 +685,6 @@ function FleetWorkspace(props) {
         health: protectionHealth,
         repairHarness,
         repairHarnesses,
-        connectHarness: defaultConnectHarness(repairHarness, visibleHarnesses),
         onRepairProtection: props.onRepairProtection,
         onRepairHarness: props.onRepairHarness ?? props.onConnectHarness
       }

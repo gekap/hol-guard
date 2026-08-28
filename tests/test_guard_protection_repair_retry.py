@@ -170,3 +170,37 @@ def test_protection_repair_all_requires_a_connected_app(
     assert payload["message"] == (
         "Connect an AI app to start local protection. Repair cannot finish until at least one app is connected."
     )
+
+
+def test_protection_repair_all_keeps_integrity_failure_when_no_app_is_connected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = GuardStore(tmp_path / "guard-home", prime_policy_integrity=False)
+    degraded = {
+        "mode": "degraded",
+        "degraded_reasons": ["policy_integrity_key_unavailable"],
+        "counts": {"valid": 0},
+    }
+    monkeypatch.setattr(GuardStore, "setup_policy_integrity", lambda self, **_kwargs: degraded)
+    monkeypatch.setattr(GuardStore, "repair_policy_integrity", lambda self, **_kwargs: degraded)
+    monkeypatch.setattr(daemon_server_module, "repair_failing_managed_harness_hooks", lambda _store: ((), ()))
+    daemon = GuardDaemonServer(store, host="127.0.0.1", port=0)
+    daemon.start()
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{daemon.port}/v1/protection/repair",
+        data=json.dumps({"check_id": "all"}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "X-Guard-Token": daemon._server.auth_token},
+        method="POST",
+    )
+    try:
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=5)
+        payload = json.loads(error.value.read().decode("utf-8"))
+    finally:
+        daemon.stop()
+
+    assert error.value.code == 409
+    assert payload["error"] == "local_integrity_repair_incomplete"
+    assert payload["repaired"] is False
+    assert "Connect an AI app" not in str(payload["message"])

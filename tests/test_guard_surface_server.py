@@ -264,9 +264,7 @@ class TestGuardSurfaceServer:
             lambda self, **_kwargs: maintained.append(True),
         )
         monkeypatch.setattr(
-            GuardStore,
-            "get_command_activity_persistence_health",
-            lambda self: SimpleNamespace(active_error_count=0),
+            GuardStore, "get_command_activity_persistence_health", lambda self: SimpleNamespace(active_error_count=0)
         )
         monkeypatch.setattr(GuardStore, "count_command_activities", lambda self: 0)
         monkeypatch.setattr(daemon_server_module, "repair_failing_managed_harness_hooks", lambda _store: ((), ()))
@@ -287,7 +285,6 @@ class TestGuardSurfaceServer:
                 payload = json.loads(response.read().decode("utf-8"))
         finally:
             daemon.stop()
-
         assert payload["repaired"] is True
         assert payload["check_ids"] == [
             "policy_engine",

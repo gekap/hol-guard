@@ -17,6 +17,7 @@ import type {
   GuardProtectionCheck,
   GuardProtectionHealth,
 } from "./guard-types";
+import { defaultConnectHarness } from "./apps/app-catalog";
 import { remainingProtectionRepairParts } from "./protection-health";
 import { recoverySummary, repairButtonLabel } from "./fleet-protection-recovery-copy";
 import { activeFailedHarnesses, ProtectionRepairFlowError } from "./protection-repair-flow";
@@ -263,13 +264,14 @@ export function FleetProtectionRecovery(props: FleetProtectionRecoveryProps) {
       setDetailsOpen(true);
     }
   }, [props.onRepairProtection, props.repairHarnesses]);
+  const connectHarness = props.connectHarness ?? defaultConnectHarness(props.repairHarness, props.repairHarnesses);
   const handleRepairClick = useCallback(() => {
-    if (needsConnectedApp && props.connectHarness && props.onRepairHarness) {
-      props.onRepairHarness(props.connectHarness);
+    if (needsConnectedApp && props.onRepairHarness) {
+      props.onRepairHarness(connectHarness);
       return;
     }
     void handleRepair();
-  }, [handleRepair, needsConnectedApp, props.connectHarness, props.onRepairHarness]);
+  }, [connectHarness, handleRepair, needsConnectedApp, props.onRepairHarness]);
   const handleDetailsToggle = useCallback(() => {
     setDetailsOpen((open) => !open);
   }, []);

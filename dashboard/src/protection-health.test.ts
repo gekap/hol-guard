@@ -191,7 +191,7 @@ const homeSource = readFileSync(new URL("./home-dashboard.tsx", import.meta.url)
 const protectionHealthSource = readFileSync(new URL("./protection-health.ts", import.meta.url), "utf8");
 assert.match(appSource, /const handleRepairProtection = useCallback/);
 assert.match(appSource, /onRepairProtection=\{handleRepairProtection\}/);
-assert.match(appSource, /remainingProtectionRepairMessage\(remainingHealth, harnessDisplayName\)/);
+assert.match(readFileSync(new URL("./protection-repair-flow.ts", import.meta.url), "utf8"), /remainingProtectionRepairMessage\(remainingHealth, input\.displayName\)/);
 assert.match(protectionHealthSource, /Command evidence still needs repair/);
 assert.match(protectionHealthSource, /Connect an AI app to start local protection/);
 assert.doesNotMatch(appSource, /app\.checks\.some\(\(check\) => check\.status === "fail"\)/);
@@ -276,7 +276,8 @@ assert.match(appDetailSource, /protectionHealthFor\(runtime, harness\)/);
 assert.match(appDetailSource, /useProtectionPresentationState\(appProtection\)/);
 assert.match(fleetSource, /useProtectionPresentationState\(protectionHealth\)/);
 assert.match(fleetSource, /resolveDetectedAppStatus\(install, appProtection,/);
-assert.match(fleetSource, /connectHarness=\{defaultConnectHarness\(repairHarness, visibleHarnesses\)\}/);
+assert.match(fleetSource, /onRepairHarness=\{props\.onRepairHarness \?\? props\.onConnectHarness\}/);
+assert.match(readFileSync(new URL("./fleet-protection-recovery.tsx", import.meta.url), "utf8"), /defaultConnectHarness\(props\.repairHarness, props\.repairHarnesses\)/);
 assert.match(harnessDetectionSource, /hookCheck\?\.status === "fail"/);
 assert.match(reviewStatesSource, /useProtectionPresentationState\(protectionHealth\)/);
 assert.match(reviewStatesSource, /protectedAppsCount = protectionHealth\.apps\.filter/);
