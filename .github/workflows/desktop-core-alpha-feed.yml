@@ -362,9 +362,9 @@ jobs:
           BUILT="$DIST/hol-guard"
           ASSET="$DIST/hol-guard-core-${CORE_VERSION}-${RELEASE_TARGET}"
           chmod 0755 "$BUILT"
+          codesign --remove-signature "$BUILT"
           python3 -I scripts/release/seal_pyinstaller_native_manifest.py \
             --binary "$BUILT"
-          codesign --remove-signature "$BUILT"
           uv run --directory "$SOURCE" --no-sync python \
             "$GITHUB_WORKSPACE/scripts/release/fix_pyinstaller_macos_exe_headers.py" \
             --binary "$BUILT"

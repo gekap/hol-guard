@@ -193,7 +193,7 @@ def test_frozen_sidecar_stages_attested_native_runtime() -> None:
     outer_sign = run.index(
         'codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$BUILT"'
     )
-    assert seal < strip_sign < repair_headers < outer_sign < signing_verify < native_verify
+    assert strip_sign < seal < repair_headers < outer_sign < signing_verify < native_verify
 
 
 def test_existing_asset_set_is_all_or_nothing(tmp_path: Path, capsys) -> None:
