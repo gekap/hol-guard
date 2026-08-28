@@ -231,6 +231,8 @@ def test_pipeline_boundary_preserves_following_github_capability(
     ("command", "capabilities"),
     (
         ("false && true || gh repo delete o/r --yes", ("delete_remote",)),
+        ("true >/missing/path || false || gh repo delete o/r --yes", ("delete_remote",)),
+        ("true>/missing/path || gh repo delete o/r --yes", ("delete_remote",)),
         ("true && false || gh repo delete o/r --yes", ("delete_remote",)),
         ("false || gh repo delete o/r --yes", ("delete_remote",)),
         ("make && gh repo delete o/r --yes", ("delete_remote",)),

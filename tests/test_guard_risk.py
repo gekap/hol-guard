@@ -1319,6 +1319,15 @@ def test_tool_action_request_classifier_skips_perl_sleep_wait():
     assert request is None
 
 
+def test_tool_action_request_classifier_skips_perl_warning_flag_sleep_wait():
+    request = extract_sensitive_tool_action_request(
+        "bash",
+        {"command": "perl -W -e 'sleep 240'"},
+    )
+
+    assert request is None
+
+
 def test_tool_action_request_classifier_skips_git_commit_with_coauthored_by_trailer(tmp_path):
     (tmp_path / "hol-guard").mkdir()
     request = extract_sensitive_tool_action_request(

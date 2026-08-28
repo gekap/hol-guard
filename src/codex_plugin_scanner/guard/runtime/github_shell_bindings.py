@@ -222,12 +222,26 @@ def conditional_pipeline_connectors(parts: list[str]) -> dict[int, str]:
     return connectors
 
 
-def _literal_command_truth(command_name: str | None) -> bool | None:
-    if command_name == "true":
-        return True
-    if command_name == "false":
-        return False
-    return None
+def _literal_pipeline_truth(
+    pipeline: list[list[str]],
+    primary_command: Callable[[list[str]], tuple[str | None, int | None]],
+) -> bool | None:
+    """Return builtin status only when the whole pipeline is a bare true/false."""
+
+    if len(pipeline) != 1:
+        return None
+    segment = pipeline[0]
+    command_name, command_index = primary_command(segment)
+    if command_name not in {"true", "false"} or command_index is None:
+        return None
+    command_token = segment[command_index]
+    if any(marker in command_token for marker in (">", "<")):
+        return None
+    for index, token in enumerate(segment):
+        if index == command_index or token_is_shell_assignment(token):
+            continue
+        return None
+    return command_name == "true"
 
 
 def pipeline_control_flow(
@@ -245,8 +259,7 @@ def pipeline_control_flow(
         if not pipeline:
             accumulated = None
             continue
-        command_name, _command_index = primary_command(pipeline[-1])
-        truth = _literal_command_truth(command_name)
+        truth = _literal_pipeline_truth(pipeline, primary_command)
         if pipeline_index == 0:
             accumulated = truth
             continue

@@ -319,7 +319,7 @@ def _script_interpreter_texts(parts: list[str]) -> tuple[str, ...]:
             if flag_payload is not None:
                 scripts.append(flag_payload.script_text)
                 break
-            if token in _PYTHON_INTERPRETER_OPTIONS_WITH_VALUES:
+            if _is_python_interpreter_command(command_name) and token in _PYTHON_INTERPRETER_OPTIONS_WITH_VALUES:
                 if index + 1 >= len(segment):
                     break
                 index += 2
