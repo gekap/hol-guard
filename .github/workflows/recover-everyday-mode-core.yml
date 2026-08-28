@@ -1,0 +1,46 @@
+name: Recover Everyday Mode Core finalization
+
+on:
+  push:
+    branches:
+      - automation/everyday-mode-finalize-20260828
+    paths:
+      - .github/everyday-mode/recover-core
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for or recover the finalizer
+        shell: bash
+        run: |
+          set -euo pipefail
+          sleep 30
+          for attempt in 1 2 3 4; do
+            merged="$(gh pr view 2629 --repo hashgraph-online/hol-guard --json mergedAt --jq '.mergedAt != null')"
+            if [ "$merged" = true ]; then exit 0; fi
+            run_id="$(gh run list --repo hashgraph-online/hol-guard --workflow finalize-everyday-mode-core.yml --branch automation/everyday-mode-finalize-20260828 --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+            test -n "$run_id"
+            set +e
+            gh run watch "$run_id" --repo hashgraph-online/hol-guard --exit-status --interval 30
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              merged="$(gh pr view 2629 --repo hashgraph-online/hol-guard --json mergedAt --jq '.mergedAt != null')"
+              [ "$merged" = true ] && exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              gh run rerun "$run_id" --repo hashgraph-online/hol-guard --failed || gh run rerun "$run_id" --repo hashgraph-online/hol-guard
+              sleep 30
+            fi
+          done
+          gh pr view 2629 --repo hashgraph-online/hol-guard --json state,mergeable,mergeStateStatus,headRefOid,baseRefName
+          exit 1
