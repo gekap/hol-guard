@@ -32,10 +32,9 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git fetch origin release/3.0
-          SOURCE=7479a1023a589bdeb12696e13b1a3cb1f68b8960
+          git fetch origin release/3.0 feat/everyday-mode-101-200
           git checkout -B feat/everyday-mode-101-200-final-20260829 origin/release/3.0
-          git checkout "$SOURCE" -- dashboard/src/action-explanation.test.tsx dashboard/src/action-explanation.tsx dashboard/src/main.tsx dashboard/src/presentation-mode-provider.tsx docs/guard/everyday-mode/action-explanation-runtime.md docs/guard/everyday-mode/extension-explanation-metadata.md docs/guard/everyday-mode/semantic-explanation-catalog.md src/codex_plugin_scanner/guard/runtime/action_explanation_builder.py src/codex_plugin_scanner/guard/runtime/command_extension_explanations.py src/codex_plugin_scanner/guard/runtime/semantic_explanations.py tests/test_guard_action_explanation_builder.py tests/test_guard_command_extension_explanations.py tests/test_guard_semantic_explanations.py
+          git checkout origin/feat/everyday-mode-101-200 -- dashboard/src/action-explanation.test.tsx dashboard/src/action-explanation.tsx dashboard/src/main.tsx dashboard/src/presentation-mode-provider.tsx docs/guard/everyday-mode/action-explanation-runtime.md docs/guard/everyday-mode/extension-explanation-metadata.md docs/guard/everyday-mode/semantic-explanation-catalog.md src/codex_plugin_scanner/guard/runtime/action_explanation_builder.py src/codex_plugin_scanner/guard/runtime/command_extension_explanations.py src/codex_plugin_scanner/guard/runtime/semantic_explanations.py tests/test_guard_action_explanation_builder.py tests/test_guard_command_extension_explanations.py tests/test_guard_semantic_explanations.py
           python - <<'PY'
           from pathlib import Path
 
