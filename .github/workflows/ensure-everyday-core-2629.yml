@@ -1,0 +1,48 @@
+name: Ensure Everyday Mode Core PR 2629 completes
+
+on:
+  push:
+    branches:
+      - automation/rebuild-everyday-core-2629
+    paths:
+      - .github/everyday-mode/ensure-2629
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: write
+  checks: read
+
+concurrency:
+  group: ensure-everyday-core-2629
+  cancel-in-progress: true
+
+jobs:
+  ensure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Inspect, retry, or merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$(gh pr view 2629 --repo hashgraph-online/hol-guard --json state --jq .state 2>/dev/null || echo UNKNOWN)"
+          if [ "$state" = MERGED ]; then exit 0; fi
+          run="$(gh run list --repo hashgraph-online/hol-guard --workflow rebuild-everyday-core-2629-v2.yml --branch automation/rebuild-everyday-core-2629 --limit 1 --json databaseId,status,conclusion)"
+          run_id="$(jq -r '.[0].databaseId // empty' <<<"$run")"
+          status="$(jq -r '.[0].status // empty' <<<"$run")"
+          conclusion="$(jq -r '.[0].conclusion // empty' <<<"$run")"
+          test -n "$run_id"
+          case "$status" in queued|in_progress|waiting|pending|requested) exit 0;; esac
+          if [ "$conclusion" != success ]; then
+            gh run rerun "$run_id" --repo hashgraph-online/hol-guard --failed || gh run rerun "$run_id" --repo hashgraph-online/hol-guard
+            exit 0
+          fi
+          unresolved="$(gh api graphql -f query='query{repository(owner:"hashgraph-online",name:"hol-guard"){pullRequest(number:2629){reviewThreads(first:100){nodes{isResolved}}}}}' --jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length')"
+          test "$unresolved" -eq 0
+          checks="$(gh pr checks 2629 --repo hashgraph-online/hol-guard --json bucket)"
+          test "$(jq length <<<"$checks")" -gt 0
+          test "$(jq '[.[]|select(.bucket=="fail" or .bucket=="cancel" or .bucket=="pending")]|length' <<<"$checks")" -eq 0
+          gh pr merge 2629 --repo hashgraph-online/hol-guard --squash --delete-branch
