@@ -1,0 +1,68 @@
+name: Watch authoritative Everyday Mode Core completion
+
+on:
+  push:
+    branches:
+      - automation/rebuild-everyday-core-2629
+    paths:
+      - .github/workflows/watch-everyday-core-2629.yml
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  checks: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: automation/rebuild-everyday-core-2629
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Wait, retry transient failures, and verify merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          retries=0
+          for iteration in $(seq 1 220); do
+            state="$(gh pr view 2629 --repo hashgraph-online/hol-guard --json state --jq .state 2>/dev/null || echo UNKNOWN)"
+            if [ "$state" = MERGED ]; then
+              git fetch origin release/3.2
+              test -s "$(git rev-parse --show-toplevel)/README.md"
+              git worktree add /tmp/verified-core origin/release/3.2
+              cd /tmp/verified-core
+              test -s docs/guard/everyday-mode/completion-ledger.json
+              python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=json.loads(Path('docs/guard/everyday-mode/completion-ledger.json').read_text()).get('tasks',[])
+          verified={row.get('id') for row in rows if row.get('status')=='verified'}
+          expected={f'EVM-{n:03d}' for n in range(1,741)}
+          missing=sorted(expected-verified)
+          if missing: raise SystemExit(f'missing verified tasks: {missing[:30]}')
+          PY
+              test -s src/codex_plugin_scanner/guard/presentation_mode.py
+              test -s src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py
+              test -s dashboard/src/presentation-mode.ts
+              test ! -e .github/scripts/pr_review_fix_agent.py
+              test ! -e .github/workflows/pr-2629-review-fix.yml
+              exit 0
+            fi
+            run="$(gh run list --repo hashgraph-online/hol-guard --workflow rebuild-everyday-core-2629-v5.yml --branch automation/rebuild-everyday-core-2629 --limit 1 --json databaseId,status,conclusion)"
+            run_id="$(jq -r '.[0].databaseId // empty' <<< "$run")"
+            status="$(jq -r '.[0].status // empty' <<< "$run")"
+            conclusion="$(jq -r '.[0].conclusion // empty' <<< "$run")"
+            if [ -n "$run_id" ] && [ "$status" = completed ] && [ "$conclusion" != success ] && [ "$retries" -lt 4 ]; then
+              gh run rerun "$run_id" --repo hashgraph-online/hol-guard --failed 2>/dev/null || gh run rerun "$run_id" --repo hashgraph-online/hol-guard
+              retries=$((retries+1))
+            fi
+            sleep 60
+          done
+          echo 'Authoritative Core completion did not reach a verified merge within the watcher window.' >&2
+          exit 1
