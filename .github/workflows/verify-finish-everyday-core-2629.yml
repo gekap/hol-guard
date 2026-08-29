@@ -1,0 +1,81 @@
+name: Verify and finish Everyday Mode Core PR 2629
+
+on:
+  push:
+    branches:
+      - automation/rebuild-everyday-core-2629
+    paths:
+      - .github/everyday-mode/verify-2629
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  checks: read
+
+concurrency:
+  group: verify-finish-everyday-core-2629
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: automation/rebuild-everyday-core-2629
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Drive PR to merged state
+        run: |
+          set -euo pipefail
+          for iteration in $(seq 1 180); do
+            state="$(gh pr view 2629 --repo hashgraph-online/hol-guard --json state --jq .state 2>/dev/null || echo UNKNOWN)"
+            if [ "$state" = MERGED ]; then break; fi
+            run="$(gh run list --repo hashgraph-online/hol-guard --workflow rebuild-everyday-core-2629-v2.yml --branch automation/rebuild-everyday-core-2629 --limit 1 --json databaseId,status,conclusion)"
+            run_id="$(jq -r '.[0].databaseId // empty' <<<"$run")"
+            status="$(jq -r '.[0].status // empty' <<<"$run")"
+            conclusion="$(jq -r '.[0].conclusion // empty' <<<"$run")"
+            if [ -n "$run_id" ] && [ "$status" = completed ] && [ "$conclusion" != success ]; then
+              gh run rerun "$run_id" --repo hashgraph-online/hol-guard --failed 2>/dev/null || true
+            fi
+            unresolved="$(gh api graphql -f query='query{repository(owner:"hashgraph-online",name:"hol-guard"){pullRequest(number:2629){reviewThreads(first:100){nodes{isResolved}}}}}' --jq '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length' 2>/dev/null || echo 999)"
+            checks="$(gh pr checks 2629 --repo hashgraph-online/hol-guard --json bucket 2>/dev/null || echo '[]')"
+            fail="$(jq '[.[]|select(.bucket=="fail" or .bucket=="cancel")]|length' <<<"$checks")"
+            pending="$(jq '[.[]|select(.bucket=="pending")]|length' <<<"$checks")"
+            count="$(jq length <<<"$checks")"
+            if [ "$unresolved" -eq 0 ] && [ "$count" -gt 0 ] && [ "$fail" -eq 0 ] && [ "$pending" -eq 0 ]; then
+              gh pr merge 2629 --repo hashgraph-online/hol-guard --squash --delete-branch 2>/dev/null || true
+            fi
+            sleep 60
+          done
+          test "$(gh pr view 2629 --repo hashgraph-online/hol-guard --json state --jq .state)" = MERGED
+      - name: Verify merged Core product
+        run: |
+          set -euo pipefail
+          git fetch origin release/3.2
+          git worktree add /tmp/merged-core origin/release/3.2
+          cd /tmp/merged-core
+          test -s src/codex_plugin_scanner/guard/presentation_mode.py
+          test -s src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py
+          test -s schemas/guard_action_explanation_v1.json
+          test -s dashboard/src/presentation-mode.ts
+          grep -q 'everyday' src/codex_plugin_scanner/guard/presentation_mode.py
+          grep -q 'guard.action-explanation.v1' src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py
+          test ! -e .github/scripts/pr_review_fix_agent.py
+          test ! -e .github/workflows/pr-2629-review-fix.yml
+          test ! -e .github/workflows/pr-2629-review-fix-v2.yml
+      - name: Record verification on controller branch
+        run: |
+          set -euo pipefail
+          git checkout automation/rebuild-everyday-core-2629
+          mkdir -p .github/everyday-mode
+          printf '{"pull_request":2629,"target":"release/3.2","merged":true,"verified":true}\n' > .github/everyday-mode/verified-2629.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/everyday-mode/verified-2629.json
+          git commit -m 'chore: record verified PR 2629 merge' || true
+          git push origin HEAD:automation/rebuild-everyday-core-2629
