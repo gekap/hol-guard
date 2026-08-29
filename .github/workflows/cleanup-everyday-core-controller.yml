@@ -1,0 +1,43 @@
+name: Clean superseded Everyday Mode Core controllers
+
+on:
+  push:
+    branches:
+      - automation/rebuild-everyday-core-2629
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: cleanup-everyday-core-controller
+  cancel-in-progress: true
+
+jobs:
+  cleanup:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: automation/rebuild-everyday-core-2629
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Remove superseded controllers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f \
+            .github/workflows/rebuild-everyday-core-2629.yml \
+            .github/workflows/rebuild-everyday-core-2629-v2.yml \
+            .github/workflows/rebuild-everyday-core-2629-v3.yml \
+            .github/workflows/rebuild-everyday-core-2629-v4.yml \
+            .github/workflows/ensure-everyday-core-2629.yml \
+            .github/workflows/verify-finish-everyday-core-2629.yml \
+            .github/workflows/cleanup-everyday-core-controller.yml
+          git add -A
+          git commit -m 'ci: retain only authoritative EVM-001–740 controller'
+          git push origin HEAD:automation/rebuild-everyday-core-2629
