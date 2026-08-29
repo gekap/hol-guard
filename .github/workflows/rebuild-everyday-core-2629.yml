@@ -1,0 +1,127 @@
+name: Rebuild Everyday Mode Core PR 2629
+
+on:
+  push:
+    branches:
+      - automation/rebuild-everyday-core-2629
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rebuild-everyday-core-2629
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      TARGET_BRANCH: feat/everyday-mode-001-100-final
+      SOURCE_SHA: b0ec726dfe29dc0c1e463fcf50d3f6a3c7165789
+    steps:
+      - name: Check out controller
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: automation/rebuild-everyday-core-2629
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Construct clean release/3.2 head
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin release/3.2 "$TARGET_BRANCH"
+          git checkout -B rebuilt origin/release/3.2
+          paths=(
+            dashboard/package.json
+            dashboard/src/guard-types.ts
+            dashboard/src/main.tsx
+            dashboard/src/presentation-mode.test.ts
+            dashboard/src/presentation-mode.ts
+            dashboard/src/tailwind-root.css
+            docs/guard/adr/0012-everyday-and-technical-presentation.md
+            docs/guard/everyday-mode/copy-contract.md
+            docs/guard/everyday-mode/vocabulary.json
+            schemas/guard_action_explanation_v1.json
+            src/codex_plugin_scanner/guard/config.py
+            src/codex_plugin_scanner/guard/daemon/server.py
+            src/codex_plugin_scanner/guard/presentation_mode.py
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py
+            src/codex_plugin_scanner/guard/schemas/guard_action_explanation_v1.json
+            tests/test_guard_action_explanation_contract.py
+            tests/test_guard_codex_browser_authority.py
+            tests/test_guard_presentation_mode.py
+          )
+          for path in "${paths[@]}"; do
+            if git cat-file -e "$SOURCE_SHA:$path" 2>/dev/null; then
+              git checkout "$SOURCE_SHA" -- "$path"
+            else
+              printf 'Required product path missing from source commit: %s\n' "$path" >&2
+              exit 1
+            fi
+          done
+          # The delivery branch must contain no temporary mutation agents or one-shot workflows.
+          rm -f \
+            .github/scripts/pr_review_fix_agent.py \
+            .github/workflows/everyday-mode-finalize-2629.yml \
+            .github/workflows/everyday-mode-finalize-2629-v2.yml \
+            .github/workflows/everyday-mode-finalize-2629-v3.yml \
+            .github/workflows/everyday-mode-finalize-2629-v4.yml \
+            .github/workflows/everyday-mode-finalize-2629-v5.yml \
+            .github/workflows/everyday-mode-release-32-finalize.yml \
+            .github/workflows/everyday-mode-source-export-2629.yml \
+            .github/workflows/pr-2629-review-fix.yml \
+            .github/workflows/pr-2629-review-fix-v2.yml
+          git add -A
+          git diff --cached --check
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: '0.9.26'
+      - name: Validate Core contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv sync --frozen --extra dev --python 3.12
+          uv run --no-sync ruff check \
+            src/codex_plugin_scanner/guard/config.py \
+            src/codex_plugin_scanner/guard/daemon/server.py \
+            src/codex_plugin_scanner/guard/presentation_mode.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py \
+            tests/test_guard_action_explanation_contract.py \
+            tests/test_guard_codex_browser_authority.py \
+            tests/test_guard_presentation_mode.py
+          uv run --no-sync pytest -q \
+            tests/test_guard_presentation_mode.py \
+            tests/test_guard_action_explanation_contract.py \
+            tests/test_guard_codex_browser_authority.py \
+            tests/test_guard_settings_api.py \
+            tests/test_guard_desktop_contract.py
+          uv run --no-sync python tests/guard_command_decision_diff.py --write
+          uv run --no-sync python tests/guard_command_decision_diff.py --check
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76
+        with:
+          bun-version: '1.3.6'
+      - name: Validate dashboard
+        shell: bash
+        working-directory: dashboard
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run test
+          bun run build
+      - name: Commit and replace polluted PR head
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          git commit -m 'feat: complete Everyday Mode Core on release/3.2'
+          git push --force-with-lease="refs/heads/$TARGET_BRANCH:$SOURCE_SHA" origin HEAD:"$TARGET_BRANCH"
