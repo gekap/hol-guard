@@ -1,0 +1,198 @@
+name: Complete Everyday Mode release 3.2 contracts
+
+on:
+  push:
+    branches:
+      - fix/everyday-mode-release-3.2-completion
+
+permissions:
+  contents: write
+
+concurrency:
+  group: everyday-mode-release-32-completion
+  cancel-in-progress: false
+
+jobs:
+  complete:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: fix/everyday-mode-release-3.2-completion
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Apply deterministic completion patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          migration = Path('src/codex_plugin_scanner/guard/presentation_migration.py')
+          migration.write_text('''"""One-time migration helpers for obsolete presentation preference values."""\n\nfrom __future__ import annotations\n\nfrom typing import Literal\n\nMigratedPresentationMode = Literal["everyday", "technical"]\n_LEGACY_PRESENTATION_MODE_MAP: dict[str, MigratedPresentationMode] = {\n    "simple": "everyday",\n    "advanced": "technical",\n    "developer": "technical",\n}\n\ndef migrate_legacy_presentation_mode(value: object) -> MigratedPresentationMode | None:\n    if not isinstance(value, str):\n        return None\n    return _LEGACY_PRESENTATION_MODE_MAP.get(value)\n''')
+
+          p = Path('src/codex_plugin_scanner/guard/presentation_mode.py')
+          text = p.read_text()
+          text = text.replace('from typing import Literal, cast\n', 'from typing import Literal, cast\n\nfrom .presentation_migration import migrate_legacy_presentation_mode\n')
+          text = re.sub(r'LEGACY_PRESENTATION_MODE_MAP: dict\[str, GuardPresentationMode\] = \{.*?\}\n\n', '', text, flags=re.S)
+          text = re.sub(
+              r'    if isinstance\(value, str\) and value in LEGACY_PRESENTATION_MODE_MAP:\n        return PersistedPresentationMode\(\n            value=LEGACY_PRESENTATION_MODE_MAP\[value\],\n            explicit=True,\n            source="migrated",\n            schema_version=PRESENTATION_SCHEMA_VERSION,\n            diagnostic=f"migrated_legacy_\{value\}_presentation_mode",\n        \)\n',
+              '    migrated_value = migrate_legacy_presentation_mode(value)\n    if migrated_value is not None:\n        return PersistedPresentationMode(\n            value=migrated_value,\n            explicit=True,\n            source="migrated",\n            schema_version=PRESENTATION_SCHEMA_VERSION,\n            diagnostic="migrated_legacy_presentation_mode",\n        )\n',
+              text,
+          )
+          old = '''    if isinstance(cloud_profile, str) and cloud_profile in PRESENTATION_MODE_VALUES:\n        return ResolvedPresentationMode(\n            value=cast(GuardPresentationMode, cloud_profile),\n            source="cloud-profile",\n            explicit=False,\n            writable=writable,\n            revision=safe_revision,\n        )\n'''
+          new = '''    if isinstance(cloud_profile, str) and cloud_profile in PRESENTATION_MODE_VALUES:\n        return ResolvedPresentationMode(\n            value=cast(GuardPresentationMode, cloud_profile),\n            source="cloud-profile",\n            explicit=False,\n            writable=writable,\n            revision=safe_revision,\n            diagnostic=local.diagnostic,\n        )\n'''
+          if old not in text:
+              raise SystemExit('presentation cloud-profile anchor missing')
+          p.write_text(text.replace(old, new))
+
+          ts_migration = Path('dashboard/src/presentation-migration.ts')
+          ts_migration.write_text('''import type { GuardPresentationMode } from "./presentation-mode";\n\nconst LEGACY_PRESENTATION_MODE_MAP: Readonly<Record<string, GuardPresentationMode>> = {\n  simple: "everyday",\n  advanced: "technical",\n  developer: "technical",\n};\n\nexport function migrateLegacyPresentationMode(value: unknown): GuardPresentationMode | null {\n  return typeof value === "string" ? LEGACY_PRESENTATION_MODE_MAP[value] ?? null : null;\n}\n''')
+          p = Path('dashboard/src/presentation-mode.ts')
+          text = p.read_text()
+          text = 'import { migrateLegacyPresentationMode } from "./presentation-migration";\n\n' + text
+          text = re.sub(r'\nconst LEGACY: Record<string, GuardPresentationMode> = \{.*?\};\n', '\n', text, flags=re.S)
+          text = text.replace(
+              '  if (typeof input.value === "string" && LEGACY[input.value]) {\n    return resolved(LEGACY[input.value], "migrated", true, `migrated_legacy_${input.value}_presentation_mode`);\n  }\n',
+              '  const migratedMode = migrateLegacyPresentationMode(input.value);\n  if (migratedMode !== null) {\n    return resolved(migratedMode, "migrated", true, "migrated_legacy_presentation_mode");\n  }\n',
+          )
+          invalid = '''  if (\n    input.value !== undefined &&\n    input.value !== null &&\n    input.value !== "" &&\n    persistedMode === null\n  ) {\n    return resolved("everyday", "default", false, "unknown_presentation_mode_fell_back_to_everyday");\n  }\n  if (input.cloudProfile === "everyday" || input.cloudProfile === "technical") {\n    return resolved(input.cloudProfile, "cloud-profile", false);\n  }\n'''
+          replacement = '''  const invalidDiagnostic =\n    input.value !== undefined &&\n    input.value !== null &&\n    input.value !== "" &&\n    persistedMode === null\n      ? "unknown_presentation_mode_fell_back_to_everyday"\n      : null;\n  if (input.cloudProfile === "everyday" || input.cloudProfile === "technical") {\n    return resolved(input.cloudProfile, "cloud-profile", false, invalidDiagnostic);\n  }\n  if (invalidDiagnostic !== null) {\n    return resolved("everyday", "default", false, invalidDiagnostic);\n  }\n'''
+          if invalid not in text:
+              raise SystemExit('dashboard invalid fallback anchor missing')
+          p.write_text(text.replace(invalid, replacement))
+
+          p = Path('dashboard/src/presentation-mode.test.ts')
+          p.write_text('''import { strict as assert } from "node:assert";\nimport { migrateLegacyPresentationMode } from "./presentation-migration";\nimport { defaultTechnicalDisclosure, resolvePresentationMode } from "./presentation-mode";\n\nassert.equal(resolvePresentationMode({}).value, "everyday");\nassert.equal(migrateLegacyPresentationMode("simple"), "everyday");\nassert.equal(migrateLegacyPresentationMode("advanced"), "technical");\nassert.equal(migrateLegacyPresentationMode("developer"), "technical");\nassert.equal(resolvePresentationMode({ value: "technical", explicit: true, cloudProfile: "everyday" }).source, "local-explicit");\nassert.equal(resolvePresentationMode({ value: "everyday", sessionPreview: "technical" }).source, "session-preview");\nassert.deepEqual(resolvePresentationMode({ value: "technical", explicit: false, cloudProfile: "everyday" }), {\n  value: "everyday", source: "cloud-profile", explicit: false, writable: true, schemaVersion: 1, revision: 0, diagnostic: null,\n});\nassert.deepEqual(resolvePresentationMode({ value: "future", explicit: false, cloudProfile: "technical" }), {\n  value: "technical", source: "cloud-profile", explicit: false, writable: true, schemaVersion: 1, revision: 0, diagnostic: "unknown_presentation_mode_fell_back_to_everyday",\n});\nassert.equal(resolvePresentationMode({ readError: true }).source, "read-error");\nassert.equal(defaultTechnicalDisclosure("everyday").open, false);\nassert.equal(defaultTechnicalDisclosure("technical").open, true);\nassert.equal(defaultTechnicalDisclosure("everyday", true).source, "required");\n''')
+
+          p = Path('src/codex_plugin_scanner/guard/config.py')
+          text = p.read_text()
+          old = '''    next_payload = dict(current)\n    presentation_change = bool({"presentation_mode", "presentation_mode_explicit"} & payload.keys())\n    if "presentation_revision" in payload and not presentation_change:\n        raise ValueError("presentation_revision requires a presentation preference change.")\n    if presentation_change:\n        expected_revision = payload.get("presentation_revision")\n        if expected_revision is not None and expected_revision != current_config.presentation_revision:\n            raise ValueError("Presentation preference changed on another surface. Reload settings and try again.")\n'''
+          new = '''    next_payload = dict(current)\n    presentation_request = bool({"presentation_mode", "presentation_mode_explicit"} & payload.keys())\n    requested_presentation_mode = current_config.presentation_mode\n    if "presentation_mode" in payload:\n        requested_presentation_mode = coerce_presentation_mode_write(payload["presentation_mode"])\n    requested_presentation_explicit = current_config.presentation_mode_explicit\n    if "presentation_mode_explicit" in payload:\n        if not isinstance(payload["presentation_mode_explicit"], bool):\n            raise ValueError("presentation_mode_explicit must be a boolean.")\n        requested_presentation_explicit = payload["presentation_mode_explicit"]\n    elif "presentation_mode" in payload:\n        requested_presentation_explicit = True\n    presentation_change = presentation_request and (\n        requested_presentation_mode != current_config.presentation_mode\n        or requested_presentation_explicit != current_config.presentation_mode_explicit\n    )\n    if "presentation_revision" in payload and not presentation_request:\n        raise ValueError("presentation_revision requires a presentation preference request.")\n    if presentation_change:\n        expected_revision = payload.get("presentation_revision")\n        if expected_revision is not None and expected_revision != current_config.presentation_revision:\n            raise ValueError("Presentation preference changed on another surface. Reload settings and try again.")\n'''
+          if old not in text:
+              raise SystemExit('config preloop anchor missing')
+          text = text.replace(old, new)
+          old = '''    if presentation_change:\n        next_payload["presentation_mode_explicit"] = True\n        next_payload["presentation_schema_version"] = PRESENTATION_SCHEMA_VERSION\n        next_payload["presentation_revision"] = current_config.presentation_revision + 1\n'''
+          new = '''    if presentation_request:\n        next_payload["presentation_mode"] = requested_presentation_mode\n        next_payload["presentation_mode_explicit"] = requested_presentation_explicit\n        next_payload["presentation_schema_version"] = PRESENTATION_SCHEMA_VERSION\n        next_payload["presentation_revision"] = current_config.presentation_revision + (1 if presentation_change else 0)\n'''
+          if old not in text:
+              raise SystemExit('config postloop anchor missing')
+          p.write_text(text.replace(old, new))
+
+          p = Path('src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py')
+          text = p.read_text()
+          if 'import hashlib\n' not in text:
+              text = text.replace('from __future__ import annotations\n', 'from __future__ import annotations\n\nimport hashlib\n')
+          start = text.index('    def cloud_safe_projection(self) -> dict[str, object]:\n')
+          end = text.index('\n\n@lru_cache(maxsize=1)', start)
+          function = '''    def cloud_safe_projection(self) -> dict[str, object]:\n        opaque_identity = "action:sha256:" + hashlib.sha256(self.action_identity.encode("utf-8")).hexdigest()\n        return {\n            "schema_version": self.schema_version,\n            "explanation_version": self.explanation_version,\n            "renderer_version": self.renderer_version,\n            "action_identity": opaque_identity,\n            "canonical_identity": None,\n            "catalog_digest": None,\n            "locale": self.locale,\n            "kind": self.kind,\n            "confidence": self.confidence,\n            "uncertainty_reasons": [],\n            "everyday": {\n                "headline_message_id": "guard.action.protected",\n                "headline": "Protected action",\n                "summary_message_id": "guard.action.cloud_safe_summary",\n                "summary": "Guard recorded a protected action. Sensitive details stayed on this device.",\n                "impact_message_id": None,\n                "impact": None,\n                "why_guard_intervened_message_id": None,\n                "why_guard_intervened": None,\n                "recommendation_message_id": None,\n                "recommendation": None,\n                "actor_label": "Guard",\n                "targets": [],\n                "consequences": [],\n                "safer_alternatives": [],\n            },\n            "technical": {\n                "available": False,\n                "unavailable_reason": "Technical content stays on the protected device.",\n                "action_type": self.kind,\n                "command_display": None,\n                "normalized_command_display": None,\n                "executable": None,\n                "arguments_display": None,\n                "dialect": None,\n                "transport": None,\n                "working_scope_display": None,\n                "wrappers": [],\n                "segments": [],\n                "extension_ids": [],\n                "rule_ids": [],\n                "reason_codes": [],\n                "policy_source": None,\n                "parse_confidence": None,\n                "proof_level": None,\n                "receipt_id": None,\n                "action_id": None,\n            },\n            "redaction": {\n                "level": "redacted",\n                "policy_version": ACTION_EXPLANATION_REDACTION_VERSION,\n                "omitted_fields": [\n                    "action_identity.raw", "canonical_identity", "catalog_digest",\n                    "everyday.actor_label", "everyday.targets", "everyday.consequences",\n                    "everyday.safer_alternatives", "everyday.user_derived_copy",\n                    "technical.command", "technical.paths", "technical.arguments",\n                    "technical.extension_ids", "technical.rule_ids", "technical.reason_codes",\n                    "technical.policy_source", "technical.receipt_id", "technical.action_id",\n                ],\n                "truncated_fields": [],\n                "secret_like_values_removed": True,\n            },\n        }\n'''
+          p.write_text(text[:start] + function + text[end:])
+
+          p = Path('src/codex_plugin_scanner/guard/cli/commands_parser_desktop.py')
+          text = p.read_text()
+          text = text.replace('metavar="{bootstrap,dashboard-update}",', 'metavar="{bootstrap,presentation-set,dashboard-update}",')
+          anchor = '    dashboard_update_parser = desktop_subparsers.add_parser("dashboard-update", help=argparse.SUPPRESS)\n'
+          addition = '''    presentation_parser = desktop_subparsers.add_parser("presentation-set", help=argparse.SUPPRESS)\n    _add_guard_common_args(presentation_parser, suppress_defaults=True)\n    presentation_parser.add_argument("--mode", choices=("everyday", "technical"), required=True)\n    presentation_parser.add_argument("--expected-revision", type=int, default=None)\n    presentation_parser.add_argument("--json", action="store_true", default=argparse.SUPPRESS)\n'''
+          if anchor not in text:
+              raise SystemExit('desktop parser anchor missing')
+          p.write_text(text.replace(anchor, addition + anchor))
+
+          p = Path('src/codex_plugin_scanner/guard/cli/commands_dispatch_desktop.py')
+          text = p.read_text()
+          helper_anchor = '\ndef build_desktop_bootstrap_payload(\n'
+          helper = '''\ndef _presentation_projection(config: GuardConfig) -> dict[str, object]:\n    from ..presentation_mode import resolve_presentation_mode\n\n    resolved = resolve_presentation_mode(\n        local_value=config.presentation_mode,\n        local_explicit=config.presentation_mode_explicit,\n        local_schema_version=config.presentation_schema_version,\n        revision=config.presentation_revision,\n        writable=True,\n    )\n    return {\n        "mode": resolved.value,\n        "source": resolved.source,\n        "explicit": resolved.explicit,\n        "canWrite": resolved.writable,\n        "schemaVersion": resolved.schema_version,\n        "revision": resolved.revision,\n        "diagnostic": resolved.diagnostic,\n    }\n\n'''
+          if helper_anchor not in text:
+              raise SystemExit('desktop helper anchor missing')
+          text = text.replace(helper_anchor, helper + 'def build_desktop_bootstrap_payload(\n', 1)
+          sig_anchor = '    receipt_summary: dict[str, object] | None = None,\n) -> dict[str, object]:\n'
+          sig_repl = '    receipt_summary: dict[str, object] | None = None,\n    presentation: dict[str, object] | None = None,\n) -> dict[str, object]:\n'
+          if sig_anchor not in text:
+              raise SystemExit('desktop signature anchor missing')
+          text = text.replace(sig_anchor, sig_repl, 1)
+          return_anchor = '        "dashboard": {"available": True, "launchCommandSupported": True},\n    }\n'
+          return_repl = '''        "dashboard": {"available": True, "launchCommandSupported": True},\n        "presentation": presentation\n        or {\n            "mode": "everyday",\n            "source": "default",\n            "explicit": False,\n            "canWrite": False,\n            "schemaVersion": 1,\n            "revision": 0,\n            "diagnostic": "presentation_not_supported_by_core",\n        },\n    }\n'''
+          if return_anchor not in text:
+              raise SystemExit('desktop return anchor missing')
+          text = text.replace(return_anchor, return_repl, 1)
+          command_anchor = '''    if getattr(args, "desktop_command", None) != "bootstrap":\n        print("Choose desktop bootstrap.", file=sys.stderr)\n        return 2\n    if context is None or store is None or config is None:\n        raise RuntimeError("Guard Desktop bootstrap requires local Guard context")\n'''
+          command_repl = '''    desktop_command = getattr(args, "desktop_command", None)\n    if desktop_command == "presentation-set":\n        if config is None:\n            raise RuntimeError("Guard Desktop presentation update requires local Guard config")\n        from ..config import update_guard_settings\n\n        resolved_home = getattr(args, "guard_home", None) or guard_home or config.guard_home\n        update_payload: dict[str, object] = {\n            "presentation_mode": args.mode,\n            "presentation_mode_explicit": True,\n        }\n        if getattr(args, "expected_revision", None) is not None:\n            update_payload["presentation_revision"] = args.expected_revision\n        updated = update_guard_settings(\n            resolved_home,\n            update_payload,\n            event_source="desktop-presentation",\n            skip_approval_gate=True,\n        )\n        projected = _presentation_projection(updated)\n        if bool(getattr(args, "json", False)):\n            print(json.dumps(projected, sort_keys=True), file=output_stream or sys.stdout)\n        return 0\n    if desktop_command != "bootstrap":\n        print("Choose desktop bootstrap or presentation-set.", file=sys.stderr)\n        return 2\n    if context is None or store is None or config is None:\n        raise RuntimeError("Guard Desktop bootstrap requires local Guard context")\n'''
+          if command_anchor not in text:
+              raise SystemExit('desktop command anchor missing')
+          text = text.replace(command_anchor, command_repl, 1)
+          call_anchor = '        receipt_summary=receipt_summary,\n    )\n'
+          call_repl = '        receipt_summary=receipt_summary,\n        presentation=_presentation_projection(config),\n    )\n'
+          if call_anchor not in text:
+              raise SystemExit('desktop bootstrap call anchor missing')
+          p.write_text(text.replace(call_anchor, call_repl, 1))
+
+          p = Path('tests/test_guard_action_explanation_contract.py')
+          text = p.read_text()
+          append = '''\n\ndef test_cloud_projection_removes_everyday_identity_and_sensitive_details() -> None:\n    original = _explanation()\n    payload = original.cloud_safe_projection()\n    serialized = __import__("json").dumps(payload, sort_keys=True)\n    everyday = cast(dict[str, object], payload["everyday"])\n    technical = cast(dict[str, object], payload["technical"])\n    assert payload["action_identity"] != original.action_identity\n    assert str(payload["action_identity"]).startswith("action:sha256:")\n    assert payload["canonical_identity"] is None\n    assert everyday["actor_label"] == "Guard"\n    assert everyday["targets"] == []\n    assert everyday["consequences"] == []\n    assert technical["action_id"] is None\n    assert technical["reason_codes"] == []\n    assert "Codex" not in serialized\n    assert "command:v1:abc" not in serialized\n    parse_action_explanation(payload)\n'''
+          if 'test_cloud_projection_removes_everyday_identity_and_sensitive_details' not in text:
+              p.write_text(text + append)
+
+          Path('tests/test_guard_everyday_mode_completion.py').write_text('''from __future__ import annotations\n\nfrom types import SimpleNamespace\n\nfrom codex_plugin_scanner.guard.cli.commands_dispatch_desktop import (\n    _presentation_projection,\n    build_desktop_bootstrap_payload,\n)\nfrom codex_plugin_scanner.guard.config import load_guard_config, update_guard_settings\nfrom codex_plugin_scanner.guard.presentation_mode import resolve_presentation_mode\n\n\ndef test_desktop_bootstrap_old_core_fallback_is_everyday_and_not_writable() -> None:\n    payload = build_desktop_bootstrap_payload(\n        status_payload={"runtime_status": "offline", "managed_harnesses": 0, "harnesses": []},\n        pending_requests=[], approval_history=[], receipts=[], core_version="3.2.0",\n    )\n    assert payload["presentation"] == {\n        "mode": "everyday", "source": "default", "explicit": False, "canWrite": False,\n        "schemaVersion": 1, "revision": 0, "diagnostic": "presentation_not_supported_by_core",\n    }\n\n\ndef test_desktop_projection_is_core_authoritative() -> None:\n    config = SimpleNamespace(\n        presentation_mode="technical", presentation_mode_explicit=True,\n        presentation_schema_version=1, presentation_revision=7,\n    )\n    assert _presentation_projection(config) == {\n        "mode": "technical", "source": "local-explicit", "explicit": True, "canWrite": True,\n        "schemaVersion": 1, "revision": 7, "diagnostic": None,\n    }\n\n\ndef test_explicit_presentation_preference_can_be_cleared_without_revision_drift(tmp_path) -> None:\n    guard_home = tmp_path / "guard"\n    guard_home.mkdir()\n    first = update_guard_settings(\n        guard_home, {"presentation_mode": "technical"}, skip_approval_gate=True\n    )\n    assert first.presentation_mode_explicit is True\n    cleared = update_guard_settings(\n        guard_home,\n        {"presentation_mode_explicit": False, "presentation_revision": first.presentation_revision},\n        skip_approval_gate=True,\n    )\n    assert cleared.presentation_mode == "technical"\n    assert cleared.presentation_mode_explicit is False\n    assert cleared.presentation_revision == first.presentation_revision + 1\n    no_op = update_guard_settings(\n        guard_home,\n        {"presentation_mode_explicit": False, "presentation_revision": cleared.presentation_revision},\n        skip_approval_gate=True,\n    )\n    assert no_op.presentation_revision == cleared.presentation_revision\n\n\ndef test_invalid_local_value_and_cloud_profile_keep_core_dashboard_parity() -> None:\n    resolved = resolve_presentation_mode(\n        local_value="future", local_explicit=False, cloud_profile="technical"\n    )\n    assert resolved.value == "technical"\n    assert resolved.source == "cloud-profile"\n    assert resolved.diagnostic == "unknown_presentation_mode_fell_back_to_everyday"\n''')
+          PY
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: '0.9.26'
+      - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76
+        with:
+          bun-version: '1.3.6'
+      - name: Validate completion
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv sync --frozen --extra dev --python 3.12
+          uv pip install 'ruff==0.15.17' 'pytest==9.0.3'
+          .venv/bin/ruff format \
+            src/codex_plugin_scanner/guard/presentation_mode.py \
+            src/codex_plugin_scanner/guard/presentation_migration.py \
+            src/codex_plugin_scanner/guard/config.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py \
+            src/codex_plugin_scanner/guard/cli/commands_parser_desktop.py \
+            src/codex_plugin_scanner/guard/cli/commands_dispatch_desktop.py \
+            tests/test_guard_action_explanation_contract.py \
+            tests/test_guard_everyday_mode_completion.py
+          .venv/bin/ruff check --fix \
+            src/codex_plugin_scanner/guard/presentation_mode.py \
+            src/codex_plugin_scanner/guard/presentation_migration.py \
+            src/codex_plugin_scanner/guard/config.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py \
+            src/codex_plugin_scanner/guard/cli/commands_parser_desktop.py \
+            src/codex_plugin_scanner/guard/cli/commands_dispatch_desktop.py \
+            tests/test_guard_action_explanation_contract.py \
+            tests/test_guard_everyday_mode_completion.py
+          .venv/bin/ruff check \
+            src/codex_plugin_scanner/guard/presentation_mode.py \
+            src/codex_plugin_scanner/guard/presentation_migration.py \
+            src/codex_plugin_scanner/guard/config.py \
+            src/codex_plugin_scanner/guard/runtime/action_explanation_contract.py \
+            src/codex_plugin_scanner/guard/cli/commands_parser_desktop.py \
+            src/codex_plugin_scanner/guard/cli/commands_dispatch_desktop.py \
+            tests/test_guard_action_explanation_contract.py \
+            tests/test_guard_everyday_mode_completion.py
+          .venv/bin/pytest -q \
+            tests/test_guard_presentation_mode.py \
+            tests/test_guard_action_explanation_contract.py \
+            tests/test_guard_desktop_contract.py \
+            tests/test_guard_everyday_mode_completion.py
+          cd dashboard
+          bun install --frozen-lockfile
+          bun run test
+          bun run build
+      - name: Commit verified completion
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f .github/workflows/tmp-everyday-mode-release-32-completion.yml
+          git add -A
+          git commit -m 'fix: complete Everyday Mode presentation contracts'
+          git push origin HEAD:fix/everyday-mode-release-3.2-completion
