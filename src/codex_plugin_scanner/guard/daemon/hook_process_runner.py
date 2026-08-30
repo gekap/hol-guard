@@ -14,10 +14,7 @@ from .hook_process_capacity import (
     initial_hook_worker_target,
     process_cpu_ratio,
 )
-from .hook_process_protocol import (
-    as_string_object_dict,
-    is_pair,
-)
+from .hook_process_protocol import as_string_object_dict, is_pair
 from .hook_process_request import build_hook_process_review_request, runtime_hook_review_is_idempotent
 from .hook_process_runner_lifecycle import _HOOK_PROCESS_READY_TIMEOUT_SECONDS, HookProcessRunnerLifecycleMixin
 from .hook_process_slot_review import review_hook_worker_slot
@@ -323,10 +320,9 @@ class HookProcessRunner(HookProcessRunnerLifecycleMixin):
             return HookProcessReview(None, "daemon_hook_process_deadline_exhausted")
         self._record_response_metrics(typed_response)
         self._record_route_metric(typed_result.get("route"))
-        accepted_review = HookProcessReview(typed_response, None)
         if time.monotonic() >= review_deadline:
             return HookProcessReview(None, "daemon_hook_process_deadline_exhausted")
-        return accepted_review
+        return HookProcessReview(typed_response, None)
 
     def wait_for_capacity(self, *, minimum_workers: int, timeout_seconds: float) -> bool:
         if not 1 <= minimum_workers <= self._process_limit:

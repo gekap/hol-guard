@@ -9,40 +9,26 @@ import fnmatch
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Final
 
-SCHEMA: Final = "hol-guard.hook-data-plane-ownership.v2"
+if __package__ is None:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from scripts.ci.hook_data_plane_ownership_contract import (
+    SCHEMA,
+    load_manifest,
+    registered_harnesses,
+)
+
 MANIFEST = Path("docs/guard/contracts/hook-data-plane-ownership.v2.json")
-NODE_CLASSES: Final = frozenset(
-    {
-        "rust_semantic",
-        "rust_io",
-        "python_semantic",
-        "python_transport",
-        "python_control",
-        "persistence_only",
-    }
-)
-HARNESS_ROUTE_STATUSES: Final = frozenset(
-    {
-        "detected_external_only",
-        "installed_alias_requires_native_normalization",
-        "installed_canonical",
-        "installed_canonical_source_ref",
-        "installed_cli_bridge",
-        "installed_command_only",
-        "installed_observation_only",
-        "normalizer_only_not_installed",
-        "preflight_only",
-        "unavailable",
-    }
-)
 SELF_PROTECTED_PATHS: Final = frozenset(
     {
         ".github/workflows/native-wheel-ci.yml",
         ".github/workflows/rust-authority-ownership.yml",
         "docs/guard/contracts/hook-data-plane-ownership.v2.json",
+        "scripts/ci/hook_data_plane_ownership_contract.py",
         "scripts/ci/rust_authority_ownership_gate.py",
     }
 )
@@ -105,98 +91,11 @@ def _python_imports_function(path: Path, module_suffix: str, name: str) -> bool:
 
 
 def _registered_harnesses() -> frozenset[str]:
-    path = Path("src/codex_plugin_scanner/guard/adapters/contracts.py")
-    tree = ast.parse(_read(path), filename=str(path))
-    harnesses: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
-            continue
-        if node.func.id != "HarnessProtectionContract":
-            continue
-        value = next((keyword.value for keyword in node.keywords if keyword.arg == "harness"), None)
-        if isinstance(value, ast.Constant) and isinstance(value.value, str):
-            harnesses.add(value.value)
-    if not harnesses:
-        raise RuntimeError("registered harness inventory is empty")
-    return frozenset(harnesses)
+    return registered_harnesses()
 
 
 def _manifest() -> dict[str, object]:
-    value = json.loads(_read(MANIFEST))
-    if not isinstance(value, dict) or value.get("schema") != SCHEMA:
-        raise RuntimeError("hook data-plane ownership manifest has an invalid schema")
-    for key in ("audit_baseline", "implementation_base"):
-        digest = value.get(key)
-        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{40}", digest) is None:
-            raise RuntimeError(f"hook data-plane ownership manifest has an invalid {key}")
-    if value.get("target_branch") != "main":
-        raise RuntimeError("hook data-plane ownership target must remain main")
-
-    registered_harnesses = _registered_harnesses()
-    harnesses = value.get("supported_harnesses")
-    if not isinstance(harnesses, list) or set(harnesses) != registered_harnesses:
-        raise RuntimeError("hook data-plane ownership harness inventory is incomplete")
-    harness_routes = value.get("harness_routes")
-    if not isinstance(harness_routes, dict) or set(harness_routes) != registered_harnesses:
-        raise RuntimeError("hook data-plane route inventory is incomplete")
-    for harness, route in harness_routes.items():
-        if not isinstance(route, dict) or set(route) != {"pre_tool_use", "post_tool_use"}:
-            raise RuntimeError(f"hook data-plane route is incomplete: {harness}")
-        invalid_statuses = set(route.values()) - HARNESS_ROUTE_STATUSES
-        if invalid_statuses:
-            raise RuntimeError(f"hook data-plane route has an invalid status: {harness}")
-
-    routes = value.get("routes")
-    if not isinstance(routes, list) or {route.get("id") for route in routes if isinstance(route, dict)} != {
-        "http_pre_tool_use",
-        "http_post_tool_use",
-        "cli_pre_tool_use",
-        "cli_post_tool_use",
-    }:
-        raise RuntimeError("hook data-plane production routes are incomplete")
-    for route in routes:
-        if not isinstance(route, dict):
-            raise RuntimeError("hook data-plane production route is invalid")
-        if route.get("target_authority") != "rust" or route.get("python_semantic_fallback_target") is not False:
-            raise RuntimeError(f"hook data-plane target authority is not exclusive: {route.get('id')}")
-        if route.get("native_failure") != "fail_closed":
-            raise RuntimeError(f"hook data-plane route is not fail closed: {route.get('id')}")
-
-    defaults = value.get("production_defaults")
-    if not isinstance(defaults, dict):
-        raise RuntimeError("hook data-plane production defaults are missing")
-    native = defaults.get("HOL_GUARD_NATIVE")
-    binary = defaults.get("HOL_GUARD_NATIVE_BINARY")
-    fast_path = defaults.get("HOL_GUARD_HOOK_FAST_PATH")
-    if not isinstance(native, dict) or native.get("unset") != "auto" or native.get("invalid") != "auto":
-        raise RuntimeError("unset or invalid native mode does not select auto")
-    if not isinstance(binary, dict) or binary.get("auto_override") != "ignored":
-        raise RuntimeError("auto mode may accept a native binary override")
-    if not isinstance(fast_path, dict) or fast_path.get("unset") != "enabled":
-        raise RuntimeError("unset fast-path configuration is not enabled")
-    if defaults.get("runtime_search") != "package_only_no_path" or defaults.get("runtime_download") is not False:
-        raise RuntimeError("production runtime selection is not package-bound")
-
-    nodes = value.get("nodes")
-    if not isinstance(nodes, list) or not nodes:
-        raise RuntimeError("hook data-plane ownership nodes are missing")
-    node_ids: set[str] = set()
-    for node in nodes:
-        if not isinstance(node, dict):
-            raise RuntimeError("hook data-plane ownership node is invalid")
-        node_id = node.get("id")
-        node_class = node.get("class")
-        paths = node.get("paths")
-        if not isinstance(node_id, str) or not node_id or node_id in node_ids:
-            raise RuntimeError("hook data-plane ownership node id is invalid or duplicated")
-        node_ids.add(node_id)
-        if node_class not in NODE_CLASSES:
-            raise RuntimeError(f"hook data-plane ownership class is invalid: {node_id}")
-        if not isinstance(paths, list) or not paths or not all(isinstance(path, str) and path for path in paths):
-            raise RuntimeError(f"hook data-plane ownership paths are missing: {node_id}")
-        for pattern in paths:
-            if not any(Path.cwd().glob(pattern)):
-                raise RuntimeError(f"hook data-plane ownership path has no repository match: {pattern}")
+    value = load_manifest(MANIFEST)
     protected_patterns, owner_patterns = _manifest_patterns(value)
     for path in _repository_matches(protected_patterns):
         if not any(_matches(path, pattern) for pattern in owner_patterns):

@@ -257,6 +257,7 @@
         ".github/workflows/rust-authority-ownership.yml",
         "ci/native_runtime/**",
         "docs/guard/contracts/hook-data-plane-ownership.v2.json",
+        "scripts/ci/hook_data_plane_ownership_contract.py",
         "scripts/ci/rust_authority_ownership_gate.py"
       ],
       "current": "installed evidence and ownership enforcement",
@@ -314,6 +315,7 @@
     ".github/workflows/rust-authority-ownership.yml",
     "ci/native_runtime/**",
     "docs/guard/contracts/hook-data-plane-ownership.v2.json",
+    "scripts/ci/hook_data_plane_ownership_contract.py",
     "scripts/ci/rust_authority_ownership_gate.py"
   ],
   "installed_artifacts": [
