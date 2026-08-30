@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from codex_plugin_scanner.guard.daemon.hook_worker import HookWorker
+from codex_plugin_scanner.guard.daemon.hook_worker import HookWorker, HookWorkerUnsupported
 from codex_plugin_scanner.guard.native_pretool import (
     _decode_pre_tool,
     native_pre_tool_policy_floor,
@@ -55,6 +55,10 @@ def _native_review() -> dict[str, Any]:
         "reason": "HOL Guard requires review because the Rust authority could not prove this action benign.",
         "explicitly_benign": False,
     }
+
+
+def _force_auto(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("codex_plugin_scanner.guard.daemon.hook_worker.native_mode", lambda: "auto")
 
 
 def test_decode_pre_tool_rejects_unbound_command_model() -> None:
@@ -114,7 +118,6 @@ def test_policy_floor_compatibility_helper_still_skips_explicit_off(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The compatibility helper is not reachable from the production hook route."""
     monkeypatch.setattr(
         "codex_plugin_scanner.guard.native_pretool.review_pre_tool_native",
         lambda *_args, **_kwargs: None,
@@ -138,6 +141,7 @@ def test_hook_worker_returns_native_allow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _force_auto(monkeypatch)
     monkeypatch.setattr(
         "codex_plugin_scanner.guard.daemon.hook_worker.review_hook_edge_native",
         lambda **_kwargs: _native_allow("pwd"),
@@ -159,6 +163,7 @@ def test_hook_worker_fails_closed_when_native_hook_edge_is_missing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _force_auto(monkeypatch)
     monkeypatch.setattr(
         "codex_plugin_scanner.guard.daemon.hook_worker.review_hook_edge_native",
         lambda **_kwargs: None,
@@ -176,32 +181,28 @@ def test_hook_worker_fails_closed_when_native_hook_edge_is_missing(
     assert result["reason_code"] == "native_hook_edge_unavailable"
 
 
-def test_hook_worker_environment_off_cannot_restore_python_authority(
+def test_hook_worker_explicit_off_remains_compatibility_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("HOL_GUARD_NATIVE", "off")
-    monkeypatch.setattr(
-        "codex_plugin_scanner.guard.daemon.hook_worker.review_hook_edge_native",
-        lambda **_kwargs: None,
-    )
+    monkeypatch.setattr("codex_plugin_scanner.guard.daemon.hook_worker.native_mode", lambda: "off")
     worker = HookWorker(store=GuardStore(tmp_path / "guard-home"))
-    result = worker.review_http_payload(
-        payload={"hook_event_name": "PreToolUse", "tool_input": {"command": "pwd"}},
-        params={},
-        default_harness="pi",
-        home_dir=tmp_path / "home",
-        guard_home=tmp_path / "guard-home",
-        workspace=tmp_path / "workspace",
-    )
-    assert result["decision"] == "deny"
-    assert result["reason_code"] == "native_hook_edge_unavailable"
+    with pytest.raises(HookWorkerUnsupported):
+        worker.review_http_payload(
+            payload={"hook_event_name": "PreToolUse", "tool_input": {"command": "pwd"}},
+            params={},
+            default_harness="pi",
+            home_dir=tmp_path / "home",
+            guard_home=tmp_path / "guard-home",
+            workspace=tmp_path / "workspace",
+        )
 
 
 def test_hook_worker_keeps_non_command_pretool_in_native_review_surface(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _force_auto(monkeypatch)
     monkeypatch.setattr(
         "codex_plugin_scanner.guard.daemon.hook_worker.review_hook_edge_native",
         lambda **_kwargs: _native_review(),
