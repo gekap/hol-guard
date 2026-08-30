@@ -1,0 +1,63 @@
+name: Apply verified Hermes policy fix
+
+on:
+  push:
+    branches:
+      - fix/hermes-saved-policy-2675
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-hermes-fix-2675
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/hermes-saved-policy-2675
+          fetch-depth: 0
+
+      - name: Verify and decode patch
+        shell: python
+        run: |
+          from __future__ import annotations
+
+          import base64
+          import hashlib
+          import pathlib
+          import zlib
+
+          source = pathlib.Path(".github/patches/hermes-2675.patch.zlib.b64")
+          if not source.is_file():
+              raise SystemExit("verified Hermes patch payload is missing")
+          encoded = "".join(source.read_text(encoding="utf-8").split())
+          patch = zlib.decompress(base64.b64decode(encoded, validate=True))
+          digest = hashlib.sha256(patch).hexdigest()
+          expected = "8f805262e40420df8982d6fbaff7423c2f5085756f695bf241fba1f4083113cb"
+          if digest != expected:
+              raise SystemExit(f"patch digest mismatch: {digest}")
+          pathlib.Path("/tmp/hermes-2675.patch").write_bytes(patch)
+
+      - name: Apply tested patch exactly once
+        run: |
+          git apply --check /tmp/hermes-2675.patch
+          git apply /tmp/hermes-2675.patch
+          rm .github/patches/hermes-2675.patch.zlib.b64
+          rm .github/workflows/apply-hermes-fix-2675.yml
+
+      - name: Commit verified implementation
+        env:
+          BRANCH: fix/hermes-saved-policy-2675
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix(hermes): honor durable saved allow policies"
+          git push origin "HEAD:${BRANCH}"
