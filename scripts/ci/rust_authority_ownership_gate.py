@@ -108,7 +108,7 @@ def _manifest() -> dict[str, object]:
 def _function_source(path: Path, function_name: str) -> str:
     source = _read(path)
     tree = ast.parse(source, filename=str(path))
-    for node in tree.body:
+    for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name:
             segment = ast.get_source_segment(source, node)
             if segment is None:
