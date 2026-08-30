@@ -19,6 +19,7 @@ from typing import Literal, cast
 
 from .codex_hook_launch_runtime import run_isolated_hook_process
 from .native_policy_snapshot import native_policy_snapshot
+from .native_route_receipt import record_native_hook_route
 from .native_runtime_resident import resident_native_request
 from .native_runtime_resilience import (
     NativeRuntimeHealthSnapshot,
@@ -569,6 +570,7 @@ def review_post_tool_native(
                 request.guard_home,
                 reason=status.reason,
             )
+        record_native_hook_route("native_fail_safe")
         return None
 
     envelope = {
@@ -590,6 +592,7 @@ def review_post_tool_native(
     input_text = json.dumps(envelope, separators=(",", ":"), ensure_ascii=False)
     encoded = input_text.encode("utf-8")
     if len(encoded) > _MAX_REQUEST_BYTES:
+        record_native_hook_route("native_fail_safe")
         return None
     timeout_seconds = max(
         0.05,
@@ -614,10 +617,12 @@ def review_post_tool_native(
         resident_error = _native_error(resident_payload)
         if resident_error == "native_overloaded":
             native_record_overload(status.identity.sha256, request.guard_home)
+            record_native_hook_route("native_fail_safe")
             return None
         response = _response_from_payload(resident_payload)
         if response is not None:
             native_record_resident_success(status.identity.sha256, request.guard_home)
+            record_native_hook_route("native_resident")
             return response
         failure_reason = resident_error or "native_resident_invalid_response"
     else:
@@ -637,6 +642,7 @@ def review_post_tool_native(
         request.guard_home,
     ) as acquired:
         if not acquired:
+            record_native_hook_route("native_fail_safe")
             return None
         output = _run_native_process(
             status.identity.path,
@@ -650,6 +656,7 @@ def review_post_tool_native(
                 request.guard_home,
                 reason="native_oneshot_failed",
             )
+            record_native_hook_route("native_fail_safe")
             return None
         try:
             oneshot_payload = json.loads(output)
@@ -662,8 +669,10 @@ def review_post_tool_native(
                 request.guard_home,
                 reason=_native_error(oneshot_payload) or "native_oneshot_invalid_response",
             )
+            record_native_hook_route("native_fail_safe")
             return None
         native_record_oneshot_success(status.identity.sha256, request.guard_home)
+        record_native_hook_route("native_oneshot")
         return response
 
 

@@ -16,7 +16,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from codex_plugin_scanner.guard import codex_hook_windows_job as windows_job_module
-from codex_plugin_scanner.guard import native_runtime as native_runtime_module
 from codex_plugin_scanner.guard import store as guard_store_module
 from codex_plugin_scanner.guard.codex_hook_launch_runtime import (
     BoundedHookProcessResult,
@@ -39,6 +38,10 @@ from codex_plugin_scanner.guard.daemon.hook_process_runner import HookProcessRun
 from codex_plugin_scanner.guard.daemon.hook_process_worker import HookProcessReview, HookWorkerSlot
 from codex_plugin_scanner.guard.daemon.runtime_hook_scheduler import RuntimeHookScheduler
 from codex_plugin_scanner.guard.models import GuardApprovalRequest
+from codex_plugin_scanner.guard.native_route_receipt import (
+    record_native_hook_route,
+    reset_native_hook_route,
+)
 from codex_plugin_scanner.guard.store import GuardStore
 
 
@@ -62,37 +65,45 @@ def test_daemon_start_budget_contains_initial_worker_readiness() -> None:
         daemon_manager_module.GUARD_DAEMON_START_TIMEOUT_SECONDS
         > hook_runner_module._HOOK_PROCESS_READY_TIMEOUT_SECONDS  # pyright: ignore[reportPrivateUsage]
     )
-
-
-def test_route_receipt_requires_a_current_native_claim(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    health = MagicMock(
-        reason="native_ready",
-        resident_failures=0,
-        oneshot_failures=0,
-    )
-    monkeypatch.setattr(native_runtime_module, "native_runtime_health", lambda _guard_home: health)
-
-    assert (
-        hook_entrypoint_module._native_decision_route(  # pyright: ignore[reportPrivateUsage]
-            tmp_path,
-            native_claim=False,
-        )
-        == "python_semantic"
-    )
-    assert (
-        hook_entrypoint_module._native_decision_route(  # pyright: ignore[reportPrivateUsage]
-            tmp_path,
-            native_claim=True,
-        )
-        == "native_resident"
-    )
     assert (
         hook_runner_module._HOOK_PROCESS_READY_TIMEOUT_SECONDS  # pyright: ignore[reportPrivateUsage]
         > hook_entrypoint_module._HOOK_EVALUATOR_READY_TIMEOUT_SECONDS  # pyright: ignore[reportPrivateUsage]
     )
+
+
+def test_route_receipt_requires_a_current_native_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(hook_entrypoint_module, "_native_mode_requires_rust", lambda: True)
+    reset_native_hook_route()
+    assert hook_entrypoint_module._current_decision_route() == "python_semantic"  # pyright: ignore[reportPrivateUsage]
+
+    record_native_hook_route("native_resident")
+    assert hook_entrypoint_module._current_decision_route() == "native_resident"  # pyright: ignore[reportPrivateUsage]
+
+    reset_native_hook_route()
+    assert hook_entrypoint_module._current_decision_route() == "python_semantic"  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setattr(hook_entrypoint_module, "_native_mode_requires_rust", lambda: False)
+    assert hook_entrypoint_module._current_decision_route() == "python_semantic"  # pyright: ignore[reportPrivateUsage]
+
+
+def test_route_receipt_waits_for_metrics_lock(tmp_path: Path) -> None:
+    runner = HookProcessRunner(guard_home=tmp_path, process_limit=1)
+    runner._metrics_lock.acquire()  # pyright: ignore[reportPrivateUsage]
+    thread = threading.Thread(
+        target=runner._record_route_metric,  # pyright: ignore[reportPrivateUsage]
+        args=("native_resident",),
+    )
+    try:
+        thread.start()
+        thread.join(timeout=0.05)
+        assert thread.is_alive()
+    finally:
+        runner._metrics_lock.release()  # pyright: ignore[reportPrivateUsage]
+        thread.join(timeout=1)
+
+    assert runner.stats()["routes"] == {"native_resident": 1}
 
 
 def test_evaluator_becomes_ready_when_store_prewarm_fails(

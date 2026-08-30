@@ -36,6 +36,15 @@ def test_changed_path_gate_maps_live_cli_hook_support(monkeypatch: pytest.Monkey
     assert changed == (path,)
 
 
+def test_changed_path_gate_maps_every_production_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+    path = "src/codex_plugin_scanner/guard/adapters/antigravity.py"
+    monkeypatch.setattr(MODULE, "_changed_files", lambda _base_ref: (path,))
+
+    changed = MODULE._changed_path_gate(MODULE._manifest(), "base")
+
+    assert changed == (path,)
+
+
 def test_contract_inventory_matches_registered_harnesses() -> None:
     manifest = MODULE._manifest()
 
@@ -67,7 +76,24 @@ def test_changed_path_gate_uses_base_scope_when_head_contract_is_narrowed(
         lambda _base_ref: ("rust/new-native-edge/src/main.rs",),
     )
 
-    with pytest.raises(RuntimeError, match="has no ownership mapping"):
+    with pytest.raises(RuntimeError, match=r"protection|ownership|mapping"):
+        MODULE._changed_path_gate(head, "base")
+
+
+def test_contract_only_change_cannot_remove_live_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = MODULE._manifest()
+    head = deepcopy(base)
+    head["nodes"] = [node for node in head["nodes"] if node["id"] != "harness_adapter_registry_and_installation"]
+    monkeypatch.setattr(MODULE, "_manifest_at_ref", lambda _base_ref: base)
+    monkeypatch.setattr(
+        MODULE,
+        "_changed_files",
+        lambda _base_ref: ("docs/guard/contracts/hook-data-plane-ownership.v2.json",),
+    )
+
+    with pytest.raises(RuntimeError, match="live hook data-plane ownership was removed"):
         MODULE._changed_path_gate(head, "base")
 
 

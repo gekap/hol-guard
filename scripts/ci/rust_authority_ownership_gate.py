@@ -263,14 +263,35 @@ def _changed_path_gate(manifest: dict[str, object], base_ref: str | None) -> tup
         base_owners: tuple[str, ...] = ()
     else:
         base_protected, base_owners = _manifest_patterns(base_manifest)
+        _coverage_narrowing_gate(
+            base_protected=base_protected,
+            base_owners=base_owners,
+            head_protected=head_protected,
+            head_owners=head_owners,
+        )
     protected = tuple(dict.fromkeys((*base_protected, *head_protected, *SELF_PROTECTED_PATHS)))
-    owners = tuple(dict.fromkeys((*base_owners, *head_owners)))
     for path in changed:
         if not any(_matches(path, pattern) for pattern in protected):
             continue
+        owners = head_owners if Path(path).exists() else tuple(dict.fromkeys((*base_owners, *head_owners)))
         if not any(_matches(path, pattern) for pattern in owners):
             raise RuntimeError(f"changed hook data-plane path has no ownership mapping: {path}")
     return changed
+
+
+def _coverage_narrowing_gate(
+    *,
+    base_protected: tuple[str, ...],
+    base_owners: tuple[str, ...],
+    head_protected: tuple[str, ...],
+    head_owners: tuple[str, ...],
+) -> None:
+    for path in _repository_matches(base_protected):
+        if not any(_matches(path, pattern) for pattern in head_protected):
+            raise RuntimeError(f"live hook data-plane protection was removed: {path}")
+    for path in _repository_matches(base_owners):
+        if not any(_matches(path, pattern) for pattern in head_owners):
+            raise RuntimeError(f"live hook data-plane ownership was removed: {path}")
 
 
 def _pretool_gate() -> None:
@@ -457,11 +478,7 @@ def _assert_policy_floor_fail_closed(path: Path) -> None:
     for node in ast.walk(fn):
         if isinstance(node, ast.Attribute) and node.attr == "available":
             raise RuntimeError("PreToolUse policy floor still inspects native availability")
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "native_mode"
-        ):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "native_mode":
             raise RuntimeError("PreToolUse policy floor still calls native_mode")
     returns_block = any(
         isinstance(node, ast.Return) and isinstance(node.value, ast.Constant) and node.value.value == "block"

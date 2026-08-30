@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .codex_hook_launch_runtime import run_isolated_hook_process
+from .native_route_receipt import record_native_hook_route
 from .native_runtime import _isolated_environment, _native_error, native_runtime_status
 from .native_runtime_resident import resident_native_request
 from .native_runtime_resilience import (
@@ -49,8 +50,10 @@ def _decode_pre_tool(payload: object, *, command: str) -> dict[str, Any] | None:
         or not isinstance(model, dict)
         or model.get("normalized_text") != command.strip()
     ):
+        record_native_hook_route("native_fail_safe")
         return None
     if explicitly_benign != (decision == "allow" and action == "allow"):
+        record_native_hook_route("native_fail_safe")
         return None
     return payload
 
@@ -75,6 +78,8 @@ def review_pre_tool_native(
         or _PRETOOL_AUTHORITY_FEATURE not in status.capabilities.features
         or timeout_seconds <= 0
     ):
+        if status.mode in {"auto", "force"}:
+            record_native_hook_route("native_fail_safe")
         return None
     request = {
         "command": command,
@@ -84,6 +89,7 @@ def review_pre_tool_native(
     }
     encoded = json.dumps(request, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if len(encoded) > _MAX_REQUEST_BYTES:
+        record_native_hook_route("native_fail_safe")
         return None
     timeout_seconds = min(timeout_seconds, 1.0)
     environment = _isolated_environment()
@@ -108,10 +114,12 @@ def review_pre_tool_native(
                 payload = None
             if _native_error(payload) == "native_overloaded":
                 native_record_overload(status.identity.sha256, guard_home)
+                record_native_hook_route("native_fail_safe")
                 return None
             decoded = _decode_pre_tool(payload, command=command)
             if decoded is not None:
                 native_record_resident_success(status.identity.sha256, guard_home)
+                record_native_hook_route("native_resident")
                 return decoded
         native_record_resident_failure(
             status.identity.sha256,
@@ -120,6 +128,7 @@ def review_pre_tool_native(
         )
     with native_oneshot_lease(status.identity.sha256, guard_home) as acquired:
         if not acquired:
+            record_native_hook_route("native_fail_safe")
             return None
         result = run_isolated_hook_process(
             (str(status.identity.path), "pre-tool", "--stdin"),
@@ -135,6 +144,7 @@ def review_pre_tool_native(
                 guard_home,
                 reason="native_pre_tool_oneshot_failed",
             )
+            record_native_hook_route("native_fail_safe")
             return None
         try:
             decoded = _decode_pre_tool(json.loads(result.stdout), command=command)
@@ -146,8 +156,10 @@ def review_pre_tool_native(
                 guard_home,
                 reason="native_pre_tool_oneshot_invalid",
             )
+            record_native_hook_route("native_fail_safe")
             return None
         native_record_oneshot_success(status.identity.sha256, guard_home)
+        record_native_hook_route("native_oneshot")
         return decoded
 
 

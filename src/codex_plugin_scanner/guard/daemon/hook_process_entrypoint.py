@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, cast
 
 from ..codex_hook_windows_job import assign_current_process_to_windows_hook_job
+from ..native_route_receipt import native_hook_route, reset_native_hook_route
 from ..sqlite_profile import sqlite_error_is_busy_locked
 from .hook_process_protocol import (
     applied_hook_environment,
@@ -210,6 +211,7 @@ def _run_resident_hook_request(
     parsed = _coerce_resident_hook_request(request)
     if parsed is None:
         return {"payload": None, "reason_code": "daemon_hook_process_invalid_request"}
+    reset_native_hook_route()
     if configured_guard_home is not None and parsed.guard_home != Path(configured_guard_home):
         return {"payload": None, "reason_code": "daemon_hook_process_guard_home_mismatch"}
     store_key = str(parsed.guard_home)
@@ -249,10 +251,7 @@ def _run_resident_hook_request(
             return {
                 "payload": worker_payload,
                 "reason_code": None,
-                "route": _native_decision_route(
-                    parsed.guard_home,
-                    native_claim=_native_mode_requires_rust(),
-                ),
+                "route": _current_decision_route(),
             }
     with applied_hook_environment(request):
         config = overlay_synced_guard_policy(
@@ -288,12 +287,7 @@ def _run_resident_hook_request(
                 _claimed_approval_request_id=parsed.claimed_approval_request_id,
             )
         )
-        response_payload = as_string_object_dict(response.get("payload"))
-        reason_code = response_payload.get("reason_code") if response_payload is not None else None
-        response["route"] = _native_decision_route(
-            parsed.guard_home,
-            native_claim=isinstance(reason_code, str) and reason_code.startswith("native_"),
-        )
+        response["route"] = _current_decision_route()
         return response
 
 
@@ -303,20 +297,10 @@ def _native_mode_requires_rust() -> bool:
     return native_mode() in {"auto", "force"}
 
 
-def _native_decision_route(guard_home: Path, *, native_claim: bool) -> str:
-    from ..native_runtime import native_runtime_health
-
-    if not native_claim:
+def _current_decision_route() -> str:
+    if not _native_mode_requires_rust():
         return "python_semantic"
-
-    health = native_runtime_health(guard_home)
-    if health.reason == "native_ready":
-        return "native_resident"
-    if health.reason == "native_oneshot_fallback":
-        return "native_oneshot"
-    if health.resident_failures or health.oneshot_failures:
-        return "native_fail_safe"
-    return "python_semantic"
+    return native_hook_route() or "python_semantic"
 
 
 def _coerce_resident_hook_request(request: dict[str, object]) -> _ResidentHookRequest | None:

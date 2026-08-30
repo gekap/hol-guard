@@ -145,12 +145,8 @@ class HookProcessRunnerLifecycleMixin:
             self._metrics_lock.release()
 
     def _record_route_metric(self, route: object) -> None:
-        if not self._metrics_lock.acquire(blocking=False):
-            return
-        try:
+        with self._metrics_lock:
             increment_bounded_metric(self._routes, route)
-        finally:
-            self._metrics_lock.release()
 
     def _retire_slot(self, slot: HookWorkerSlot, *, graceful: bool = False) -> bool:
         contained = retire_worker_slot(slot, graceful=graceful)
