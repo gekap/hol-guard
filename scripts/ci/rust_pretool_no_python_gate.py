@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove supported command PreToolUse authority is native, with Python as transport only."""
+"""Prove supported PreToolUse authority is Rust with no production Python fallback."""
 
 from __future__ import annotations
 
@@ -37,48 +37,55 @@ def run(root: Path) -> dict[str, object]:
             (
                 "pre-tool-command-authority-v1",
                 'command == "pre-tool"',
-                "PreToolUse(CommandModelRequestV1)",
+                '"hook-edge-v2"',
+                "HookEdge(Value)",
             ),
         )
     )
     failures.extend(
         required_tokens(
             root / "rust/crates/guard-runtime/src/oneshot.rs",
-            ("fn evaluate_pre_tool_bytes", "pre_tool_response", "evaluate_pre_tool_request"),
-        )
-    )
-    command_bridge = root / "src/codex_plugin_scanner/guard/native_pretool.py"
-    failures.extend(
-        required_tokens(
-            command_bridge,
             (
-                "def review_pre_tool_native(",
-                '"pre-tool"',
-                '"operation": "pre_tool_use"',
-                "def native_pre_tool_policy_floor(",
+                "fn evaluate_pre_tool_bytes",
+                "pre_tool_response",
+                "evaluate_pre_tool_request",
+                "evaluate_hook_edge_value",
+                "extract_pre_tool_command",
+                "native_pre_tool_unsupported_review",
             ),
         )
     )
-    bridge_source = read(command_bridge)
-    if "Python remains authoritative" in read(root / "src/codex_plugin_scanner/guard/native_command_model.py"):
-        failures.append("native_command_model.py still describes Python as authoritative")
-    if "Python remains authoritative" in bridge_source:
-        failures.append(f"{command_bridge.as_posix()} still describes Python as authoritative")
-    review_start = bridge_source.find("def review_pre_tool_native(")
-    review_end = bridge_source.find("\ndef native_pre_tool_policy_floor(", review_start)
-    review_body = bridge_source[review_start:review_end] if review_start >= 0 and review_end > review_start else ""
-    if "evaluate_command(" in review_body:
-        failures.append("review_pre_tool_native invokes the Python command evaluator")
-    failures.extend(
-        required_tokens(
-            root / "src/codex_plugin_scanner/guard/daemon/hook_worker.py",
-            (
-                "from ..native_pretool import review_pre_tool_native",
-                'if event_name == "PreToolUse":',
-                "native_pre_tool_unavailable",
-            ),
-        )
-    )
+
+    hook_worker = root / "src/codex_plugin_scanner/guard/daemon/hook_worker.py"
+    hook_source = read(hook_worker)
+    for required in ("review_hook_edge_native", "native_hook_edge_unavailable"):
+        if required not in hook_source:
+            failures.append(f"{hook_worker.as_posix()} missing {required}")
+    for forbidden in (
+        "from ..native_pretool import review_pre_tool_native",
+        "HookReviewEngine",
+        "ContentScanner",
+        "HookDecisionCache",
+        "_pre_tool_command(",
+    ):
+        if forbidden in hook_source:
+            failures.append(f"production hook worker retains Python PreTool semantics: {forbidden}")
+
+    edge = root / "src/codex_plugin_scanner/guard/native_hook_edge.py"
+    edge_source = read(edge)
+    for required in ('"operation": "hook_edge"', '"hook-edge", "--stdin"', "review_hook_edge_native"):
+        if required not in edge_source:
+            failures.append(f"{edge.as_posix()} missing {required}")
+    for forbidden in ("evaluate_command(", "HookReviewEngine", "review_pre_tool_native("):
+        if forbidden in edge_source:
+            failures.append(f"native hook edge bridge invokes Python PreTool semantics: {forbidden}")
+
+    cli = root / "src/codex_plugin_scanner/guard/cli/commands_hook_native_authority.py"
+    cli_source = read(cli)
+    for forbidden in ("native_mode", "_try_source_ref_fast_path", "HookWorkerUnsupported"):
+        if forbidden in cli_source:
+            failures.append(f"production CLI can escape Rust authority: {forbidden}")
+
     result = {
         "schema": SCHEMA,
         "status": "passed" if not failures else "failed",
