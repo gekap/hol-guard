@@ -19,11 +19,7 @@ from .hook_process_request import build_hook_process_review_request, runtime_hoo
 from .hook_process_runner_lifecycle import _HOOK_PROCESS_READY_TIMEOUT_SECONDS, HookProcessRunnerLifecycleMixin
 from .hook_process_slot_review import review_hook_worker_slot
 from .hook_process_spawner import hook_worker_became_isolated, hook_worker_became_ready, spawn_hook_worker
-from .hook_process_worker import (
-    HookProcessReview,
-    HookWorkerSlot,
-    worker_retirement_thread,
-)
+from .hook_process_worker import HookProcessReview, HookWorkerSlot, worker_retirement_thread
 
 _HOOK_PROCESS_MAX_LIMIT = 16
 _HOOK_PROCESS_TIMEOUT_SECONDS = 2.8
@@ -309,6 +305,7 @@ class HookProcessRunner(HookProcessRunnerLifecycleMixin):
                     claimed_approval_request_id=claimed_approval_request_id,
                     _transient_not_ready_retries=_transient_not_ready_retries - 1,
                 )
+            self._record_route_metric(typed_result.get("route"))
             return HookProcessReview(
                 None,
                 reason_code if isinstance(reason_code, str) else "daemon_hook_process_failed",
