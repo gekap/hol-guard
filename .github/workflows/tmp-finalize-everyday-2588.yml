@@ -39,37 +39,68 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch origin release/3.0 feat/everyday-mode-101-200
-          git merge -X ours --no-edit origin/release/3.0
+          if ! git merge --no-edit origin/release/3.0; then
+            conflicted="$(git diff --name-only --diff-filter=U)"
+            unexpected="$(printf '%s\n' "$conflicted" | grep -Ev '^(code-quality-audit\.json|ci/test-suite-ratchet-baseline\.json|ci/code-quality-baseline\.json)$' || true)"
+            if [ -n "$unexpected" ]; then
+              printf 'Unexpected release/3.0 merge conflicts:\n%s\n' "$unexpected"
+              exit 1
+            fi
+            if git diff --name-only --diff-filter=U | grep -qx 'ci/test-suite-ratchet-baseline.json'; then
+              git checkout --theirs ci/test-suite-ratchet-baseline.json
+              git add ci/test-suite-ratchet-baseline.json
+            fi
+            if git diff --name-only --diff-filter=U | grep -qx 'ci/code-quality-baseline.json'; then
+              git checkout --theirs ci/code-quality-baseline.json
+              git add ci/code-quality-baseline.json
+            fi
+            if git diff --name-only --diff-filter=U | grep -qx 'code-quality-audit.json'; then
+              git rm -f code-quality-audit.json
+            fi
+            git commit --no-edit
+          fi
           python - <<'PY'
           from pathlib import Path
 
           p = Path('src/codex_plugin_scanner/guard/runtime/semantic_explanations.py')
           s = p.read_text()
-          s = s.replace(
-              'frozenset({"-d", "--data", "--data-binary", "--form", "--upload-file", "--body", "-infile"})',
-              'frozenset({"-d", "--data", "--data-binary", "--form", "-F", "--upload-file", "-T", "--body", "-infile"})',
-          )
-          old = '''def _normalized_tokens(arguments: Iterable[str]) -> Iterable[str]:\n    for argument in arguments:\n        value = argument.strip().casefold()\n        if value:\n            yield value\n            if "=" in value:\n                yield value.split("=", 1)[0]\n'''
-          new = '''def _normalized_tokens(arguments: Iterable[str]) -> Iterable[str]:\n    for argument in arguments:\n        raw = argument.strip()\n        if not raw:\n            continue\n        # POSIX short options are case-sensitive (curl -f != -F and -t != -T).\n        value = raw if re.fullmatch(r"-[A-Za-z]", raw) else raw.casefold()\n        yield value\n        if "=" in value:\n            yield value.split("=", 1)[0]\n'''
-          if old not in s:
+          old_upload = 'frozenset({"-d", "--data", "--data-binary", "--form", "--upload-file", "--body", "-infile"})'
+          new_upload = 'frozenset({"-d", "--data", "--data-binary", "--form", "-F", "--upload-file", "-T", "--body", "-infile"})'
+          if old_upload in s:
+              s = s.replace(old_upload, new_upload)
+          elif new_upload not in s:
+              raise SystemExit('network upload token set not found')
+
+          old_call = 'tokens = frozenset(_normalized_tokens(args))'
+          new_call = 'tokens = frozenset(_normalized_tokens(args, executable=executable))'
+          if old_call in s:
+              s = s.replace(old_call, new_call)
+          elif new_call not in s:
+              raise SystemExit('normalized token call not found')
+
+          old_tokens = '''def _normalized_tokens(arguments: Iterable[str]) -> Iterable[str]:\n    for argument in arguments:\n        value = argument.strip().casefold()\n        if value:\n            yield value\n            if "=" in value:\n                yield value.split("=", 1)[0]\n'''
+          new_tokens = '''def _normalized_tokens(\n    arguments: Iterable[str], *, executable: str = ""\n) -> Iterable[str]:\n    for argument in arguments:\n        raw = argument.strip()\n        if not raw:\n            continue\n        # curl short options are case-sensitive: -f (fail) is not -F (form),\n        # and -t is not -T (upload-file). Preserve those exact spellings.\n        value = raw if executable == "curl" and re.fullmatch(r"-[A-Za-z]", raw) else raw.casefold()\n        yield value\n        if "=" in value:\n            yield value.split("=", 1)[0]\n'''
+          if old_tokens in s:
+              s = s.replace(old_tokens, new_tokens)
+          elif new_tokens not in s:
               raise SystemExit('normalized token block not found')
-          s = s.replace(old, new)
-          old_host = '''        match = _URL_RE.search(value)\n        if match:\n            return _bounded(match.group(1).strip("[]"), 253)\n'''
-          if old_host not in s:
-              old_host = '''        match = _URL_RE.search(value)\n        if match:\n            return match.group(1).strip("[]")\n'''
-          new_host = '''        match = _URL_RE.search(value)\n        if match:\n            authority = match.group(1)\n            if authority.startswith("["):\n                closing = authority.find("]")\n                authority = authority[1:closing] if closing > 0 else authority.lstrip("[")\n            elif authority.count(":") == 1:\n                authority = authority.rsplit(":", 1)[0]\n            return _bounded(authority, 253)\n'''
-          if old_host not in s:
+
+          old_host = '''def _network_host(input: CommandSemanticInput, arguments: Sequence[str]) -> str | None:\n    for value in input.network_hosts:\n        host = value.strip().strip("[]")\n        if host:\n            return host\n    for argument in arguments:\n        match = _URL_RE.search(argument)\n        if match:\n            return match.group(1).strip("[]")\n    return None\n'''
+          new_host = '''def _network_host(input: CommandSemanticInput, arguments: Sequence[str]) -> str | None:\n    for value in input.network_hosts:\n        host = _normalize_network_host(value)\n        if host:\n            return host\n    for argument in arguments:\n        match = _URL_RE.search(argument)\n        if match:\n            host = _normalize_network_host(match.group(1))\n            if host:\n                return host\n    return None\n\n\ndef _normalize_network_host(value: str) -> str | None:\n    authority = value.strip()\n    if not authority:\n        return None\n    if authority.startswith("["):\n        closing = authority.find("]")\n        authority = authority[1:closing] if closing > 0 else authority.lstrip("[")\n    elif authority.count(":") == 1:\n        host, maybe_port = authority.rsplit(":", 1)\n        if maybe_port.isdigit():\n            authority = host\n    return _bounded(authority, 253)\n'''
+          if old_host in s:
+              s = s.replace(old_host, new_host)
+          elif new_host not in s:
               raise SystemExit('network host block not found')
-          s = s.replace(old_host, new_host)
           p.write_text(s)
 
           p = Path('src/codex_plugin_scanner/guard/runtime/action_explanation_builder.py')
           s = p.read_text()
-          if 'ACTION_EXPLANATION_SCHEMA_VERSION' not in s.split(')', 1)[0]:
-              s = s.replace(
-                  'ACTION_EXPLANATION_REDACTION_VERSION,\n    ACTION_EXPLANATION_RENDERER_VERSION,',
-                  'ACTION_EXPLANATION_REDACTION_VERSION,\n    ACTION_EXPLANATION_RENDERER_VERSION,\n    ACTION_EXPLANATION_SCHEMA_VERSION,\n    ACTION_EXPLANATION_VERSION,',
-              )
+          import_old = '''    ACTION_EXPLANATION_REDACTION_VERSION,\n    ACTION_EXPLANATION_RENDERER_VERSION,\n    GuardActionExplanationV1,'''
+          import_new = '''    ACTION_EXPLANATION_REDACTION_VERSION,\n    ACTION_EXPLANATION_RENDERER_VERSION,\n    ACTION_EXPLANATION_SCHEMA_VERSION,\n    ACTION_EXPLANATION_VERSION,\n    GuardActionExplanationV1,'''
+          if import_old in s:
+              s = s.replace(import_old, import_new)
+          elif 'ACTION_EXPLANATION_SCHEMA_VERSION' not in s or 'ACTION_EXPLANATION_VERSION' not in s:
+              raise SystemExit('contract import block not found')
           s = s.replace(
               '"schema_version": "guard.action-explanation.v1",\n        "explanation_version": "1.0.0",',
               '"schema_version": ACTION_EXPLANATION_SCHEMA_VERSION,\n        "explanation_version": ACTION_EXPLANATION_VERSION,',
@@ -86,6 +117,13 @@ jobs:
                   s = s.replace(marker, extra + marker)
               else:
                   s += extra
+          p.write_text(s)
+
+          p = Path('tests/test_guard_action_explanation_builder.py')
+          s = p.read_text()
+          extra = '''\n\ndef test_compound_filesystem_step_does_not_treat_option_as_operand() -> None:\n    command = parse_canonical_command("rm ./build -rf && echo done")\n    explanation = build_action_explanation(\n        action_envelope={"command": "rm ./build -rf && echo done"},\n        action_identity="compound-operands",\n        actor_label="the app",\n        canonical_command=command,\n    )\n    assert "-rf" not in explanation.everyday.summary\n    assert all(target.label != "-rf" for target in explanation.everyday.targets)\n'''
+          if 'test_compound_filesystem_step_does_not_treat_option_as_operand' not in s:
+              s += extra
           p.write_text(s)
           PY
           rm -f .github/workflows/everyday-mode-source-export-2588.yml
@@ -110,5 +148,7 @@ jobs:
           set -euo pipefail
           rm -f .github/workflows/tmp-finalize-everyday-2588.yml
           git add -A
-          git commit -m 'feat: finalize deterministic Everyday semantics (EVM-101-200)'
+          if ! git diff --cached --quiet; then
+            git commit -m 'feat: finalize deterministic Everyday semantics (EVM-101-200)'
+          fi
           git push origin HEAD:feat/everyday-mode-101-200
