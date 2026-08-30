@@ -1,6 +1,12 @@
 {
   "schema": "hol-guard-rust-authority-ownership.v1",
   "release_branch": "main",
+  "default_runtime_contract": {
+    "native_mode_without_environment": "auto",
+    "hook_fast_path_without_environment": true,
+    "path_runtime_search": false,
+    "decision_time_runtime_download": false
+  },
   "surfaces": {
     "pre_tool_use": {
       "semantic_authority": "rust",
@@ -12,6 +18,25 @@
       "python_semantic_fallback": false,
       "native_failure": "fail_closed"
     },
+    "hook_edge": {
+      "event_and_action_extraction": "rust",
+      "unsupported_pretool": "native_review",
+      "python_semantic_envelope_parsing": false
+    },
+    "resident_client": {
+      "authentication": "rust",
+      "framing": "rust",
+      "request_response_digest_validation": "rust",
+      "socket_io": "rust",
+      "python_lifecycle_supervision": true
+    },
+    "decision_critical_io": {
+      "posttool_output_extraction": "rust",
+      "source_path_classification": "rust",
+      "source_reads": "rust",
+      "source_hashing": "rust",
+      "secret_scanning": "rust"
+    },
     "policy_snapshot": {
       "authority": "rust",
       "generation_monotonic": true,
@@ -19,9 +44,9 @@
     },
     "python_boundary": {
       "allowed": [
-        "authenticated_transport",
+        "resident_lifecycle_supervision",
         "harness_response_rendering",
-        "approval_coordination",
+        "policy_snapshot_transport",
         "asynchronous_non_authoritative_evidence",
         "dashboard_control_plane"
       ],
@@ -30,16 +55,23 @@
         "pretool_risk_classification",
         "pretool_policy_floor",
         "posttool_secret_scanning_fallback",
+        "source_ref_semantic_validation",
+        "resident_client_authentication",
+        "resident_client_framing",
+        "resident_client_socket_io",
         "native_failure_to_python_allow",
-        "native_action_floor_lowering"
+        "native_action_floor_lowering",
+        "production_python_source_ref_fallback"
       ]
     }
   },
   "required_runtime_features": [
     "pre-tool",
+    "hook-edge-v2",
     "post-tool-inline-v1",
     "post-tool-source-read-v1",
     "resident-protocol-v2",
+    "resident-client-v1",
     "policy-snapshot-v1"
   ],
   "required_real_binary_gates": [
