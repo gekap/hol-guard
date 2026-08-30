@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce HOL Guard's permanent Rust runtime authority boundary."""
+"""Enforce HOL Guard's permanent Rust hook/data-plane ownership boundary."""
 
 from __future__ import annotations
 
@@ -58,15 +58,6 @@ def _read(path: Path) -> str:
         raise RuntimeError(f"required authority source is missing: {path}") from exc
 
 
-def _python_imports_function(path: Path, module_suffix: str, name: str) -> bool:
-    tree = ast.parse(_read(path), filename=str(path))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").endswith(module_suffix):
-            if any(alias.name == name for alias in node.names):
-                return True
-    return False
-
-
 def _manifest() -> dict[str, object]:
     value = json.loads(_read(MANIFEST))
     if not isinstance(value, dict) or value.get("schema") != SCHEMA:
@@ -82,91 +73,177 @@ def _manifest() -> dict[str, object]:
             raise RuntimeError(f"Rust authority surface is not exclusive: {key}")
         if surface.get("native_failure") != "fail_closed":
             raise RuntimeError(f"Rust authority surface is not fail closed: {key}")
+
+    hook_edge = surfaces.get("hook_edge")
+    if not isinstance(hook_edge, dict) or hook_edge.get("event_and_action_extraction") != "rust":
+        raise RuntimeError("raw hook event/action extraction is not Rust-owned")
+    if hook_edge.get("python_semantic_envelope_parsing") is not False:
+        raise RuntimeError("Python semantic envelope parsing is still permitted")
+
+    client = surfaces.get("resident_client")
+    if not isinstance(client, dict):
+        raise RuntimeError("resident client ownership surface is missing")
+    for field in ("authentication", "framing", "request_response_digest_validation", "socket_io"):
+        if client.get(field) != "rust":
+            raise RuntimeError(f"resident client {field} is not Rust-owned")
+
+    io_surface = surfaces.get("decision_critical_io")
+    if not isinstance(io_surface, dict) or any(item != "rust" for item in io_surface.values()):
+        raise RuntimeError("decision-critical PostToolUse I/O is not exclusively Rust-owned")
+
+    default_contract = value.get("default_runtime_contract")
+    if not isinstance(default_contract, dict):
+        raise RuntimeError("no-environment production runtime contract is missing")
+    if default_contract.get("native_mode_without_environment") != "auto":
+        raise RuntimeError("unset native mode is not auto")
+    if default_contract.get("hook_fast_path_without_environment") is not True:
+        raise RuntimeError("unset hook fast path is not enabled")
+    if default_contract.get("path_runtime_search") is not False:
+        raise RuntimeError("production runtime contract still permits PATH search")
+    if default_contract.get("decision_time_runtime_download") is not False:
+        raise RuntimeError("production runtime contract still permits decision-time runtime download")
     return value
 
 
-def _pretool_gate() -> None:
-    pretool = Path("src/codex_plugin_scanner/guard/native_pretool.py")
-    if _python_imports_function(pretool, "command_evaluation", "evaluate_command"):
-        raise RuntimeError("native PreToolUse transport imports the Python command evaluator")
-    if "evaluate_command(" in _read(pretool):
-        raise RuntimeError("native PreToolUse transport calls the Python command evaluator")
-    _assert_policy_floor_fail_closed(pretool)
+def _function_source(path: Path, function_name: str) -> str:
+    source = _read(path)
+    tree = ast.parse(source, filename=str(path))
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name:
+            segment = ast.get_source_segment(source, node)
+            if segment is None:
+                raise RuntimeError(f"could not inspect function {function_name} in {path}")
+            return segment
+    raise RuntimeError(f"required function is missing: {path}:{function_name}")
 
-    hook = _read(Path("src/codex_plugin_scanner/guard/daemon/hook_worker.py"))
-    if "review_pre_tool_native" not in hook:
-        raise RuntimeError("PreToolUse hook path is not bound to the native runtime")
-    region = re.search(
-        r'if event_name\s*==\s*"PreToolUse":[\s\S]*?(?=\n\s*if event_name\s*!=\s*"PostToolUse")',
-        hook,
+
+def _hook_worker_gate() -> None:
+    path = Path("src/codex_plugin_scanner/guard/daemon/hook_worker.py")
+    source = _read(path)
+    required = (
+        "review_hook_edge_native",
+        "native_hook_edge_unavailable",
+        "_harness_json_from_native_edge",
     )
-    if region is None:
-        raise RuntimeError("daemon has no Rust PreToolUse authority route")
-    if "self.engine.review(" in region.group(0):
-        raise RuntimeError("PreToolUse can reach the Python HookReviewEngine")
-    if "native_pre_tool_unavailable" not in region.group(0):
-        raise RuntimeError("PreToolUse does not fail closed when native is unavailable")
-    if 'status.mode == "shadow"' not in region.group(0):
-        raise RuntimeError("PreToolUse does not isolate shadow Python rollback")
-    if 'raise HookWorkerUnsupported("native PreToolUse runtime is unavailable")' in region.group(0):
-        shadow_only = re.search(
-            r'if status\.mode == "shadow":\s*raise HookWorkerUnsupported\("native PreToolUse runtime is unavailable"\)',
-            region.group(0),
-        )
-        if shadow_only is None:
-            raise RuntimeError("PreToolUse unavailable path still falls through to Python")
+    missing = [token for token in required if token not in source]
+    if missing:
+        raise RuntimeError(f"daemon hook worker is not bound to native hook edge: {missing}")
+    forbidden = (
+        "HookReviewEngine",
+        "ContentScanner",
+        "HookDecisionCache",
+        "review_pre_tool_native",
+        "review_post_tool_native",
+        "self.engine.review(",
+        "_parse_source_ref(",
+        "_parse_output_summary(",
+        "_pre_tool_command(",
+    )
+    present = [token for token in forbidden if token in source]
+    if present:
+        raise RuntimeError(f"daemon hook worker retains Python semantic/data-plane implementation: {present}")
+    review = _function_source(path, "review_http_payload")
+    if "HookWorkerUnsupported" in review:
+        raise RuntimeError("production daemon hook review can escape native authority")
 
-    command_model = Path("src/codex_plugin_scanner/guard/native_command_model.py")
-    if command_model.exists():
-        model = _read(command_model)
-        if 'status.mode not in {"shadow", "force"}' not in model:
-            raise RuntimeError("command-model bridge is not confined to shadow or force")
-        if "Python remains authoritative" in model:
-            raise RuntimeError("command-model bridge still declares Python authority")
 
+def _rust_hook_edge_gate() -> None:
     runtime = _read(Path("rust/crates/guard-runtime/src/main.rs"))
-    command = _read(Path("rust/crates/guard-command/src/lib.rs"))
-    combined = runtime + "\n" + command
-    if not re.search(r"PreToolUse|pre_tool|pre-tool", combined):
-        raise RuntimeError("Rust runtime does not implement PreToolUse authority")
-
-
-def _posttool_gate() -> None:
-    hook = _read(Path("src/codex_plugin_scanner/guard/daemon/hook_worker.py"))
-    if re.search(
-        r"if response is None:\s*response = self\.engine\.review\(request\)",
-        hook,
-    ):
-        raise RuntimeError("supported PostToolUse still spills into Python semantic evaluation")
-    if 'native_required = mode in {"auto", "force"}' not in hook:
-        raise RuntimeError("PostToolUse auto path is not native-required")
-    if re.search(r'mode == "auto" and native_runtime_status\(\)\.available', hook):
-        raise RuntimeError("PostToolUse still availability-gates native authority")
-
-    native = _read(Path("src/codex_plugin_scanner/guard/native_runtime.py"))
-    if "currently supported Python reference backend remains authoritative" in native:
-        raise RuntimeError("native runtime still declares Python PostToolUse authority")
-
+    oneshot = _read(Path("rust/crates/guard-runtime/src/oneshot.rs"))
     core = _read(Path("rust/crates/guard-hook-core/src/lib.rs"))
-    for required in ("review_post_tool", "read_bounded", "scan_text"):
+    for required in ('"hook-edge-v2"', "HookEdge(Value)", 'command == "hook-edge"'):
+        if required not in runtime:
+            raise RuntimeError(f"Rust hook edge runtime contract is missing: {required}")
+    for required in (
+        "evaluate_hook_edge_value",
+        "hook_event_name",
+        "extract_pre_tool_command",
+        "native_pre_tool_unsupported_review",
+        "review_post_tool",
+    ):
+        if required not in oneshot:
+            raise RuntimeError(f"Rust hook edge implementation is missing: {required}")
+    for required in ("read_bounded", "scan_text", "extract_payload_output", "review_post_tool"):
         if required not in core:
-            raise RuntimeError(f"Rust PostToolUse core is missing {required}")
+            raise RuntimeError(f"Rust PostToolUse decision-critical I/O is missing: {required}")
 
 
-def _mode_gate() -> None:
-    relevant = [
-        Path("src/codex_plugin_scanner/guard/native_runtime.py"),
-        Path("src/codex_plugin_scanner/guard/native_command_model.py"),
-        Path("docs/guard/all-harness-hook-review.md"),
-        Path("docs/guard/harness-support.md"),
-    ]
-    strict_mode = re.compile(r"(?i)(native|rust|runtime)[-_ ]strict|strict[-_ ]mode|mode[=: ]+strict")
-    found: list[str] = []
-    for path in relevant:
-        if path.exists() and strict_mode.search(_read(path)):
-            found.append(str(path))
-    if found:
-        raise RuntimeError(f"retired strict-mode terminology remains: {found}")
+def _resident_client_gate() -> None:
+    runtime = _read(Path("rust/crates/guard-runtime/src/main.rs"))
+    client = _read(Path("rust/crates/guard-runtime/src/resident_client.rs"))
+    for required in (
+        '"resident-client-v1"',
+        'command == "resident-client"',
+        "resident_client::request_unix",
+        "resident_client::request_loopback",
+    ):
+        if required not in runtime:
+            raise RuntimeError(f"Rust resident-client runtime contract is missing: {required}")
+    for required in (
+        "authenticate(",
+        "hmac_sha256",
+        "REQUEST_MAGIC",
+        "RESPONSE_MAGIC",
+        "Sha256::digest(payload)",
+        "response_id_mismatch",
+        "response_digest_mismatch",
+    ):
+        if required not in client:
+            raise RuntimeError(f"Rust resident-client transport is missing: {required}")
+
+    bridge = Path("src/codex_plugin_scanner/guard/native_runtime_resident.py")
+    source = _read(bridge)
+    class_start = source.find("class _ResidentService:")
+    send_start = source.find("    def _send(", class_start)
+    send_end = source.find("\n    def _ensure_started(", send_start)
+    if send_start < 0 or send_end <= send_start:
+        raise RuntimeError("Python resident lifecycle has no bounded _send bridge")
+    send = source[send_start:send_end]
+    for required in ("resident-client", "run_isolated_hook_process"):
+        if required not in send:
+            raise RuntimeError(f"Python resident lifecycle does not delegate {required} to Rust")
+    for forbidden in (
+        "_send_authenticated_unix_request",
+        "_send_authenticated_loopback_request",
+        "_authenticate_client(",
+        "socket.create_connection",
+    ):
+        if forbidden in send:
+            raise RuntimeError(f"production resident client I/O still executes in Python: {forbidden}")
+
+
+def _cli_gate() -> None:
+    hook = _read(Path("src/codex_plugin_scanner/guard/cli/commands_hook.py"))
+    if "try_native_or_source_ref_hook" not in hook:
+        raise RuntimeError("CLI hook path does not consult native authority")
+    path = Path("src/codex_plugin_scanner/guard/cli/commands_hook_native_authority.py")
+    source = _read(path)
+    for forbidden in (
+        "_try_source_ref_fast_path",
+        "native_mode",
+        "HookWorkerUnsupported",
+        "HookReviewEngine",
+        "evaluate_command(",
+    ):
+        if forbidden in source:
+            raise RuntimeError(f"CLI hook path retains Python semantic fallback: {forbidden}")
+    route = _function_source(path, "try_native_or_source_ref_hook")
+    if "try_native_hook_authority" not in route or '_emit("hook"' not in route:
+        raise RuntimeError("CLI hook route does not terminate at native authority")
+
+
+def _default_mode_gate() -> None:
+    native = _read(Path("src/codex_plugin_scanner/guard/native_runtime.py"))
+    config = _read(Path("src/codex_plugin_scanner/guard/config.py"))
+    if '_DEFAULT_NATIVE_MODE: NativeMode = "auto"' not in native:
+        raise RuntimeError("bundled native authority is not the no-env default")
+    if 'os.environ.get(HOOK_FAST_PATH_ENV, "1") == "1"' not in config:
+        raise RuntimeError("resident hook path is not enabled when its environment variable is absent")
+    candidates_start = native.find("def _runtime_candidates()")
+    candidates_end = native.find("\ndef _validate_binary", candidates_start)
+    candidates = native[candidates_start:candidates_end]
+    if "shutil.which" in candidates or "PATH" in candidates:
+        raise RuntimeError("automatic native runtime selection searches PATH")
 
 
 def _policy_and_identity_gate() -> None:
@@ -176,10 +253,10 @@ def _policy_and_identity_gate() -> None:
     release = _read(Path("scripts/verify_native_runtime_release.py"))
     if "guard-policy-snapshot" not in cargo:
         raise RuntimeError("hol-guard-runtime does not link guard-policy-snapshot")
-    if "PolicySnapshot" not in runtime and "policy_snapshot" not in runtime:
+    if "policy_snapshot" not in runtime and "validate_request_policy_snapshot" not in _read(
+        Path("rust/crates/guard-runtime/src/oneshot.rs")
+    ):
         raise RuntimeError("hol-guard-runtime does not consume policy snapshots")
-    if "rule_digest" not in runtime:
-        raise RuntimeError("native policy snapshot is not rule-digest bound")
     for required in (
         "native_manifest_runtime_mismatch",
         "native_manifest_version_mismatch",
@@ -191,8 +268,7 @@ def _policy_and_identity_gate() -> None:
 
 
 def _workflow_gate() -> None:
-    path = Path(".github/workflows/rust-authority-ownership.yml")
-    source = _read(path)
+    source = _read(Path(".github/workflows/rust-authority-ownership.yml"))
     required_paths = (
         '"rust/**"',
         '"src/codex_plugin_scanner/guard/**"',
@@ -220,7 +296,6 @@ def _docs_gate() -> None:
     architecture = _read(Path("docs/guard/all-harness-hook-review.md"))
     support = _read(Path("docs/guard/harness-support.md"))
     forbidden = (
-        "PreToolUse, UserPromptSubmit, and PermissionRequest events raise",
         "causing the server to fall through to the legacy CLI path",
         "Python remains authoritative",
     )
@@ -231,77 +306,23 @@ def _docs_gate() -> None:
         raise RuntimeError("Rust authority boundary is not documented on both harness pages")
 
 
+def _mode_terminology_gate() -> None:
+    relevant = [
+        Path("src/codex_plugin_scanner/guard/native_runtime.py"),
+        Path("src/codex_plugin_scanner/guard/native_command_model.py"),
+        Path("docs/guard/all-harness-hook-review.md"),
+        Path("docs/guard/harness-support.md"),
+    ]
+    strict_mode = re.compile(r"(?i)(native|rust|runtime)[-_ ]strict|strict[-_ ]mode|mode[=: ]+strict")
+    found = [str(path) for path in relevant if path.exists() and strict_mode.search(_read(path))]
+    if found:
+        raise RuntimeError(f"retired strict-mode terminology remains: {found}")
+
+
 def _hygiene_gate() -> None:
     residue = [str(path) for path in TEMPORARY_PATHS if path.exists()]
     if residue:
         raise RuntimeError(f"temporary Rust migration delivery residue remains: {residue}")
-
-
-def _ordered_call_names(node: ast.AST) -> list[str]:
-    names: list[str] = []
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
-            names.append(child.func.id)
-        names.extend(_ordered_call_names(child))
-    return names
-
-
-def _assert_policy_floor_fail_closed(path: Path) -> None:
-    tree = ast.parse(_read(path), filename=str(path))
-    fn = next(
-        (
-            node
-            for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "native_pre_tool_policy_floor"
-        ),
-        None,
-    )
-    if fn is None:
-        raise RuntimeError("native PreToolUse policy floor is missing")
-    for node in ast.walk(fn):
-        if isinstance(node, ast.Attribute) and node.attr == "available":
-            raise RuntimeError("PreToolUse policy floor still inspects native availability")
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "native_mode"
-        ):
-            raise RuntimeError("PreToolUse policy floor still calls native_mode")
-    returns_block = any(
-        isinstance(node, ast.Return) and isinstance(node.value, ast.Constant) and node.value.value == "block"
-        for node in ast.walk(fn)
-    )
-    if not returns_block:
-        raise RuntimeError("PreToolUse policy floor does not fail closed")
-
-
-def _cli_gate() -> None:
-    hook = _read(Path("src/codex_plugin_scanner/guard/cli/commands_hook.py"))
-    if "try_native_or_source_ref_hook" not in hook:
-        raise RuntimeError("CLI hook path does not consult native authority")
-    path = Path("src/codex_plugin_scanner/guard/cli/commands_hook_native_authority.py")
-    tree = ast.parse(_read(path), filename=str(path))
-    fn = next(
-        (
-            node
-            for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "try_native_or_source_ref_hook"
-        ),
-        None,
-    )
-    if fn is None:
-        raise RuntimeError("CLI native authority helper is missing")
-    calls = _ordered_call_names(fn)
-    try:
-        native_idx = calls.index("try_native_hook_authority")
-        source_idx = calls.index("_try_source_ref_fast_path")
-    except ValueError as exc:
-        raise RuntimeError("CLI hook path is missing native authority or source-ref routing") from exc
-    if native_idx > source_idx:
-        raise RuntimeError("CLI hook path consults Python source-ref review before native authority")
-    native_cli = _read(path)
-    if "HookReviewEngine" in native_cli or "evaluate_command(" in native_cli:
-        raise RuntimeError("CLI native authority path still imports a Python semantic replica")
 
 
 def run(root: Path) -> dict[str, object]:
@@ -312,19 +333,17 @@ def run(root: Path) -> dict[str, object]:
 
             os.chdir(root)
         manifest = _manifest()
-        _pretool_gate()
-        _posttool_gate()
-        _mode_gate()
+        _hook_worker_gate()
+        _rust_hook_edge_gate()
+        _resident_client_gate()
+        _cli_gate()
+        _default_mode_gate()
         _policy_and_identity_gate()
         _workflow_gate()
         _docs_gate()
+        _mode_terminology_gate()
         _hygiene_gate()
-        _cli_gate()
-        return {
-            "schema": SCHEMA,
-            "status": "passed",
-            "manifest": manifest,
-        }
+        return {"schema": SCHEMA, "status": "passed", "manifest": manifest}
     finally:
         if Path.cwd() != original:
             import os
@@ -343,4 +362,3 @@ if __name__ == "__main__":
     if parsed.json is not None:
         parsed.json.parent.mkdir(parents=True, exist_ok=True)
         parsed.json.write_text(rendered + "\n", encoding="utf-8")
-    raise SystemExit(0)
