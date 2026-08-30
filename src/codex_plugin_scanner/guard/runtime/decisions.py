@@ -37,6 +37,7 @@ _COMPOSITION_ACTION_FIELDS = (
 _KNOWN_COMPOSITION_ACTION_FIELDS = frozenset((*_COMPOSITION_ACTION_FIELDS, "final_action"))
 _TERMINAL_COMPOSITION_ACTIONS = frozenset({"sandbox-required", "block"})
 _APPROVAL_REUSE_ACCEPTED_REASON = "approval_reuse_accepted"
+_SAVED_POLICY_RULE_APPLIED_REASON = "saved_policy_rule_applied"
 _TRUSTED_REQUEST_OVERRIDE_REASON = "trusted_request_override_exact_context"
 _SAVED_APPROVAL_CLAIM_DISPOSITIONS = frozenset({"consumed", "retained"})
 _DECISION_V2_FIELDS = frozenset(
@@ -694,6 +695,9 @@ def _validate_composition_trace(action: GuardAction, trace: Mapping[str, object]
     saved_state_present = trace.get("saved_state_present", False)
     if not isinstance(saved_state_present, bool):
         raise ValueError("composition_trace.saved_state_present must be a boolean")
+    saved_policy_rule_selected = trace.get("saved_policy_rule_selected", False)
+    if not isinstance(saved_policy_rule_selected, bool):
+        raise ValueError("composition_trace.saved_policy_rule_selected must be a boolean")
 
     runtime_action = parsed["runtime_detector_action"]
     if runtime_action == "block" and action != "block":
@@ -721,6 +725,15 @@ def _validate_composition_trace(action: GuardAction, trace: Mapping[str, object]
         and saved_state_present
         and action in {"allow", "warn"}
     )
+    durable_policy_selected = bool(
+        saved_policy_rule_selected
+        and current_action in {"allow", "warn", "review"}
+        and parsed["saved_action"] == "allow"
+        and saved_state_present
+    )
+    if saved_policy_rule_selected and not durable_policy_selected:
+        raise ValueError("saved policy rule selection must match a suppressible current action")
+    durable_policy_override = durable_policy_selected and action == "allow"
     explicit_approval_override = (trusted_override and action in {"allow", "warn"}) or saved_allow_override
     if runtime_action == "warn" and guard_action_severity(action) < guard_action_severity("warn"):
         raise ValueError("runtime detector warning cannot be erased by the final action")
@@ -737,7 +750,7 @@ def _validate_composition_trace(action: GuardAction, trace: Mapping[str, object]
     strongest_input = max(authority_inputs, key=guard_action_severity, default=None)
     if strongest_input is None or guard_action_severity(action) >= guard_action_severity(strongest_input):
         return
-    if explicit_approval_override:
+    if explicit_approval_override or durable_policy_override:
         return
     raise ValueError("composition_trace final action weakens authority without an explicit allowed override")
 
@@ -942,6 +955,9 @@ def _validate_artifact_approval_projection(
         raise ValueError("composition_trace.saved_state_present must be a boolean")
     if saved_state_present != (saved_action is not None):
         raise ValueError("composition_trace.saved_state_present must match saved approval evidence")
+    saved_policy_rule_selected = trace.get("saved_policy_rule_selected", False)
+    if not isinstance(saved_policy_rule_selected, bool):
+        raise ValueError("composition_trace.saved_policy_rule_selected must be a boolean")
 
     raw_trusted = payload.get("trusted_request_override")
     if not isinstance(raw_trusted, Mapping):
@@ -971,6 +987,19 @@ def _validate_artifact_approval_projection(
         and reuse_reason == "approval_reuse_saved_block"
         and not reuse_should_claim
     )
+    durable_saved_policy = bool(
+        saved_policy_rule_selected
+        and current_action in {"allow", "warn", "review"}
+        and saved_action == "allow"
+        and reuse_action == "allow"
+        and reuse_status == "not-applicable"
+        and reuse_reason == _SAVED_POLICY_RULE_APPLIED_REASON
+        and not reuse_should_claim
+    )
+    if saved_policy_rule_selected and not durable_saved_policy:
+        raise ValueError("saved policy rule evidence must match a durable allow")
+    if reuse_reason == _SAVED_POLICY_RULE_APPLIED_REASON and not durable_saved_policy:
+        raise ValueError("saved policy rule reason requires matching durable policy evidence")
     if reuse_status == "accepted" and not (saved_allow_reuse or saved_block_reuse):
         raise ValueError("accepted approval reuse must be an exact saved allow or block")
     if reuse_should_claim and not saved_allow_reuse:
@@ -1014,6 +1043,16 @@ def _validate_artifact_approval_projection(
             status="accepted",
             reason_code=_TRUSTED_REQUEST_OVERRIDE_REASON,
             artifact_hash=payload.get("approval_context_hash"),
+        )
+
+    if durable_saved_policy:
+        if decision.action == "allow" and decision.reason != _SAVED_POLICY_RULE_APPLIED_REASON:
+            raise ValueError("durable saved policy allow reason must match its evidence")
+        _require_scanner_evidence(
+            payload,
+            source="saved_policy",
+            status="not-applicable",
+            reason_code=_SAVED_POLICY_RULE_APPLIED_REASON,
         )
 
     if claim is not None:

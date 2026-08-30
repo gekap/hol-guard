@@ -83,6 +83,7 @@ _RUNTIME_DETECTOR_BLOCK_REASON = "runtime_detector_block"
 _RUNTIME_DETECTOR_REVIEW_REASON = "runtime_detector_review"
 _RUNTIME_DETECTOR_WARN_REASON = "runtime_detector_warn"
 _SKILL_DIRECTORY_IDENTITY_REASON = "skill_directory_identity_non_reusable"
+_SAVED_POLICY_RULE_APPLIED = "saved_policy_rule_applied"
 
 
 class ArtifactDiff(TypedDict):
@@ -765,6 +766,35 @@ def _removed_consumer_approval_context_token(
     )
 
 
+def _consumer_durable_policy_rule_applies_to_artifact(artifact: GuardArtifact) -> bool:
+    """Keep broad policy separate from exact live-request approvals."""
+
+    return artifact.artifact_type not in {
+        "prompt_request",
+        "file_read_request",
+        "tool_action_request",
+    }
+
+
+def _compose_consumer_durable_allow_policy(current_action: GuardAction) -> ApprovalReuseDecision:
+    """Apply durable allow policy without lowering non-suppressible floors."""
+
+    if current_action in {"allow", "warn", "review"}:
+        return ApprovalReuseDecision(
+            action="allow",
+            status="not-applicable",
+            reason_code=_SAVED_POLICY_RULE_APPLIED,
+            current_action=current_action,
+            saved_action="allow",
+            should_claim=False,
+        )
+    return evaluate_approval_reuse(
+        current_action,
+        "allow",
+        saved_decision_present=True,
+    )
+
+
 def _consumer_saved_allow_validation_reason(
     decision: Mapping[str, object],
     *,
@@ -795,6 +825,7 @@ def _compose_consumer_saved_policy(
     memory_artifact_type: str | None = None,
     memory_artifact_name: str | None = None,
     pending_approval_claims: list[tuple[Mapping[str, object], str, str]] | None = None,
+    allow_durable_policy: bool = False,
 ) -> tuple[ApprovalReuseDecision, bool]:
     lookup = store.resolve_policy_decision_lookup_with_memory_pattern(
         harness,
@@ -813,6 +844,14 @@ def _compose_consumer_saved_policy(
     has_saved_state = saved_decision is not None or ignored_integrity is not None
     validation_reason: ApprovalReuseValidationFailure | None = None
     saved_action: object | None = None
+    if (
+        saved_decision is not None
+        and ignored_integrity is None
+        and allow_durable_policy
+        and saved_decision.get("action") == "allow"
+        and saved_decision.get("artifact_hash") is None
+    ):
+        return _compose_consumer_durable_allow_policy(current_action), True
     if saved_decision is not None:
         saved_action = saved_decision.get("action")
         validation_reason = (
@@ -861,7 +900,8 @@ def _approval_reuse_scanner_evidence(
 ) -> tuple[dict[str, object], ...]:
     if not has_saved_state and reuse.reason_code == APPROVAL_REUSE_NO_SAVED_DECISION:
         return ()
-    return ({"source": "approval_reuse", **reuse.to_evidence()},)
+    evidence_source = "saved_policy" if reuse.reason_code == _SAVED_POLICY_RULE_APPLIED else "approval_reuse"
+    return ({"source": evidence_source, **reuse.to_evidence()},)
 
 
 def _runtime_detector_scanner_evidence(block_reason: str | None) -> tuple[dict[str, object], ...]:
@@ -1109,10 +1149,22 @@ def evaluate_detection(
                 changed=bool(diff["changed"]),
             )
         scanner_action = _default_action_from_verdict(verdict)
-        current_policy_action = most_restrictive_guard_action(
-            current_policy_action,
-            scanner_action,
+        scanner_recommendation_suppressed = bool(
+            current_policy_action == "allow"
+            and scanner_action == "warn"
+            and verdict.suppressible
+            and (
+                configured_action == "allow"
+                or effective_default_action == "allow"
+                or config.default_action == "allow"
+            )
         )
+        applied_scanner_action: GuardAction | None = None if scanner_recommendation_suppressed else scanner_action
+        if applied_scanner_action is not None:
+            current_policy_action = most_restrictive_guard_action(
+                current_policy_action,
+                applied_scanner_action,
+            )
         skill_directory_identity_reusable = _skill_directory_identity_reusable(
             artifact_type=artifact.artifact_type,
             metadata=artifact.metadata,
@@ -1148,6 +1200,7 @@ def evaluate_detection(
             memory_artifact_type=artifact.artifact_type,
             memory_artifact_name=artifact.name,
             pending_approval_claims=pending_approval_claims,
+            allow_durable_policy=_consumer_durable_policy_rule_applies_to_artifact(artifact),
         )
         claimed_saved_approval = _claimed_saved_approval_applies(
             claimed_saved_approval_overrides,
@@ -1236,7 +1289,13 @@ def evaluate_detection(
             "current_action": current_policy_action,
             "saved_action": approval_reuse.saved_action,
             "saved_state_present": has_saved_state,
-            "scanner_action": scanner_action,
+            **(
+                {"saved_policy_rule_selected": True}
+                if approval_reuse.reason_code == _SAVED_POLICY_RULE_APPLIED
+                else {}
+            ),
+            "scanner_action": applied_scanner_action,
+            **({"scanner_recommendation_suppressed": True} if scanner_recommendation_suppressed else {}),
             "raw_scoring_recommendation": verdict.action,
             "scoring_recommendation_non_authoritative": True,
             "trusted_request_override": trusted_request_override,
@@ -1319,6 +1378,8 @@ def evaluate_detection(
                 if runtime_detector_block_reason
                 else "fresh-approval"
                 if trusted_request_override
+                else "saved-policy"
+                if approval_reuse.reason_code == _SAVED_POLICY_RULE_APPLIED
                 else "saved-approval"
                 if approval_reuse.accepted and approval_reuse.saved_action == "allow"
                 else "saved-policy"
@@ -1664,6 +1725,8 @@ def evaluate_detection(
                 if runtime_detector_block_reason
                 else "fresh-approval"
                 if trusted_request_override
+                else "saved-policy"
+                if approval_reuse.reason_code == _SAVED_POLICY_RULE_APPLIED
                 else "saved-approval"
                 if approval_reuse.accepted and approval_reuse.saved_action == "allow"
                 else "saved-policy"
