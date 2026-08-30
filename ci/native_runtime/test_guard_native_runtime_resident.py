@@ -19,7 +19,9 @@ from codex_plugin_scanner.guard.native_runtime_resident import (
 )
 from codex_plugin_scanner.guard.store import GuardStore
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="this lifecycle fixture uses owner-only Unix runtime paths")
+pytestmark = pytest.mark.skipif(
+    os.name == "nt", reason="this lifecycle fixture uses owner-only Unix runtime paths"
+)
 
 
 def _fake_runtime(path: Path) -> Path:
@@ -38,14 +40,20 @@ while True:
 
 
 def _force_auto(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("codex_plugin_scanner.guard.daemon.hook_worker.native_mode", lambda: "auto")
+    monkeypatch.setattr(
+        "codex_plugin_scanner.guard.daemon.hook_worker.native_mode", lambda: "auto"
+    )
 
 
-def test_resident_runtime_reuses_one_contained_service(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resident_runtime_reuses_one_contained_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Lifecycle reuse is Python-owned; client protocol is tested by the real Rust binary suite."""
     monkeypatch.setattr(resident, "_START_TIMEOUT_SECONDS", 2.0)
 
-    def fake_native_client(self: Any, payload: bytes, *, timeout_seconds: float) -> bytes | None:
+    def fake_native_client(
+        self: Any, payload: bytes, *, timeout_seconds: float
+    ) -> bytes | None:
         del timeout_seconds
         if self._auth_token is None:
             return None
@@ -131,7 +139,9 @@ def _posttool_allow() -> dict[str, object]:
     }
 
 
-def test_hook_worker_uses_raw_native_hook_edge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_hook_worker_uses_raw_native_hook_edge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _force_auto(monkeypatch)
     store = GuardStore(tmp_path / "guard-home")
     worker = HookWorker(store=store)
@@ -140,10 +150,16 @@ def test_hook_worker_uses_raw_native_hook_edge(tmp_path: Path, monkeypatch: pyte
     def fake_native(**kwargs: object) -> dict[str, object]:
         nonlocal calls
         calls += 1
-        assert kwargs["payload"] == {"hook_event_name": "PostToolUse", "tool_response": "clean output"}
+        assert kwargs["payload"] == {
+            "hook_event_name": "PostToolUse",
+            "tool_response": "clean output",
+        }
         return _posttool_allow()
 
-    monkeypatch.setattr("codex_plugin_scanner.guard.daemon.hook_worker.review_hook_edge_native", fake_native)
+    monkeypatch.setattr(
+        "codex_plugin_scanner.guard.daemon.hook_worker.review_hook_edge_native",
+        fake_native,
+    )
 
     result = worker.review_http_payload(
         payload={"hook_event_name": "PostToolUse", "tool_response": "clean output"},
@@ -205,7 +221,11 @@ def test_hook_worker_non_command_pretool_stays_native_review(
     )
 
     result = worker.review_http_payload(
-        payload={"hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": {"file_path": "README.md"}},
+        payload={
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Read",
+            "tool_input": {"file_path": "README.md"},
+        },
         params={},
         default_harness="claude-code",
         home_dir=tmp_path,
@@ -221,7 +241,9 @@ def test_hook_worker_explicit_off_stays_outside_native_pretool_route(
 ) -> None:
     store = GuardStore(tmp_path / "guard-home")
     worker = HookWorker(store=store)
-    monkeypatch.setattr("codex_plugin_scanner.guard.daemon.hook_worker.native_mode", lambda: "off")
+    monkeypatch.setattr(
+        "codex_plugin_scanner.guard.daemon.hook_worker.native_mode", lambda: "off"
+    )
 
     with pytest.raises(HookWorkerUnsupported):
         worker.review_http_payload(
