@@ -29,6 +29,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: fleet-extension-contract-integrity-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify-contracts:
     runs-on: ubuntu-24.04
