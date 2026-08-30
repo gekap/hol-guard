@@ -1,0 +1,108 @@
+name: Finalize FEC-101–200 Core
+
+on:
+  push:
+    branches:
+      - feat/fec-101-200-r32
+    paths:
+      - '.github/workflows/fec-101-200-finalize.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
+
+concurrency:
+  group: fec-101-200-core-finalize
+  cancel-in-progress: false
+
+jobs:
+  verify-clean-and-merge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          version: '0.10.9'
+          enable-cache: true
+      - name: Install locked development environment
+        run: uv sync --frozen --extra dev --python 3.12
+      - name: Verify FEC-101–200 changed scope and Managed Controls regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin release/3.2
+          mapfile -t changed_python < <(git diff --name-only origin/release/3.2...HEAD | grep -E '\.py$' || true)
+          mapfile -t changed_tests < <(git diff --name-only origin/release/3.2...HEAD | grep -E '^tests/.*\.py$' || true)
+          test "${#changed_python[@]}" -gt 0
+          uv run ruff check "${changed_python[@]}"
+          uv run ruff format --check "${changed_python[@]}"
+          uv run pytest -q tests/managed_controls
+          if test "${#changed_tests[@]}" -gt 0; then
+            uv run pytest -q "${changed_tests[@]}"
+          fi
+          uv build --wheel
+          git diff --check origin/release/3.2...HEAD
+      - name: Discover the single open batch pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          number="$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&head=hashgraph-online:feat/fec-101-200-r32&base=release%2F3.2&per_page=100" --jq '.[].number' | head -n1)"
+          test -n "$number"
+          count="$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&head=hashgraph-online:feat/fec-101-200-r32&base=release%2F3.2&per_page=100" --jq 'length')"
+          test "$count" = "1"
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+      - name: Allow automated reviewers to finish
+        run: sleep 600
+      - name: Require no unresolved substantive review threads
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved isOutdated comments(first:20){nodes{author{login} body path line originalLine}}}}}}}'
+          gh api graphql -f query="$query" -f owner="$owner" -f repo="$repo" -F number="$PR_NUMBER" > /tmp/threads.json
+          unresolved="$(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select((.isResolved|not) and (.isOutdated|not))] | length' /tmp/threads.json)"
+          if test "$unresolved" != "0"; then
+            jq '.data.repository.pullRequest.reviewThreads.nodes[] | select((.isResolved|not) and (.isOutdated|not))' /tmp/threads.json
+            exit 1
+          fi
+      - name: Remove temporary finalizer
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/fec-101-200-finalize.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore(fec): finalize FEC-101–200 Core branch'
+          git push origin HEAD:${GITHUB_REF_NAME}
+      - name: Merge the verified Core pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 45); do
+            if gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --squash --delete-branch=false \
+              --subject 'feat(guard): persist portable Custom Extension state (FEC-101–200)' \
+              --body 'Implements the verified FEC-101–200 Core identity, persistence, monotonic-revision, transaction, privacy and compatibility batch on release/3.2.'; then
+              exit 0
+            fi
+            sleep 60
+          done
+          exit 1
