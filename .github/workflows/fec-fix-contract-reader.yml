@@ -1,0 +1,134 @@
+name: Repair Fleet Extension reader classification
+
+on:
+  push:
+    branches:
+      - feat/fec-001-100-r32-remediation
+    paths:
+      - .github/workflows/fec-fix-contract-reader.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: ${{ !contains(github.event.head_commit.message, '[skip-fec-materialize]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: true
+      - name: Patch reader classification
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/codex_plugin_scanner/guard/managed_controls/fleet_contracts.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''    if any(
+        error.validator in {
+            "x-hol-maxUtf8Bytes",
+            "maxItems",
+            "minItems",
+            "maxLength",
+            "minLength",
+            "maximum",
+            "minimum",
+        }
+        for error in flattened
+    ):
+        return "fec_limit_exceeded"
+    if any(
+        error.validator == "const" and list(error.absolute_path) == ["schemaVersion"]
+        for error in flattened
+    ):
+        return "fec_unsupported_capability"
+    if any(
+        error.validator == "const"
+        and _path_key(error) in {"continuousEnrollment", "bindingMode", "fingerprintVersion"}
+        for error in flattened
+    ):
+        return "fec_conflicting_entry"
+    if any(
+        error.validator == "format" and _path_key(error) in _TIMESTAMP_FIELDS
+        for error in flattened
+    ):
+        return "fec_invalid_timestamp"
+    if any(
+        error.validator == "pattern" and _path_key(error) in _TIMESTAMP_FIELDS
+        for error in flattened
+    ):
+        return "fec_invalid_timestamp"
+'''
+          new = '''    if any(
+        error.validator == "const" and list(error.absolute_path) == ["schemaVersion"]
+        for error in flattened
+    ):
+        return "fec_unsupported_capability"
+    if any(
+        error.validator == "const"
+        and _path_key(error) in {"continuousEnrollment", "bindingMode", "fingerprintVersion"}
+        for error in flattened
+    ):
+        return "fec_conflicting_entry"
+    if any(
+        error.validator in {"format", "pattern", "maxLength", "minLength", "x-hol-maxUtf8Bytes"}
+        and _path_key(error) in _TIMESTAMP_FIELDS
+        for error in flattened
+    ):
+        return "fec_invalid_timestamp"
+    if any(
+        error.validator in {
+            "x-hol-maxUtf8Bytes",
+            "maxItems",
+            "minItems",
+            "maxLength",
+            "minLength",
+            "maximum",
+            "minimum",
+        }
+        for error in flattened
+    ):
+        return "fec_limit_exceeded"
+'''
+          if old not in text:
+              raise SystemExit('schema-error block not found')
+          text = text.replace(old, new, 1)
+          old = '''    if kind == "assignment":
+        if value.get("continuousEnrollment") is False:
+            _fail("fec_conflicting_entry")
+'''
+          new = '''    if kind == "fleetExtensionConfiguration":
+        entries = value.get("entries")
+        if isinstance(entries, Sequence) and not isinstance(entries, (str, bytes)):
+            for raw_entry in entries:
+                if not isinstance(raw_entry, Mapping):
+                    continue
+                if raw_entry.get("authorityMode") != "managed-restrictive":
+                    continue
+                target = raw_entry.get("target")
+                target_kind = target.get("kind") if isinstance(target, Mapping) else None
+                if (
+                    target_kind not in {"extension", "permission"}
+                    or raw_entry.get("availability") == "enabled"
+                    or raw_entry.get("contextualOutcome")
+                    in {"permit", "review", "observe"}
+                ):
+                    _fail("fec_managed_weaken_forbidden")
+    elif kind == "assignment":
+        if value.get("continuousEnrollment") is False:
+            _fail("fec_conflicting_entry")
+'''
+          if old not in text:
+              raise SystemExit('preclassification block not found')
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+          git rm .github/workflows/fec-fix-contract-reader.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/codex_plugin_scanner/guard/managed_controls/fleet_contracts.py
+          git commit -m 'fix(guard): preserve stable Fleet Extension reasons [skip-fec-materialize]'
+          git push origin HEAD:${GITHUB_REF_NAME}
