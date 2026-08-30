@@ -49,10 +49,10 @@ fn parse_input(bytes: &[u8]) -> Result<([u8; AUTH_TOKEN_BYTES], &[u8]), String> 
     }
     let mut token = [0u8; AUTH_TOKEN_BYTES];
     for (index, pair) in encoded.chunks_exact(2).enumerate() {
-        let high = hex_nibble(pair[0])
-            .ok_or_else(|| "native_resident_client_auth_invalid".to_owned())?;
-        let low = hex_nibble(pair[1])
-            .ok_or_else(|| "native_resident_client_auth_invalid".to_owned())?;
+        let high =
+            hex_nibble(pair[0]).ok_or_else(|| "native_resident_client_auth_invalid".to_owned())?;
+        let low =
+            hex_nibble(pair[1]).ok_or_else(|| "native_resident_client_auth_invalid".to_owned())?;
         token[index] = (high << 4) | low;
     }
     Ok((token, payload))
@@ -69,7 +69,11 @@ fn read_exact_bounded(stream: &mut dyn Read, length: usize) -> Result<Vec<u8>, S
     Ok(bytes)
 }
 
-fn authenticate(stream: &mut (impl Read + Write), token: &[u8; AUTH_TOKEN_BYTES], payload: &[u8]) -> Result<(), String> {
+fn authenticate(
+    stream: &mut (impl Read + Write),
+    token: &[u8; AUTH_TOKEN_BYTES],
+    payload: &[u8],
+) -> Result<(), String> {
     let nonce = unique_bytes(b"hol-guard-resident-client-nonce-v1\0", payload);
     stream
         .write_all(&nonce[..AUTH_NONCE_BYTES])
