@@ -41,4 +41,6 @@ The permanent ownership contract in `ci/rust-authority-ownership.v1.json` requir
 - explicit Python compatibility limited to `off`/`shadow`;
 - fail-closed native failure behavior.
 
+`python scripts/ci/rust_authority_ownership_gate.py --root .` is the executable source-of-truth check for these ownership invariants.
+
 CI builds and lints the complete Rust workspace, runs real-binary PreToolUse/PostToolUse adversarial integration, resident differential and mutation integration, performance gates, and installed native-wheel execution proof. Stable native-wheel and Desktop packaging tests must continue to validate the bundled runtime without requiring native or fast-path environment-variable configuration.
