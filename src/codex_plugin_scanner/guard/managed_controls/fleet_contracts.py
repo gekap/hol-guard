@@ -140,6 +140,24 @@ def _schema_error(errors: Sequence[ValidationError]) -> str:
     if any(error.validator == "required" for error in flattened):
         return "fec_missing_field"
     if any(
+        error.validator == "const" and list(error.absolute_path) == ["schemaVersion"]
+        for error in flattened
+    ):
+        return "fec_unsupported_capability"
+    if any(
+        error.validator == "const"
+        and _path_key(error) in {"continuousEnrollment", "bindingMode", "fingerprintVersion"}
+        for error in flattened
+    ):
+        return "fec_conflicting_entry"
+    if any(
+        error.validator
+        in {"format", "pattern", "maxLength", "minLength", "x-hol-maxUtf8Bytes"}
+        and _path_key(error) in _TIMESTAMP_FIELDS
+        for error in flattened
+    ):
+        return "fec_invalid_timestamp"
+    if any(
         error.validator in {
             "x-hol-maxUtf8Bytes",
             "maxItems",
@@ -152,27 +170,6 @@ def _schema_error(errors: Sequence[ValidationError]) -> str:
         for error in flattened
     ):
         return "fec_limit_exceeded"
-    if any(
-        error.validator == "const" and list(error.absolute_path) == ["schemaVersion"]
-        for error in flattened
-    ):
-        return "fec_unsupported_capability"
-    if any(
-        error.validator == "const"
-        and _path_key(error) in {"continuousEnrollment", "bindingMode", "fingerprintVersion"}
-        for error in flattened
-    ):
-        return "fec_conflicting_entry"
-    if any(
-        error.validator == "format" and _path_key(error) in _TIMESTAMP_FIELDS
-        for error in flattened
-    ):
-        return "fec_invalid_timestamp"
-    if any(
-        error.validator == "pattern" and _path_key(error) in _TIMESTAMP_FIELDS
-        for error in flattened
-    ):
-        return "fec_invalid_timestamp"
     if any(error.validator in {"pattern", "format"} for error in flattened):
         return "fec_invalid_identifier"
     return "fec_invalid_json"
@@ -201,7 +198,24 @@ def _preclassify(kind: ContractKind, value: object) -> None:
     schema_version = value.get("schemaVersion")
     if schema_version is not None and schema_version != CONTRACT_SCHEMAS[kind]:
         _fail("fec_unsupported_capability")
-    if kind == "assignment":
+    if kind == "fleetExtensionConfiguration":
+        entries = value.get("entries")
+        if isinstance(entries, Sequence) and not isinstance(entries, (str, bytes)):
+            for raw_entry in entries:
+                if not isinstance(raw_entry, Mapping):
+                    continue
+                if raw_entry.get("authorityMode") != "managed-restrictive":
+                    continue
+                target = raw_entry.get("target")
+                target_kind = target.get("kind") if isinstance(target, Mapping) else None
+                if (
+                    target_kind not in {"extension", "permission"}
+                    or raw_entry.get("availability") == "enabled"
+                    or raw_entry.get("contextualOutcome")
+                    in {"permit", "review", "observe"}
+                ):
+                    _fail("fec_managed_weaken_forbidden")
+    elif kind == "assignment":
         if value.get("continuousEnrollment") is False:
             _fail("fec_conflicting_entry")
         selector = value.get("selector")
