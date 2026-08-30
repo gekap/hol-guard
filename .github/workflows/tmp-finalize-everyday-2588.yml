@@ -8,8 +8,13 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: everyday-mode-2588-finalize
+  cancel-in-progress: true
+
 jobs:
   finalize:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -27,16 +32,14 @@ jobs:
       - uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76
         with:
           bun-version: '1.3.6'
-      - name: Rebuild on release 3.0 and remediate reviews
+      - name: Reconcile current release 3.0 and remediate reviews
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch origin release/3.0 feat/everyday-mode-101-200
-          SOURCE=7479a1023a589bdeb12696e13b1a3cb1f68b8960
-          git checkout -B feat/everyday-mode-101-200 origin/release/3.0
-          git checkout "$SOURCE" -- dashboard/src/action-explanation.test.tsx dashboard/src/action-explanation.tsx dashboard/src/main.tsx dashboard/src/presentation-mode-provider.tsx docs/guard/everyday-mode/action-explanation-runtime.md docs/guard/everyday-mode/extension-explanation-metadata.md docs/guard/everyday-mode/semantic-explanation-catalog.md src/codex_plugin_scanner/guard/runtime/action_explanation_builder.py src/codex_plugin_scanner/guard/runtime/command_extension_explanations.py src/codex_plugin_scanner/guard/runtime/semantic_explanations.py tests/test_guard_action_explanation_builder.py tests/test_guard_command_extension_explanations.py tests/test_guard_semantic_explanations.py
+          git merge -X ours --no-edit origin/release/3.0
           python - <<'PY'
           from pathlib import Path
 
@@ -46,26 +49,46 @@ jobs:
               'frozenset({"-d", "--data", "--data-binary", "--form", "--upload-file", "--body", "-infile"})',
               'frozenset({"-d", "--data", "--data-binary", "--form", "-F", "--upload-file", "-T", "--body", "-infile"})',
           )
-          s = s.replace(
-              '            return _bounded(match.group(1).strip("[]"), 253)',
-              '            authority = match.group(1)\n            if authority.startswith("["):\n                closing = authority.find("]")\n                authority = authority[1:closing] if closing > 0 else authority.lstrip("[")\n            elif authority.count(":") == 1:\n                authority = authority.rsplit(":", 1)[0]\n            return _bounded(authority, 253)',
-          )
+          old = '''def _normalized_tokens(arguments: Iterable[str]) -> Iterable[str]:\n    for argument in arguments:\n        value = argument.strip().casefold()\n        if value:\n            yield value\n            if "=" in value:\n                yield value.split("=", 1)[0]\n'''
+          new = '''def _normalized_tokens(arguments: Iterable[str]) -> Iterable[str]:\n    for argument in arguments:\n        raw = argument.strip()\n        if not raw:\n            continue\n        # POSIX short options are case-sensitive (curl -f != -F and -t != -T).\n        value = raw if re.fullmatch(r"-[A-Za-z]", raw) else raw.casefold()\n        yield value\n        if "=" in value:\n            yield value.split("=", 1)[0]\n'''
+          if old not in s:
+              raise SystemExit('normalized token block not found')
+          s = s.replace(old, new)
+          old_host = '''        match = _URL_RE.search(value)\n        if match:\n            return _bounded(match.group(1).strip("[]"), 253)\n'''
+          if old_host not in s:
+              old_host = '''        match = _URL_RE.search(value)\n        if match:\n            return match.group(1).strip("[]")\n'''
+          new_host = '''        match = _URL_RE.search(value)\n        if match:\n            authority = match.group(1)\n            if authority.startswith("["):\n                closing = authority.find("]")\n                authority = authority[1:closing] if closing > 0 else authority.lstrip("[")\n            elif authority.count(":") == 1:\n                authority = authority.rsplit(":", 1)[0]\n            return _bounded(authority, 253)\n'''
+          if old_host not in s:
+              raise SystemExit('network host block not found')
+          s = s.replace(old_host, new_host)
           p.write_text(s)
 
           p = Path('src/codex_plugin_scanner/guard/runtime/action_explanation_builder.py')
           s = p.read_text()
-          s = s.replace(
-              'ACTION_EXPLANATION_REDACTION_VERSION,\n    ACTION_EXPLANATION_RENDERER_VERSION,',
-              'ACTION_EXPLANATION_REDACTION_VERSION,\n    ACTION_EXPLANATION_RENDERER_VERSION,\n    ACTION_EXPLANATION_SCHEMA_VERSION,\n    ACTION_EXPLANATION_VERSION,',
-          )
+          if 'ACTION_EXPLANATION_SCHEMA_VERSION' not in s.split(')', 1)[0]:
+              s = s.replace(
+                  'ACTION_EXPLANATION_REDACTION_VERSION,\n    ACTION_EXPLANATION_RENDERER_VERSION,',
+                  'ACTION_EXPLANATION_REDACTION_VERSION,\n    ACTION_EXPLANATION_RENDERER_VERSION,\n    ACTION_EXPLANATION_SCHEMA_VERSION,\n    ACTION_EXPLANATION_VERSION,',
+              )
           s = s.replace(
               '"schema_version": "guard.action-explanation.v1",\n        "explanation_version": "1.0.0",',
               '"schema_version": ACTION_EXPLANATION_SCHEMA_VERSION,\n        "explanation_version": ACTION_EXPLANATION_VERSION,',
           )
           s = s.replace('            operands=tuple(segment.arguments),', '            operands=(),')
           p.write_text(s)
+
+          p = Path('tests/test_guard_semantic_explanations.py')
+          s = p.read_text()
+          marker = '\ndef test_semantic_catalog_digest_changes_when_output_semantics_change'
+          extra = '''\n\ndef test_curl_case_sensitive_short_upload_flags() -> None:\n    form = explain_command(CommandSemanticInput(\n        action_identity="case-form", canonical_identity=None, actor_label="the app",\n        executable="curl", arguments=("-F", "field=data", "https://example.com/upload"),\n    ))\n    upload = explain_command(CommandSemanticInput(\n        action_identity="case-upload", canonical_identity=None, actor_label="the app",\n        executable="curl", arguments=("-T", "artifact.bin", "https://example.com/upload"),\n    ))\n    fail = explain_command(CommandSemanticInput(\n        action_identity="case-fail", canonical_identity=None, actor_label="the app",\n        executable="curl", arguments=("-f", "https://example.com/status"),\n    ))\n    assert form.kind == "network_send"\n    assert upload.kind == "network_send"\n    assert fail.kind == "network_read"\n\n\ndef test_ipv6_host_projection_does_not_include_port() -> None:\n    explanation = explain_command(CommandSemanticInput(\n        action_identity="ipv6", canonical_identity=None, actor_label="the app",\n        executable="curl", arguments=("https://[::1]:8080/path",),\n    ))\n    assert explanation.everyday.targets[0].label == "::1"\n'''
+          if 'test_curl_case_sensitive_short_upload_flags' not in s:
+              if marker in s:
+                  s = s.replace(marker, extra + marker)
+              else:
+                  s += extra
+          p.write_text(s)
           PY
-          rm -f .github/workflows/everyday-mode-source-export-2588.yml .github/workflows/tmp-finalize-everyday-2588.yml
+          rm -f .github/workflows/everyday-mode-source-export-2588.yml
       - name: Install and validate
         shell: bash
         run: |
@@ -85,6 +108,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -f .github/workflows/tmp-finalize-everyday-2588.yml
           git add -A
           git commit -m 'feat: finalize deterministic Everyday semantics (EVM-101-200)'
-          git push --force origin HEAD:feat/everyday-mode-101-200
+          git push origin HEAD:feat/everyday-mode-101-200
