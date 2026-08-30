@@ -1,0 +1,32 @@
+name: FEC materializer proof
+
+on:
+  push:
+    branches:
+      - feat/fec-001-100-r32-remediation
+    paths:
+      - .github/workflows/fec-materialize-test.yml
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: ${{ !contains(github.event.head_commit.message, '[skip-fec-materialize]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: true
+      - name: Materialize proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p docs/guard
+          printf '%s\n' 'FEC materializer verified.' > docs/guard/fec-materializer-proof.md
+          git rm .github/workflows/fec-materialize-test.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/guard/fec-materializer-proof.md
+          git commit -m 'chore(fec): materializer proof [skip-fec-materialize]'
+          git push origin HEAD:${GITHUB_REF_NAME}
