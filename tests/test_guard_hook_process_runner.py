@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from codex_plugin_scanner.guard import codex_hook_windows_job as windows_job_module
+from codex_plugin_scanner.guard import native_runtime as native_runtime_module
 from codex_plugin_scanner.guard import store as guard_store_module
 from codex_plugin_scanner.guard.codex_hook_launch_runtime import (
     BoundedHookProcessResult,
@@ -60,6 +61,33 @@ def test_daemon_start_budget_contains_initial_worker_readiness() -> None:
     assert (
         daemon_manager_module.GUARD_DAEMON_START_TIMEOUT_SECONDS
         > hook_runner_module._HOOK_PROCESS_READY_TIMEOUT_SECONDS  # pyright: ignore[reportPrivateUsage]
+    )
+
+
+def test_route_receipt_requires_a_current_native_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    health = MagicMock(
+        reason="native_ready",
+        resident_failures=0,
+        oneshot_failures=0,
+    )
+    monkeypatch.setattr(native_runtime_module, "native_runtime_health", lambda _guard_home: health)
+
+    assert (
+        hook_entrypoint_module._native_decision_route(  # pyright: ignore[reportPrivateUsage]
+            tmp_path,
+            native_claim=False,
+        )
+        == "python_semantic"
+    )
+    assert (
+        hook_entrypoint_module._native_decision_route(  # pyright: ignore[reportPrivateUsage]
+            tmp_path,
+            native_claim=True,
+        )
+        == "native_resident"
     )
     assert (
         hook_runner_module._HOOK_PROCESS_READY_TIMEOUT_SECONDS  # pyright: ignore[reportPrivateUsage]

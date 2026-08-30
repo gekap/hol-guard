@@ -99,6 +99,7 @@ class HookProcessRunner(HookProcessRunnerLifecycleMixin):
         self._restarts: int = 0
         self._decisions: dict[str, int] = {}
         self._reason_codes: dict[str, int] = {}
+        self._routes: dict[str, int] = {}
 
     def start(self, *, defer_backfill: bool = False) -> None:
         nonblocking_deferred_start = defer_backfill and self._adaptive_capacity is not None
@@ -321,6 +322,7 @@ class HookProcessRunner(HookProcessRunnerLifecycleMixin):
         if time.monotonic() >= review_deadline:
             return HookProcessReview(None, "daemon_hook_process_deadline_exhausted")
         self._record_response_metrics(typed_response)
+        self._record_route_metric(typed_result.get("route"))
         accepted_review = HookProcessReview(typed_response, None)
         if time.monotonic() >= review_deadline:
             return HookProcessReview(None, "daemon_hook_process_deadline_exhausted")
@@ -361,6 +363,7 @@ class HookProcessRunner(HookProcessRunnerLifecycleMixin):
                 "restarts": self._restarts,
                 "decisions": dict(self._decisions),
                 "reason_codes": dict(self._reason_codes),
+                "routes": dict(self._routes),
             }
 
     def set_capacity_listener(self, listener: Callable[[int], None]) -> None:

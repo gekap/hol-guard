@@ -246,7 +246,14 @@ def _run_resident_hook_request(
         except HookWorkerUnsupported:
             pass
         else:
-            return {"payload": worker_payload, "reason_code": None}
+            return {
+                "payload": worker_payload,
+                "reason_code": None,
+                "route": _native_decision_route(
+                    parsed.guard_home,
+                    native_claim=_native_mode_requires_rust(),
+                ),
+            }
     with applied_hook_environment(request):
         config = overlay_synced_guard_policy(
             load_guard_config(parsed.guard_home, workspace=parsed.workspace),
@@ -265,7 +272,7 @@ def _run_resident_hook_request(
             event_file=None,
             json=True,
         )
-        return capture_hook_command(
+        response = capture_hook_command(
             lambda output: _run_guard_hook_command(
                 args,
                 guard_home=parsed.guard_home,
@@ -281,6 +288,35 @@ def _run_resident_hook_request(
                 _claimed_approval_request_id=parsed.claimed_approval_request_id,
             )
         )
+        response_payload = as_string_object_dict(response.get("payload"))
+        reason_code = response_payload.get("reason_code") if response_payload is not None else None
+        response["route"] = _native_decision_route(
+            parsed.guard_home,
+            native_claim=isinstance(reason_code, str) and reason_code.startswith("native_"),
+        )
+        return response
+
+
+def _native_mode_requires_rust() -> bool:
+    from ..native_runtime import native_mode
+
+    return native_mode() in {"auto", "force"}
+
+
+def _native_decision_route(guard_home: Path, *, native_claim: bool) -> str:
+    from ..native_runtime import native_runtime_health
+
+    if not native_claim:
+        return "python_semantic"
+
+    health = native_runtime_health(guard_home)
+    if health.reason == "native_ready":
+        return "native_resident"
+    if health.reason == "native_oneshot_fallback":
+        return "native_oneshot"
+    if health.resident_failures or health.oneshot_failures:
+        return "native_fail_safe"
+    return "python_semantic"
 
 
 def _coerce_resident_hook_request(request: dict[str, object]) -> _ResidentHookRequest | None:

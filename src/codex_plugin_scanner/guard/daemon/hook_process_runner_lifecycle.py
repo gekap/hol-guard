@@ -41,6 +41,7 @@ class HookProcessRunnerLifecycleMixin:
     _restarts: int
     _decisions: dict[str, int]
     _reason_codes: dict[str, int]
+    _routes: dict[str, int]
     wait_for_capacity: Callable[..., bool]
 
     def require_initial_capacity(self) -> None:
@@ -140,6 +141,14 @@ class HookProcessRunnerLifecycleMixin:
         try:
             increment_bounded_metric(self._decisions, decision)
             increment_bounded_metric(self._reason_codes, reason_code)
+        finally:
+            self._metrics_lock.release()
+
+    def _record_route_metric(self, route: object) -> None:
+        if not self._metrics_lock.acquire(blocking=False):
+            return
+        try:
+            increment_bounded_metric(self._routes, route)
         finally:
             self._metrics_lock.release()
 

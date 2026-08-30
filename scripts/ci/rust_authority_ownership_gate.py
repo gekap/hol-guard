@@ -5,13 +5,33 @@ from __future__ import annotations
 
 import argparse
 import ast
+import fnmatch
 import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Final
 
-SCHEMA: Final = "hol-guard-rust-authority-ownership.v1"
-MANIFEST = Path("ci/rust-authority-ownership.v1.json")
+SCHEMA: Final = "hol-guard.hook-data-plane-ownership.v2"
+MANIFEST = Path("docs/guard/contracts/hook-data-plane-ownership.v2.json")
+NODE_CLASSES: Final = frozenset(
+    {
+        "rust_semantic",
+        "rust_io",
+        "python_semantic",
+        "python_transport",
+        "python_control",
+        "persistence_only",
+    }
+)
+SELF_PROTECTED_PATHS: Final = frozenset(
+    {
+        ".github/workflows/native-wheel-ci.yml",
+        ".github/workflows/rust-authority-ownership.yml",
+        "docs/guard/contracts/hook-data-plane-ownership.v2.json",
+        "scripts/ci/rust_authority_ownership_gate.py",
+    }
+)
 
 TEMPORARY_PATHS: Final = (
     Path(".github/workflows/rust-local-toolchain-export.yml"),
@@ -61,28 +81,196 @@ def _read(path: Path) -> str:
 def _python_imports_function(path: Path, module_suffix: str, name: str) -> bool:
     tree = ast.parse(_read(path), filename=str(path))
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").endswith(module_suffix):
-            if any(alias.name == name for alias in node.names):
-                return True
+        if (
+            isinstance(node, ast.ImportFrom)
+            and (node.module or "").endswith(module_suffix)
+            and any(alias.name == name for alias in node.names)
+        ):
+            return True
     return False
+
+
+def _registered_harnesses() -> frozenset[str]:
+    path = Path("src/codex_plugin_scanner/guard/adapters/contracts.py")
+    tree = ast.parse(_read(path), filename=str(path))
+    harnesses: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id != "HarnessProtectionContract":
+            continue
+        value = next((keyword.value for keyword in node.keywords if keyword.arg == "harness"), None)
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            harnesses.add(value.value)
+    if not harnesses:
+        raise RuntimeError("registered harness inventory is empty")
+    return frozenset(harnesses)
 
 
 def _manifest() -> dict[str, object]:
     value = json.loads(_read(MANIFEST))
     if not isinstance(value, dict) or value.get("schema") != SCHEMA:
-        raise RuntimeError("Rust authority ownership manifest has an invalid schema")
-    surfaces = value.get("surfaces")
-    if not isinstance(surfaces, dict):
-        raise RuntimeError("Rust authority ownership manifest has no surfaces")
-    for key in ("pre_tool_use", "post_tool_use"):
-        surface = surfaces.get(key)
-        if not isinstance(surface, dict):
-            raise RuntimeError(f"Rust authority surface is missing: {key}")
-        if surface.get("semantic_authority") != "rust" or surface.get("python_semantic_fallback") is not False:
-            raise RuntimeError(f"Rust authority surface is not exclusive: {key}")
-        if surface.get("native_failure") != "fail_closed":
-            raise RuntimeError(f"Rust authority surface is not fail closed: {key}")
+        raise RuntimeError("hook data-plane ownership manifest has an invalid schema")
+    for key in ("audit_baseline", "implementation_base"):
+        digest = value.get(key)
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{40}", digest) is None:
+            raise RuntimeError(f"hook data-plane ownership manifest has an invalid {key}")
+    if value.get("target_branch") != "main":
+        raise RuntimeError("hook data-plane ownership target must remain main")
+
+    registered_harnesses = _registered_harnesses()
+    harnesses = value.get("supported_harnesses")
+    if not isinstance(harnesses, list) or set(harnesses) != registered_harnesses:
+        raise RuntimeError("hook data-plane ownership harness inventory is incomplete")
+    harness_routes = value.get("harness_routes")
+    if not isinstance(harness_routes, dict) or set(harness_routes) != registered_harnesses:
+        raise RuntimeError("hook data-plane route inventory is incomplete")
+    for harness, route in harness_routes.items():
+        if not isinstance(route, dict) or set(route) != {"pre_tool_use", "post_tool_use"}:
+            raise RuntimeError(f"hook data-plane route is incomplete: {harness}")
+
+    routes = value.get("routes")
+    if not isinstance(routes, list) or {route.get("id") for route in routes if isinstance(route, dict)} != {
+        "http_pre_tool_use",
+        "http_post_tool_use",
+        "cli_pre_tool_use",
+        "cli_post_tool_use",
+    }:
+        raise RuntimeError("hook data-plane production routes are incomplete")
+    for route in routes:
+        if not isinstance(route, dict):
+            raise RuntimeError("hook data-plane production route is invalid")
+        if route.get("target_authority") != "rust" or route.get("python_semantic_fallback_target") is not False:
+            raise RuntimeError(f"hook data-plane target authority is not exclusive: {route.get('id')}")
+        if route.get("native_failure") != "fail_closed":
+            raise RuntimeError(f"hook data-plane route is not fail closed: {route.get('id')}")
+
+    defaults = value.get("production_defaults")
+    if not isinstance(defaults, dict):
+        raise RuntimeError("hook data-plane production defaults are missing")
+    native = defaults.get("HOL_GUARD_NATIVE")
+    binary = defaults.get("HOL_GUARD_NATIVE_BINARY")
+    fast_path = defaults.get("HOL_GUARD_HOOK_FAST_PATH")
+    if not isinstance(native, dict) or native.get("unset") != "auto" or native.get("invalid") != "auto":
+        raise RuntimeError("unset or invalid native mode does not select auto")
+    if not isinstance(binary, dict) or binary.get("auto_override") != "ignored":
+        raise RuntimeError("auto mode may accept a native binary override")
+    if not isinstance(fast_path, dict) or fast_path.get("unset") != "enabled":
+        raise RuntimeError("unset fast-path configuration is not enabled")
+    if defaults.get("runtime_search") != "package_only_no_path" or defaults.get("runtime_download") is not False:
+        raise RuntimeError("production runtime selection is not package-bound")
+
+    nodes = value.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        raise RuntimeError("hook data-plane ownership nodes are missing")
+    node_ids: set[str] = set()
+    for node in nodes:
+        if not isinstance(node, dict):
+            raise RuntimeError("hook data-plane ownership node is invalid")
+        node_id = node.get("id")
+        node_class = node.get("class")
+        paths = node.get("paths")
+        if not isinstance(node_id, str) or not node_id or node_id in node_ids:
+            raise RuntimeError("hook data-plane ownership node id is invalid or duplicated")
+        node_ids.add(node_id)
+        if node_class not in NODE_CLASSES:
+            raise RuntimeError(f"hook data-plane ownership class is invalid: {node_id}")
+        if not isinstance(paths, list) or not paths or not all(isinstance(path, str) and path for path in paths):
+            raise RuntimeError(f"hook data-plane ownership paths are missing: {node_id}")
+        for pattern in paths:
+            if not any(Path.cwd().glob(pattern)):
+                raise RuntimeError(f"hook data-plane ownership path has no repository match: {pattern}")
+    protected_patterns, owner_patterns = _manifest_patterns(value)
+    for path in _repository_matches(protected_patterns):
+        if not any(_matches(path, pattern) for pattern in owner_patterns):
+            raise RuntimeError(f"protected hook data-plane path has no ownership mapping: {path}")
     return value
+
+
+def _matches(path: str, pattern: str) -> bool:
+    return fnmatch.fnmatchcase(path, pattern)
+
+
+def _node_patterns(manifest: dict[str, object]) -> tuple[str, ...]:
+    nodes = manifest.get("nodes")
+    if not isinstance(nodes, list):
+        return ()
+    return tuple(
+        pattern
+        for node in nodes
+        if isinstance(node, dict) and isinstance(node.get("paths"), list)
+        for pattern in node["paths"]
+        if isinstance(pattern, str)
+    )
+
+
+def _manifest_patterns(manifest: dict[str, object]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    protected = manifest.get("protected_change_globs")
+    protected_patterns = (
+        tuple(pattern for pattern in protected if isinstance(pattern, str)) if isinstance(protected, list) else ()
+    )
+    owner_patterns = _node_patterns(manifest)
+    return tuple(dict.fromkeys((*protected_patterns, *owner_patterns, *SELF_PROTECTED_PATHS))), owner_patterns
+
+
+def _repository_matches(patterns: tuple[str, ...]) -> tuple[str, ...]:
+    matches: set[str] = set()
+    for pattern in patterns:
+        for path in Path.cwd().glob(pattern):
+            if path.is_file():
+                matches.add(path.relative_to(Path.cwd()).as_posix())
+    return tuple(sorted(matches))
+
+
+def _manifest_at_ref(base_ref: str | None) -> dict[str, object] | None:
+    if not base_ref or set(base_ref) == {"0"}:
+        return None
+    result = subprocess.run(
+        ["git", "show", f"{base_ref}:{MANIFEST.as_posix()}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict) or payload.get("schema") != SCHEMA:
+        return None
+    return payload
+
+
+def _changed_files(base_ref: str | None) -> tuple[str, ...]:
+    if not base_ref or set(base_ref) == {"0"}:
+        return ()
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "--no-renames", "--diff-filter=ACMRD", f"{base_ref}...HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return tuple(line.strip() for line in result.stdout.splitlines() if line.strip())
+
+
+def _changed_path_gate(manifest: dict[str, object], base_ref: str | None) -> tuple[str, ...]:
+    changed = _changed_files(base_ref)
+    head_protected, head_owners = _manifest_patterns(manifest)
+    base_manifest = _manifest_at_ref(base_ref)
+    if base_manifest is None:
+        base_protected: tuple[str, ...] = ()
+        base_owners: tuple[str, ...] = ()
+    else:
+        base_protected, base_owners = _manifest_patterns(base_manifest)
+    protected = tuple(dict.fromkeys((*base_protected, *head_protected, *SELF_PROTECTED_PATHS)))
+    owners = tuple(dict.fromkeys((*base_owners, *head_owners)))
+    for path in changed:
+        if not any(_matches(path, pattern) for pattern in protected):
+            continue
+        if not any(_matches(path, pattern) for pattern in owners):
+            raise RuntimeError(f"changed hook data-plane path has no ownership mapping: {path}")
+    return changed
 
 
 def _pretool_gate() -> None:
@@ -193,16 +381,12 @@ def _policy_and_identity_gate() -> None:
 def _workflow_gate() -> None:
     path = Path(".github/workflows/rust-authority-ownership.yml")
     source = _read(path)
-    required_paths = (
-        '"rust/**"',
-        '"src/codex_plugin_scanner/guard/**"',
-        '"ci/native_runtime/**"',
-        '"scripts/**"',
-        '".github/workflows/**"',
-    )
-    missing = [value for value in required_paths if value not in source]
-    if missing:
-        raise RuntimeError(f"authority workflow path coverage is incomplete: {missing}")
+    trigger = source.split("permissions:", maxsplit=1)[0]
+    if "paths:" in trigger or "paths-ignore:" in trigger:
+        raise RuntimeError("authority workflow must be selected for every pull request to main")
+    for required in ("pull_request:\n    branches: [main]", "fetch-depth: 0", "--base-ref"):
+        if required not in source:
+            raise RuntimeError(f"authority workflow is missing its always-selected diff gate: {required}")
     required_commands = (
         "rust_pretool_authority_integration.py",
         "rust_posttool_failclosed_integration.py",
@@ -214,6 +398,18 @@ def _workflow_gate() -> None:
     missing_commands = [value for value in required_commands if value not in source]
     if missing_commands:
         raise RuntimeError(f"authority workflow integration coverage is incomplete: {missing_commands}")
+
+    native_wheel = _read(Path(".github/workflows/native-wheel-ci.yml"))
+    native_trigger = native_wheel.split("permissions:", maxsplit=1)[0]
+    if "paths:" in native_trigger or "paths-ignore:" in native_trigger:
+        raise RuntimeError("installed native-wheel proof must be selected for every pull request to main")
+    for required in (
+        "HOL_GUARD_NATIVE HOL_GUARD_NATIVE_BINARY HOL_GUARD_HOOK_FAST_PATH",
+        "Remove-Item Env:HOL_GUARD_HOOK_FAST_PATH",
+        "probe_native_default_auto.py --json native-default-auto.json",
+    ):
+        if required not in native_wheel:
+            raise RuntimeError(f"installed no-env workflow is incomplete: {required}")
 
 
 def _docs_gate() -> None:
@@ -304,7 +500,7 @@ def _cli_gate() -> None:
         raise RuntimeError("CLI native authority path still imports a Python semantic replica")
 
 
-def run(root: Path) -> dict[str, object]:
+def run(root: Path, *, base_ref: str | None = None) -> dict[str, object]:
     original = Path.cwd()
     try:
         if root != original:
@@ -312,6 +508,7 @@ def run(root: Path) -> dict[str, object]:
 
             os.chdir(root)
         manifest = _manifest()
+        changed = _changed_path_gate(manifest, base_ref)
         _pretool_gate()
         _posttool_gate()
         _mode_gate()
@@ -324,6 +521,7 @@ def run(root: Path) -> dict[str, object]:
             "schema": SCHEMA,
             "status": "passed",
             "manifest": manifest,
+            "changed_files_checked": list(changed),
         }
     finally:
         if Path.cwd() != original:
@@ -336,8 +534,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--json", type=Path)
+    parser.add_argument("--base-ref")
     parsed = parser.parse_args()
-    payload = run(parsed.root.resolve())
+    payload = run(parsed.root.resolve(), base_ref=parsed.base_ref)
     rendered = json.dumps(payload, indent=2, sort_keys=True)
     print(rendered)
     if parsed.json is not None:
