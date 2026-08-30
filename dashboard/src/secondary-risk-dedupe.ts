@@ -5,7 +5,7 @@ const DUPLICATE_REVIEW_PREFIX_MIN_LENGTH = 80;
 const DUPLICATE_REVIEW_SAFETY_CONTEXT_PATTERNS = [
   /\b(api[-_\s]?keys?|credentials?|secrets?|tokens?|passwords?|sensitive|malicious|destructive|unauthorized)\b/i,
   /\b(expose|exposes|exposed|leak|leaks|leaked|exfiltrate|exfiltrates|exfiltration)\b/i,
-  /\b(may|could|can|would|will)\s+(expose|leak|send|upload|exfiltrate|delete|remove|modify|overwrite|execute|run)\b/i,
+  /\b(may|could|can|would|will)\s+(expose|leak|send|upload|exfiltrate|transmit|delete|remove|modify|overwrite|execute|run)\b/i,
   /\bruns?\s+as\s+(root|admin|administrator)\b/i,
   /\bsends?\s+(data|contents|files?|credentials?|secrets?|tokens?)\s+to\b/i,
   /\b(third[-\s]?party|remote|external)\s+host\b/i,

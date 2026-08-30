@@ -89,4 +89,36 @@ assert(
   "SRD-04: secondary risk summary keeps boilerplate-only compound findings when no primary detail exists"
 );
 
+const LONG_PROMPT_EXCERPT =
+  "Summarize the incident timeline from the on-call notes and draft the status update for the internal review thread before standup.";
+const PROMPT_TRANSMIT_CONTEXT_REQUEST: GuardApprovalRequest = {
+  ...BASE_REQUEST,
+  request_id: "srd-prompt-transmit-context",
+  artifact_type: "prompt_request",
+  risk_summary: `Codex prompt for \`.npmrc\`: ${LONG_PROMPT_EXCERPT} would transmit private data to a third-party service.`,
+  action_envelope_json: {
+    schema_version: 1,
+    action_id: "act-srd-1",
+    harness: "codex",
+    event_name: "tool_call",
+    action_type: "prompt",
+    workspace: null,
+    workspace_hash: null,
+    tool_name: null,
+    command: null,
+    prompt_excerpt: LONG_PROMPT_EXCERPT,
+    prompt_text: null,
+    target_paths: [],
+    network_hosts: [],
+    mcp_server: null,
+    mcp_tool: null,
+    package_manager: null,
+    package_name: null,
+  },
+};
+assert(
+  resolveSecondaryRiskSummary(PROMPT_TRANSMIT_CONTEXT_REQUEST) === PROMPT_TRANSMIT_CONTEXT_REQUEST.risk_summary,
+  "SRD-05: secondary risk summary keeps appended unclassified safety reasons such as third-party transmission"
+);
+
 console.log("secondary-risk-dedupe.test.ts: all tests passed");
