@@ -20,10 +20,19 @@ def _post_tool_payload() -> dict[str, object]:
     }
 
 
+def _force_auto(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("codex_plugin_scanner.guard.daemon.hook_worker.native_mode", lambda: "auto")
+    monkeypatch.setattr(
+        "codex_plugin_scanner.guard.cli.commands_hook_native_authority.native_mode",
+        lambda: "auto",
+    )
+
+
 def test_hook_worker_fails_closed_when_native_hook_edge_is_missing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _force_auto(monkeypatch)
     monkeypatch.setattr(
         "codex_plugin_scanner.guard.daemon.hook_worker.review_hook_edge_native",
         lambda **_kwargs: None,
@@ -45,6 +54,8 @@ def test_hook_worker_fails_closed_when_native_hook_edge_raises(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _force_auto(monkeypatch)
+
     def broken_edge(**_kwargs: object) -> None:
         raise RuntimeError("native transport failed")
 
@@ -69,6 +80,7 @@ def test_hook_worker_calls_native_hook_edge_once_on_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _force_auto(monkeypatch)
     called = {"native": 0}
 
     def missing_native(**_kwargs: object) -> None:
@@ -115,6 +127,7 @@ def test_hook_worker_records_activity_when_native_hook_edge_is_unavailable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _force_auto(monkeypatch)
     monkeypatch.setattr(
         "codex_plugin_scanner.guard.daemon.hook_worker.review_hook_edge_native",
         lambda **_kwargs: None,
@@ -130,7 +143,7 @@ def test_hook_worker_records_activity_when_native_hook_edge_is_unavailable(
         workspace=tmp_path / "workspace",
     )
     assert result["reason_code"] == "native_hook_edge_unavailable"
-    assert not hasattr(worker, "_engine")
+    assert worker._engine is None
     assert len(writer.calls) == 1
     assert writer.calls[0]["event"] == "PostToolUse"
     assert writer.calls[0]["harness"] == "pi"
@@ -140,6 +153,7 @@ def test_cli_posttool_uses_native_hook_edge_not_python_engine(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _force_auto(monkeypatch)
     monkeypatch.setattr(
         "codex_plugin_scanner.guard.daemon.hook_worker.review_hook_edge_native",
         lambda **_kwargs: None,
@@ -152,13 +166,17 @@ def test_cli_posttool_uses_native_hook_edge_not_python_engine(
         workspace=tmp_path / "workspace",
         store=GuardStore(tmp_path / "guard-home"),
     )
+    assert result is not None
     assert result["reason_code"] == "native_hook_edge_unavailable"
 
 
-def test_cli_off_environment_cannot_restore_python_source_ref_path(
+def test_cli_explicit_off_selects_compatibility_instead_of_native_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("HOL_GUARD_NATIVE", "off")
+    monkeypatch.setattr(
+        "codex_plugin_scanner.guard.cli.commands_hook_native_authority.native_mode",
+        lambda: "off",
+    )
     result = try_native_hook_authority(
         payload=_post_tool_payload(),
         harness="pi",
@@ -167,7 +185,7 @@ def test_cli_off_environment_cannot_restore_python_source_ref_path(
         workspace=tmp_path / "workspace",
         store=GuardStore(tmp_path / "guard-home"),
     )
-    assert result["reason_code"] == "native_hook_edge_unavailable"
+    assert result is None
 
 
 def test_native_policy_snapshot_generation_is_stable_for_same_policy() -> None:
@@ -183,6 +201,7 @@ def test_native_policy_snapshot_generation_is_stable_for_same_policy() -> None:
 def test_native_posttool_allow_is_rendered_without_python_semantics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _force_auto(monkeypatch)
     monkeypatch.setattr(
         "codex_plugin_scanner.guard.daemon.hook_worker.review_hook_edge_native",
         lambda **_kwargs: {
