@@ -1,0 +1,35 @@
+name: tmp port Everyday foundation to release 3.0
+
+on:
+  push:
+    branches:
+      - feat/everyday-mode-foundation-release-3.0-port
+
+permissions:
+  contents: write
+
+jobs:
+  port:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: feat/everyday-mode-foundation-release-3.0-port
+      - name: Cherry-pick reviewed Everyday foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin 102de4f1e05b7df4bca51e3b00a70f134b847e10
+          if ! git cherry-pick 102de4f1e05b7df4bca51e3b00a70f134b847e10; then
+            echo 'CHERRY_PICK_CONFLICTS_BEGIN'
+            git diff --name-only --diff-filter=U
+            echo 'CHERRY_PICK_CONFLICTS_END'
+            exit 1
+          fi
+          git rm .github/workflows/tmp-port-everyday-foundation-30.yml
+          git commit -m 'chore: remove temporary Everyday foundation port workflow'
+          git push origin HEAD:feat/everyday-mode-foundation-release-3.0-port
