@@ -24,6 +24,20 @@ NODE_CLASSES: Final = frozenset(
         "persistence_only",
     }
 )
+HARNESS_ROUTE_STATUSES: Final = frozenset(
+    {
+        "detected_external_only",
+        "installed_alias_requires_native_normalization",
+        "installed_canonical",
+        "installed_canonical_source_ref",
+        "installed_cli_bridge",
+        "installed_command_only",
+        "installed_observation_only",
+        "normalizer_only_not_installed",
+        "preflight_only",
+        "unavailable",
+    }
+)
 SELF_PROTECTED_PATHS: Final = frozenset(
     {
         ".github/workflows/native-wheel-ci.yml",
@@ -128,6 +142,9 @@ def _manifest() -> dict[str, object]:
     for harness, route in harness_routes.items():
         if not isinstance(route, dict) or set(route) != {"pre_tool_use", "post_tool_use"}:
             raise RuntimeError(f"hook data-plane route is incomplete: {harness}")
+        invalid_statuses = set(route.values()) - HARNESS_ROUTE_STATUSES
+        if invalid_statuses:
+            raise RuntimeError(f"hook data-plane route has an invalid status: {harness}")
 
     routes = value.get("routes")
     if not isinstance(routes, list) or {route.get("id") for route in routes if isinstance(route, dict)} != {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 from copy import deepcopy
 from pathlib import Path
@@ -49,6 +50,24 @@ def test_contract_inventory_matches_registered_harnesses() -> None:
     manifest = MODULE._manifest()
 
     assert set(manifest["supported_harnesses"]) == MODULE._registered_harnesses()
+
+
+def test_contract_inventory_rejects_unknown_route_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = MODULE._manifest()
+    harness_routes = manifest["harness_routes"]
+    assert isinstance(harness_routes, dict)
+    codex_route = harness_routes["codex"]
+    assert isinstance(codex_route, dict)
+    codex_route["pre_tool_use"] = "installed_canoncal"
+    contract = tmp_path / "hook-data-plane-ownership.v2.json"
+    contract.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(MODULE, "MANIFEST", contract)
+
+    with pytest.raises(RuntimeError, match="route has an invalid status: codex"):
+        MODULE._manifest()
 
 
 def test_changed_path_gate_rejects_unmapped_native_source(monkeypatch: pytest.MonkeyPatch) -> None:
