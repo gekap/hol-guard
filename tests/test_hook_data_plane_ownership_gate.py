@@ -116,6 +116,16 @@ def test_contract_only_change_cannot_remove_live_ownership(
         MODULE._changed_path_gate(head, "base")
 
 
+def test_recursive_coverage_narrowing_detects_live_files_on_python_312() -> None:
+    with pytest.raises(RuntimeError, match="live hook data-plane protection was removed"):
+        MODULE._coverage_narrowing_gate(
+            base_protected=("rust/**",),
+            base_owners=(),
+            head_protected=(),
+            head_owners=(),
+        )
+
+
 def test_changed_files_includes_deletions_and_disables_rename_collapsing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

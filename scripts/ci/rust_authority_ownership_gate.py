@@ -130,12 +130,16 @@ def _manifest_patterns(manifest: dict[str, object]) -> tuple[tuple[str, ...], tu
 
 
 def _repository_matches(patterns: tuple[str, ...]) -> tuple[str, ...]:
-    matches: set[str] = set()
-    for pattern in patterns:
-        for path in Path.cwd().glob(pattern):
-            if path.is_file():
-                matches.add(path.relative_to(Path.cwd()).as_posix())
-    return tuple(sorted(matches))
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    tracked_paths = result.stdout.split("\0")
+    return tuple(
+        sorted(path for path in tracked_paths if path and any(_matches(path, pattern) for pattern in patterns))
+    )
 
 
 def _manifest_at_ref(base_ref: str | None) -> dict[str, object] | None:
