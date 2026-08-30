@@ -168,13 +168,17 @@ pub(crate) fn evaluate_hook_edge_value(mut value: Value) -> Result<Vec<u8>, Stri
             let command = match extract_pre_tool_command(&value) {
                 Ok(command) => command,
                 Err(reason) if reason == "native_pre_tool_command_missing" => {
-                    return crate::encode_response(&unsupported_pre_tool_response(request_id.as_deref()));
+                    return crate::encode_response(&unsupported_pre_tool_response(
+                        request_id.as_deref(),
+                    ));
                 }
                 Err(reason) => return Err(reason),
             };
             let request = CommandModelRequestV1 {
                 command,
-                dialect: mapping_string(&value, "dialect").unwrap_or("posix").to_owned(),
+                dialect: mapping_string(&value, "dialect")
+                    .unwrap_or("posix")
+                    .to_owned(),
                 transport: mapping_string(&value, "transport")
                     .unwrap_or("shell_string")
                     .to_owned(),
@@ -383,6 +387,9 @@ mod tests {
         let response: Value = serde_json::from_slice(&encoded).expect("response json");
         assert_eq!(response["authority"], "rust");
         assert_eq!(response["minimum_action"], "review");
-        assert_eq!(response["reason_code"], "native_pre_tool_unsupported_review");
+        assert_eq!(
+            response["reason_code"],
+            "native_pre_tool_unsupported_review"
+        );
     }
 }
