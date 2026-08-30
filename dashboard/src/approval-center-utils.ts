@@ -452,6 +452,10 @@ const DUPLICATE_REVIEW_SAFETY_CONTEXT_PATTERNS = [
   /\bsends?\s+(data|contents|files?|credentials?|secrets?|tokens?)\s+to\b/i,
   /\b(third[-\s]?party|remote|external)\s+host\b/i,
 ];
+const COMPOUND_FINDINGS_SUMMARY_PREFIX = /^\s*compound command findings:\s*/i;
+const DUPLICATE_REVIEW_BOILERPLATE_REMAINDERS = [
+  "Guard requires one review because part of this shell command is unresolved.",
+].map((value) => normalizeDuplicateReviewText(value));
 
 export function buildPrimaryReviewAction(item: GuardApprovalRequest): PrimaryReviewAction {
   return {
@@ -469,11 +473,42 @@ export function resolveSecondaryRiskSummary(item: GuardApprovalRequest): string 
   if (duplicatesStoppedActionText(item, summary)) {
     return null;
   }
-  const dashboardDetail = resolveDecisionV2Detail(item);
-  if (dashboardDetail && normalizeDuplicateReviewText(summary) === normalizeDuplicateReviewText(dashboardDetail)) {
-    return null;
+  const primaryDetail = resolveDecisionV2Detail(item) ?? resolveTriggerSummaryDetail(item);
+  if (primaryDetail) {
+    if (normalizeDuplicateReviewText(summary) === normalizeDuplicateReviewText(primaryDetail)) {
+      return null;
+    }
+    if (compoundSummaryRestatesPrimaryDetail(summary, primaryDetail)) {
+      return null;
+    }
   }
   return summary;
+}
+
+function resolveTriggerSummaryDetail(item: GuardApprovalRequest): string | null {
+  const detail = item.trigger_summary?.trim();
+  return detail ? detail : null;
+}
+
+// Compound shell reviews fold every segment finding into one prefixed risk
+// summary. When that text only restates the detail already shown in the
+// primary review card — plus generic Guard review boilerplate — the secondary
+// section would read as the same finding twice.
+function compoundSummaryRestatesPrimaryDetail(summary: string, primaryDetail: string): boolean {
+  const withoutPrefix = summary.replace(COMPOUND_FINDINGS_SUMMARY_PREFIX, "").trim();
+  if (!withoutPrefix) {
+    return false;
+  }
+  const normalizedSummary = normalizeDuplicateReviewText(withoutPrefix);
+  const normalizedDetail = normalizeDuplicateReviewText(primaryDetail);
+  if (
+    normalizedDetail.length < DUPLICATE_REVIEW_SUBSTRING_MIN_LENGTH ||
+    !normalizedSummary.includes(normalizedDetail)
+  ) {
+    return false;
+  }
+  const remainder = normalizedSummary.replace(normalizedDetail, " ").trim();
+  return remainder.length === 0 || DUPLICATE_REVIEW_BOILERPLATE_REMAINDERS.includes(remainder);
 }
 
 export function hasReviewEvidence(item: GuardApprovalRequest): boolean {

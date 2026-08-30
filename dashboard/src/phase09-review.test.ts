@@ -627,6 +627,53 @@ assert(
   "GR211-06i: secondary risk summary keeps plural and env-style secret context"
 );
 
+const COMPOUND_SHELL_PRIMARY_DETAIL =
+  "Sensitive native tool action (unresolved shell execution context): Guard could not prove the working directory for every shell segment and requires one conservative decision before the user confirms execution (shell_cwd_workspace_escape). Use a literal, existing in-workspace directory with deterministic cd/pushd/popd control flow, or run the command from the intended directory.";
+const COMPOUND_FINDINGS_DUPLICATE_RISK_REQUEST: GuardApprovalRequest = {
+  ...BASE_REQUEST,
+  request_id: "ph09-compound-findings-duplicate-risk",
+  risk_summary: `Compound command findings: ${COMPOUND_SHELL_PRIMARY_DETAIL} Guard requires one review because part of this shell command is unresolved.`,
+  decision_v2_json: {
+    guard_action: "require-reapproval",
+    action: "ask",
+    reason: "unresolved shell execution context",
+    user_title: "Review required",
+    user_body: COMPOUND_SHELL_PRIMARY_DETAIL,
+    harness_message: "Paused",
+    dashboard_primary_detail: COMPOUND_SHELL_PRIMARY_DETAIL,
+    approval_scopes: ["artifact"],
+    retry_instruction: null,
+    confidence: "likely",
+    signals: [],
+  },
+};
+assert(
+  resolveSecondaryRiskSummary(COMPOUND_FINDINGS_DUPLICATE_RISK_REQUEST) === null,
+  "GR211-06j: secondary risk summary hides compound findings that restate the primary detail plus review boilerplate"
+);
+
+const COMPOUND_FINDINGS_TRIGGER_FALLBACK_REQUEST: GuardApprovalRequest = {
+  ...BASE_REQUEST,
+  request_id: "ph09-compound-findings-trigger-fallback",
+  trigger_summary: COMPOUND_SHELL_PRIMARY_DETAIL,
+  risk_summary: `Compound command findings: ${COMPOUND_SHELL_PRIMARY_DETAIL} Guard requires one review because part of this shell command is unresolved.`,
+};
+assert(
+  resolveSecondaryRiskSummary(COMPOUND_FINDINGS_TRIGGER_FALLBACK_REQUEST) === null,
+  "GR211-06k: secondary risk summary hides compound findings that restate the trigger summary detail"
+);
+
+const COMPOUND_FINDINGS_DISTINCT_RISK_REQUEST: GuardApprovalRequest = {
+  ...COMPOUND_FINDINGS_DUPLICATE_RISK_REQUEST,
+  request_id: "ph09-compound-findings-distinct-risk",
+  risk_summary: `Compound command findings: ${COMPOUND_SHELL_PRIMARY_DETAIL} This command may expose credentials from the ignored directory.`,
+};
+assert(
+  resolveSecondaryRiskSummary(COMPOUND_FINDINGS_DISTINCT_RISK_REQUEST) ===
+    COMPOUND_FINDINGS_DISTINCT_RISK_REQUEST.risk_summary,
+  "GR211-06l: secondary risk summary keeps compound findings when a segment adds distinct safety context"
+);
+
 const PREFIXED_EXTRA_CONTEXT_PROMPT_RISK_REQUEST: GuardApprovalRequest = {
   ...DUPLICATE_PROMPT_RISK_REQUEST,
   request_id: "ph09-prefixed-extra-context-prompt-risk",
