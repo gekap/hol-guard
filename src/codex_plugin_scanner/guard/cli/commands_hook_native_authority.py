@@ -1,4 +1,4 @@
-"""Route auto/force PreToolUse and PostToolUse through the native worker."""
+"""Route production hook decisions through the native Rust data plane."""
 
 from __future__ import annotations
 
@@ -8,10 +8,8 @@ from typing import Any
 
 from ..adapters.base import HarnessContext
 from ..config import GuardConfig
-from ..daemon.hook_worker import HookWorker, HookWorkerUnsupported
-from ..native_runtime import native_mode
+from ..daemon.hook_worker import HookWorker
 from ..store import GuardStore
-from .commands_hook_source_ref import _try_source_ref_fast_path
 from .commands_support_interaction import _emit
 
 
@@ -23,27 +21,22 @@ def try_native_hook_authority(
     guard_home: Path,
     workspace: Path | None,
     store: GuardStore,
-) -> dict[str, Any] | None:
-    """Return native harness JSON, or None when Python CLI must continue.
+) -> dict[str, Any]:
+    """Return the fail-closed Rust hook result for the raw harness envelope.
 
-    ``auto`` and ``force`` send supported command PreToolUse and PostToolUse
-    through the same fail-closed Rust worker as the daemon. File PreToolUse
-    and other events still raise ``HookWorkerUnsupported`` so the existing
-    CLI path can handle them.
+    Environment mode settings no longer select a Python semantic evaluator.
+    The worker itself returns a deterministic block when the bundled native
+    runtime cannot complete the decision safely.
     """
-    if native_mode() not in {"auto", "force"}:
-        return None
-    try:
-        return HookWorker(store=store).review_http_payload(
-            payload=payload,
-            params={},
-            default_harness=harness,
-            home_dir=home_dir,
-            guard_home=guard_home,
-            workspace=workspace,
-        )
-    except HookWorkerUnsupported:
-        return None
+
+    return HookWorker(store=store).review_http_payload(
+        payload=payload,
+        params={},
+        default_harness=harness,
+        home_dir=home_dir,
+        guard_home=guard_home,
+        workspace=workspace,
+    )
 
 
 def try_native_or_source_ref_hook(
@@ -55,12 +48,14 @@ def try_native_or_source_ref_hook(
     runtime_workspace: Path | None,
     store: GuardStore,
 ) -> int | None:
-    """Prefer native authority, then Python source-ref when native does not apply.
+    """Use Rust authority for every production hook reaching this route.
 
-    ``off`` and ``shadow`` stay on the Python source-ref path. ``auto`` and
-    ``force`` use that path only after the native worker reports the event as
-    unsupported, such as file PreToolUse with a source reference.
+    The historical Python source-ref semantic fallback is intentionally not
+    reachable here. Source-reference validation and content I/O are performed
+    by the Rust hook core; native failure is rendered fail closed by HookWorker.
     """
+
+    del config
     native_result = try_native_hook_authority(
         payload=payload,
         harness=args.harness,
@@ -69,14 +64,5 @@ def try_native_or_source_ref_hook(
         workspace=runtime_workspace,
         store=store,
     )
-    if native_result is not None:
-        _emit("hook", native_result, getattr(args, "json", False))
-        return 0
-    return _try_source_ref_fast_path(
-        args,
-        config=config,
-        context=context,
-        payload=payload,
-        runtime_workspace=runtime_workspace,
-        store=store,
-    )
+    _emit("hook", native_result, getattr(args, "json", False))
+    return 0
