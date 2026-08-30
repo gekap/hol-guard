@@ -305,11 +305,7 @@ class HookProcessRunner(HookProcessRunnerLifecycleMixin):
                     claimed_approval_request_id=claimed_approval_request_id,
                     _transient_not_ready_retries=_transient_not_ready_retries - 1,
                 )
-            self._record_route_metric(typed_result.get("route"))
-            return HookProcessReview(
-                None,
-                reason_code if isinstance(reason_code, str) else "daemon_hook_process_failed",
-            )
+            return self._terminal_failed_review(typed_result.get("route"), reason_code)
         typed_response = as_string_object_dict(response)
         if typed_response is None:
             return HookProcessReview(None, "daemon_hook_process_invalid_json")
