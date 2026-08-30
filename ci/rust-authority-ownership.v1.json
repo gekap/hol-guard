@@ -5,7 +5,14 @@
     "native_mode_without_environment": "auto",
     "hook_fast_path_without_environment": true,
     "path_runtime_search": false,
-    "decision_time_runtime_download": false
+    "decision_time_runtime_download": false,
+    "automatic_python_semantic_fallback": false
+  },
+  "explicit_compatibility": {
+    "modes": ["off", "shadow"],
+    "python_reference_evaluator": true,
+    "automatic_entry_from_native_failure": false,
+    "default_selected": false
   },
   "surfaces": {
     "pre_tool_use": {
@@ -48,20 +55,21 @@
         "harness_response_rendering",
         "policy_snapshot_transport",
         "asynchronous_non_authoritative_evidence",
-        "dashboard_control_plane"
+        "dashboard_control_plane",
+        "explicit_off_shadow_reference_evaluator"
       ],
       "forbidden": [
-        "pretool_command_parsing",
-        "pretool_risk_classification",
-        "pretool_policy_floor",
-        "posttool_secret_scanning_fallback",
-        "source_ref_semantic_validation",
+        "auto_force_pretool_command_parsing",
+        "auto_force_pretool_risk_classification",
+        "auto_force_posttool_secret_scanning_fallback",
+        "auto_force_source_ref_semantic_validation",
         "resident_client_authentication",
         "resident_client_framing",
         "resident_client_socket_io",
+        "native_failure_to_python_semantic_evaluation",
         "native_failure_to_python_allow",
         "native_action_floor_lowering",
-        "production_python_source_ref_fallback"
+        "automatic_python_source_ref_fallback"
       ]
     }
   },
