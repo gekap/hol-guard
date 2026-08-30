@@ -77,16 +77,19 @@ class HookWorker:
         """Return a harness response from Rust authority or a fail-closed result."""
 
         harness = self._runtime_harness(params) or default_harness
-        config = self._load_config(guard_home, workspace)
-        native = review_hook_edge_native(
-            payload=payload,
-            harness=harness,
-            home_dir=home_dir,
-            guard_home=guard_home,
-            workspace=workspace,
-            observe_mode=config.mode == "observe",
-            deadline=deadline,
-        )
+        try:
+            config = self._load_config(guard_home, workspace)
+            native = review_hook_edge_native(
+                payload=payload,
+                harness=harness,
+                home_dir=home_dir,
+                guard_home=guard_home,
+                workspace=workspace,
+                observe_mode=config.mode == "observe",
+                deadline=deadline,
+            )
+        except Exception:
+            native = None
         if native is None:
             event_name = runtime_hook_event_name(payload)
             if event_name == "PostToolUse":
