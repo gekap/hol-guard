@@ -197,6 +197,94 @@ class TrailingOperandPrefixMatcher:
         return tuple(evidence)
 
 
+def _is_remote_host_target(operand: str) -> bool:
+    """Report whether an operand uses scp-style ``[user@]host:path`` syntax.
+
+    Parsed by hand rather than by regular expression: the grammar is small, and
+    a matcher on the review path should not carry backtracking behaviour that
+    depends on attacker-influenced operand length.
+    """
+    if "://" in operand:
+        return False  # a scheme, which the prefix matcher already owns
+    rest = operand.split("@", 1)[1] if "@" in operand else operand
+    if rest.startswith("["):  # bracketed IPv6 literal, e.g. [::1]:/srv
+        closing = rest.find("]:")
+        return closing > 1 and len(rest) > closing + 2
+    separator = rest.find(":")
+    if separator <= 0 or separator == len(rest) - 1:
+        return False
+    host = rest[:separator]
+    if any(character.isspace() for character in host):
+        return False
+    # A single-letter host is a Windows drive (``C:\\backup``), not a remote.
+    return not (len(host) == 1 and host.isalpha())
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class TrailingOperandHostTargetMatcher:
+    """Match commands whose final operand is an scp-style remote host target.
+
+    The companion to :class:`TrailingOperandPrefixMatcher` for tools that accept
+    both ``scheme://`` endpoints and ``[user@]host:path``. Direction is read the
+    same way: only the last operand is a destination, so an upload matches while
+    a download from the same host does not.
+    """
+
+    executables: frozenset[str]
+    options_with_values: frozenset[str] = frozenset()
+    required_flags: frozenset[str] = frozenset()
+    forbidden_flags: frozenset[str] = frozenset()
+    minimum_operands: int = 2
+
+    def __post_init__(self) -> None:
+        normalized_executables = frozenset(value.strip().lower() for value in self.executables if value.strip())
+        normalized_options = frozenset(
+            _normalize_option_token(value) for value in self.options_with_values if value.strip()
+        )
+        normalized_required = frozenset(
+            _normalize_option_token(value) for value in self.required_flags if value.strip()
+        )
+        normalized_forbidden = frozenset(
+            _normalize_option_token(value) for value in self.forbidden_flags if value.strip()
+        )
+        if not normalized_executables:
+            raise ValueError("TrailingOperandHostTargetMatcher requires executables")
+        if self.minimum_operands < 1:
+            raise ValueError("TrailingOperandHostTargetMatcher requires at least one operand")
+        object.__setattr__(self, "executables", normalized_executables)
+        object.__setattr__(self, "options_with_values", normalized_options)
+        object.__setattr__(self, "required_flags", normalized_required)
+        object.__setattr__(self, "forbidden_flags", normalized_forbidden)
+
+    def match(self, command: CanonicalCommand) -> tuple[MatcherEvidence, ...]:
+        evidence: list[MatcherEvidence] = []
+        for index, segment in enumerate(command.segments):
+            if not _segment_matches_executable(segment, self.executables):
+                continue
+            flags = present_flags(segment.arguments, options_with_values=self.options_with_values)
+            if self.required_flags - flags:
+                continue
+            if self.forbidden_flags & flags:
+                continue
+            operands = _operands_without_options(
+                segment.arguments,
+                options_with_values=self.options_with_values,
+            )
+            if len(operands) < self.minimum_operands:
+                continue
+            if not _is_remote_host_target(operands[-1]):
+                continue
+            evidence.append(
+                MatcherEvidence(
+                    segment_index=index,
+                    executable=segment.executable,
+                    detail="Matched a remote host target as the final operand.",
+                )
+            )
+        return tuple(evidence)
+
+
 @final
 @dataclass(frozen=True, slots=True)
 class OptionValueKeyMatcher:
@@ -314,6 +402,8 @@ def structured_matcher_index_hints(matcher: CommandMatcher) -> tuple[frozenset[s
     if isinstance(matcher, SubcommandOperandPrefixMatcher):
         return matcher.executables, frozenset(matcher.subcommands)
     if isinstance(matcher, TrailingOperandPrefixMatcher):
+        return matcher.executables, frozenset()
+    if isinstance(matcher, TrailingOperandHostTargetMatcher):
         return matcher.executables, frozenset()
     if isinstance(matcher, OptionValueKeyMatcher):
         return matcher.executables, matcher.option_names

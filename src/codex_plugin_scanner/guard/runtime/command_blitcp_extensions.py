@@ -7,13 +7,17 @@ from dataclasses import replace
 from .command_extension_matchers import executable_names
 from .command_extension_specs import CommandExtensionSpec
 from .command_rules import (
+    AnyMatcher,
     CommandMatcher,
     CommandRuleSeverity,
     CommandSafetyRule,
     CommandSafeVariant,
     ExecutableMatcher,
 )
-from .command_structured_matchers import TrailingOperandPrefixMatcher
+from .command_structured_matchers import (
+    TrailingOperandHostTargetMatcher,
+    TrailingOperandPrefixMatcher,
+)
 
 # blitcp takes `SOURCE... DESTINATION`, so the final operand decides whether a
 # run reads remote data or writes it: `blitcp /data s3://bucket` sends data off
@@ -58,19 +62,34 @@ _BLITCP_OPTIONS_WITH_VALUES = frozenset(
         "--update-sha256",
     }
 )
-# Case-sensitive on purpose: blitcp itself only accepts lower-case schemes, so
-# matching "S3://bucket" would flag a command blitcp would refuse to run.
-_BLITCP_REMOTE_DESTINATION = TrailingOperandPrefixMatcher(
+# blitcp writes to two kinds of remote destination and both mean egress, so one
+# rule covers both syntaxes rather than teaching people that only object stores
+# are worth a prompt.
+#
+# Case-sensitive prefixes on purpose: blitcp itself only accepts lower-case
+# schemes, so matching "S3://bucket" would flag a command blitcp refuses to run.
+_BLITCP_SCHEME_DESTINATION = TrailingOperandPrefixMatcher(
     executables=executable_names("blitcp"),
     operand_prefixes=frozenset({"s3://", "az://", "gs://", "smb://"}),
     options_with_values=_BLITCP_OPTIONS_WITH_VALUES,
 )
-# The structured matcher is not an AnyMatcher of executable children, so it
-# cannot go through safe_flag_variant; the variant is the same matcher with
-# --dry-run required, which is what that helper builds for the others.
-_BLITCP_REMOTE_DESTINATION_DRY_RUN = replace(
-    _BLITCP_REMOTE_DESTINATION,
-    required_flags=frozenset({"--dry-run"}),
+# SSH is blitcp's oldest remote transport: it streams tar over one channel to
+# `[user@]host:path`. Without this an upload over SSH would leave the host with
+# no prompt at all, which is the same egress as an object-store write.
+_BLITCP_SSH_DESTINATION = TrailingOperandHostTargetMatcher(
+    executables=executable_names("blitcp"),
+    options_with_values=_BLITCP_OPTIONS_WITH_VALUES,
+)
+_BLITCP_REMOTE_DESTINATION = AnyMatcher(
+    matchers=(_BLITCP_SCHEME_DESTINATION, _BLITCP_SSH_DESTINATION),
+)
+# safe_flag_variant() expects an AnyMatcher of executable children, so it cannot
+# build this one; the variant is the same pair with --dry-run required, which is
+# what that helper produces for the others.
+_BLITCP_REMOTE_DESTINATION_DRY_RUN = AnyMatcher(
+    matchers=tuple(
+        replace(matcher, required_flags=frozenset({"--dry-run"})) for matcher in _BLITCP_REMOTE_DESTINATION.matchers
+    ),
 )
 _BLITCP_SELF_UPDATE = ExecutableMatcher(
     executables=executable_names("blitcp"),
@@ -123,8 +142,9 @@ BLITCP_COMMAND_RULES = (
         example_command="blitcp /data s3://backups/nightly",
         title="Blitcp copy to a remote destination",
         description=(
-            "Identifies blitcp copies whose final operand is an object-store or SMB destination, "
-            "which sends local data off the host. The same scheme in an earlier position is a "
+            "Identifies blitcp copies whose final operand is a remote destination — an "
+            "object-store or SMB endpoint, or an scp-style [user@]host:path target — which "
+            "sends local data off the host. The same endpoint in an earlier position is a "
             "source and reads data instead."
         ),
         matcher=_BLITCP_REMOTE_DESTINATION,

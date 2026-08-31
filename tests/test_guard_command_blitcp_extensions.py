@@ -11,6 +11,7 @@ from codex_plugin_scanner.guard.runtime.command_extensions import (
 from codex_plugin_scanner.guard.runtime.command_inspection import inspect_command
 from codex_plugin_scanner.guard.runtime.command_model import parse_shell_command
 from codex_plugin_scanner.guard.runtime.command_structured_matchers import (
+    TrailingOperandHostTargetMatcher,
     TrailingOperandPrefixMatcher,
 )
 from tests.command_extension_contracts import (
@@ -62,6 +63,28 @@ BLITCP_REVIEW_CASES: tuple[tuple[str, str, str], ...] = (
         "Blitcp remote destination command",
         "command.blitcp.remote-destination",
     ),
+    # SSH is blitcp's oldest remote transport and is the same egress as an
+    # object-store write, so it belongs to the same rule.
+    (
+        "blitcp /data user@host.example:/srv/backup",
+        "Blitcp remote destination command",
+        "command.blitcp.remote-destination",
+    ),
+    (
+        "blitcp /data host.example:/srv/backup",
+        "Blitcp remote destination command",
+        "command.blitcp.remote-destination",
+    ),
+    (
+        "blitcp /data user@[2001:db8::1]:/srv/backup",
+        "Blitcp remote destination command",
+        "command.blitcp.remote-destination",
+    ),
+    (
+        "blitcp /data user@host.example:/srv/backup --ssh-dst-port 2222",
+        "Blitcp remote destination command",
+        "command.blitcp.remote-destination",
+    ),
     (
         "blitcp --use-sudo /var/lib/data /mnt/backup",
         "Blitcp privilege escalation command",
@@ -98,6 +121,14 @@ BLITCP_SAFE_COMMANDS: tuple[str, ...] = (
     # on a preview describes no risk.
     "blitcp --dry-run --no-verify /data /mnt/backup",
     "blitcp --dry-run --no-verify /data s3://backups/nightly",
+    # An SSH source is a restore, exactly as an object-store source is.
+    "blitcp user@host.example:/srv/backup /local/restore",
+    "blitcp host.example:/srv/backup /local/restore",
+    "blitcp --dry-run /data user@host.example:/srv/backup",
+    # A single-letter host is a Windows drive, not a remote — blitcp itself
+    # makes this distinction, so a copy to C:\\backup must not read as egress.
+    "blitcp /data C:\\backup",
+    "blitcp C:\\data D:\\backup",
     # Purely local copies carry none of these risks.
     "blitcp /data /mnt/usb",
     "blitcp -a /data /mnt/usb",
@@ -221,3 +252,23 @@ def test_trailing_operand_matcher_honours_required_and_forbidden_flags(tmp_path:
     assert requires_preview.match(preview)
     assert rejects_preview.match(live)
     assert rejects_preview.match(preview) == ()
+
+
+def test_host_target_matcher_reads_direction_and_excludes_drive_letters(tmp_path: Path) -> None:
+    matcher = TrailingOperandHostTargetMatcher(executables=frozenset({"transfer"}))
+
+    def parsed(command: str):
+        return parse_shell_command(command, cwd=tmp_path, home_dir=tmp_path)
+
+    assert matcher.match(parsed("transfer /data user@host.example:/srv"))
+    assert matcher.match(parsed("transfer /data host.example:/srv"))
+    assert matcher.match(parsed("transfer /data user@[2001:db8::1]:/srv"))
+    # Direction, a Windows drive, a bare local path, and a scheme the prefix
+    # matcher already owns must all stay unmatched.
+    assert matcher.match(parsed("transfer user@host.example:/srv /data")) == ()
+    assert matcher.match(parsed("transfer /data C:\\backup")) == ()
+    assert matcher.match(parsed("transfer /data /mnt/usb")) == ()
+    assert matcher.match(parsed("transfer /data s3://bucket/key")) == ()
+    # A host with no path, and a path with no host, are not remote targets.
+    assert matcher.match(parsed("transfer /data host.example:")) == ()
+    assert matcher.match(parsed("transfer /data :/srv")) == ()
