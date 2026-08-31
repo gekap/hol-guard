@@ -75,6 +75,10 @@ COMMAND_ACTION_RISK_CLASSES: dict[str, tuple[str, ...]] = {
     "sqlite destructive command": ("destructive_shell",),
     "supabase destructive command": ("destructive_shell", "network_egress"),
     "rsync remote shell command": ("execution", "network_egress"),
+    "blitcp remote destination command": ("network_egress",),
+    "blitcp privilege escalation command": ("execution",),
+    "blitcp self-update command": ("execution", "network_egress"),
+    "blitcp unverified copy command": ("destructive_shell",),
     **GITHUB_ACTION_RISK_CLASSES,
 }
 _GIT_GLOBAL_OPTIONS_WITH_VALUES = frozenset(
