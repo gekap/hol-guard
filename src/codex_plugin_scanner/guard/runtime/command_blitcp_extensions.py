@@ -15,8 +15,10 @@ from .command_rules import (
     ExecutableMatcher,
 )
 from .command_structured_matchers import (
+    OperandGatedFlagMatcher,
     TrailingOperandHostTargetMatcher,
     TrailingOperandPrefixMatcher,
+    TrailingOperandRemoteAliasMatcher,
 )
 
 # blitcp takes `SOURCE... DESTINATION`, so the final operand decides whether a
@@ -68,10 +70,18 @@ _BLITCP_OPTIONS_WITH_VALUES = frozenset(
 #
 # Case-sensitive prefixes on purpose: blitcp itself only accepts lower-case
 # schemes, so matching "S3://bucket" would flag a command blitcp refuses to run.
+# blitcp dispatches on its literal first argument before argparse ever runs:
+# `blitcp creds ...` manages the credential store, `blitcp ls`/`list-objects`
+# lists a remote, and `blitcp deps`/`check-deps`/`doctor` report on the
+# environment. None of them is a copy, and `ls` in particular is a read — so a
+# listing of a remote must not prompt as egress. The dispatch is case-sensitive
+# and looks only at argv[1], which is exactly what the matchers mirror.
+_BLITCP_SUBCOMMANDS = frozenset({"creds", "ls", "list-objects", "deps", "check-deps", "doctor"})
 _BLITCP_SCHEME_DESTINATION = TrailingOperandPrefixMatcher(
     executables=executable_names("blitcp"),
     operand_prefixes=frozenset({"s3://", "az://", "gs://", "smb://"}),
     options_with_values=_BLITCP_OPTIONS_WITH_VALUES,
+    excluded_first_arguments=_BLITCP_SUBCOMMANDS,
 )
 # SSH is blitcp's oldest remote transport: it streams tar over one channel to
 # `[user@]host:path`. Without this an upload over SSH would leave the host with
@@ -79,33 +89,75 @@ _BLITCP_SCHEME_DESTINATION = TrailingOperandPrefixMatcher(
 _BLITCP_SSH_DESTINATION = TrailingOperandHostTargetMatcher(
     executables=executable_names("blitcp"),
     options_with_values=_BLITCP_OPTIONS_WITH_VALUES,
+    excluded_first_arguments=_BLITCP_SUBCOMMANDS,
+)
+# The third destination syntax: a saved connection, referenced as `NAME:subpath`
+# (`azure-prod:backups`) or as a bare `NAME`. The colon form is structurally
+# recognizable and follows blitcp's own parser — a head with `@`, a path
+# separator, or a single character is not a connection reference. A bare name is
+# not: nothing distinguishes `blitcp /data azure-prod` from a copy into a local
+# `azure-prod/` directory without reading the user's credentials file, and
+# prompting on every bare-word destination would recreate exactly the
+# any-operand noise this rule exists to avoid. So the bare form is only matched
+# when --credentials-file names a connections file on the command itself, which
+# is the one static signal that saved connections are in play. The residual gap
+# — a bare name resolved through the *implicit* default credentials file — is
+# documented rather than closed, because closing it costs a prompt on every
+# local copy to a fresh directory.
+_BLITCP_ALIAS_DESTINATION = TrailingOperandRemoteAliasMatcher(
+    executables=executable_names("blitcp"),
+    options_with_values=_BLITCP_OPTIONS_WITH_VALUES,
+    excluded_first_arguments=_BLITCP_SUBCOMMANDS,
+)
+_BLITCP_BARE_ALIAS_DESTINATION = TrailingOperandRemoteAliasMatcher(
+    executables=executable_names("blitcp"),
+    options_with_values=_BLITCP_OPTIONS_WITH_VALUES,
+    required_flags=frozenset({"--credentials-file"}),
+    allow_bare_names=True,
+    excluded_first_arguments=_BLITCP_SUBCOMMANDS,
 )
 _BLITCP_REMOTE_DESTINATION = AnyMatcher(
-    matchers=(_BLITCP_SCHEME_DESTINATION, _BLITCP_SSH_DESTINATION),
+    matchers=(
+        _BLITCP_SCHEME_DESTINATION,
+        _BLITCP_SSH_DESTINATION,
+        _BLITCP_ALIAS_DESTINATION,
+        _BLITCP_BARE_ALIAS_DESTINATION,
+    ),
 )
 # safe_flag_variant() expects an AnyMatcher of executable children, so it cannot
-# build this one; the variant is the same pair with --dry-run required, which is
-# what that helper produces for the others.
+# build this one; the variant is the same matchers with --dry-run required on
+# top of whatever each already requires, which is what that helper produces for
+# the others.
 _BLITCP_REMOTE_DESTINATION_DRY_RUN = AnyMatcher(
     matchers=tuple(
-        replace(matcher, required_flags=frozenset({"--dry-run"})) for matcher in _BLITCP_REMOTE_DESTINATION.matchers
+        replace(matcher, required_flags=matcher.required_flags | frozenset({"--dry-run"}))
+        for matcher in _BLITCP_REMOTE_DESTINATION.matchers
     ),
 )
 _BLITCP_SELF_UPDATE = ExecutableMatcher(
     executables=executable_names("blitcp"),
     required_flags=frozenset({"--update"}),
 )
-_BLITCP_PRIVILEGE_ESCALATION = ExecutableMatcher(
+# Both flag rules are gated on the shape of an actual copy — at least a source
+# and a destination once option values are stripped. The flags describe how a
+# copy runs, so `blitcp --use-sudo` alone (help output, an aborted command line)
+# elevates nothing and must not prompt; prompting there is what teaches people
+# to approve the elevation that matters.
+_BLITCP_PRIVILEGE_ESCALATION = OperandGatedFlagMatcher(
     executables=executable_names("blitcp"),
     required_flags=frozenset({"--use-sudo"}),
+    options_with_values=_BLITCP_OPTIONS_WITH_VALUES,
+    excluded_first_arguments=_BLITCP_SUBCOMMANDS,
 )
 # A dry run copies nothing, so there is nothing for verification to check and
 # --no-verify says nothing about the outcome. Excluding it keeps previews
 # distinct from real copies here too, not only on the destination rule.
-_BLITCP_UNVERIFIED_COPY = ExecutableMatcher(
+_BLITCP_UNVERIFIED_COPY = OperandGatedFlagMatcher(
     executables=executable_names("blitcp"),
     required_flags=frozenset({"--no-verify"}),
     forbidden_flags=frozenset({"--dry-run"}),
+    options_with_values=_BLITCP_OPTIONS_WITH_VALUES,
+    excluded_first_arguments=_BLITCP_SUBCOMMANDS,
 )
 
 
@@ -143,9 +195,10 @@ BLITCP_COMMAND_RULES = (
         title="Blitcp copy to a remote destination",
         description=(
             "Identifies blitcp copies whose final operand is a remote destination — an "
-            "object-store or SMB endpoint, or an scp-style [user@]host:path target — which "
-            "sends local data off the host. The same endpoint in an earlier position is a "
-            "source and reads data instead."
+            "object-store or SMB endpoint, an scp-style [user@]host:path target, or a saved "
+            "connection referenced as NAME:subpath (or as a bare NAME when --credentials-file "
+            "is on the command) — which sends local data off the host. The same endpoint in "
+            "an earlier position is a source and reads data instead."
         ),
         matcher=_BLITCP_REMOTE_DESTINATION,
         action_class="Blitcp remote destination command",

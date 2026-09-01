@@ -11,8 +11,10 @@ from codex_plugin_scanner.guard.runtime.command_extensions import (
 from codex_plugin_scanner.guard.runtime.command_inspection import inspect_command
 from codex_plugin_scanner.guard.runtime.command_model import parse_shell_command
 from codex_plugin_scanner.guard.runtime.command_structured_matchers import (
+    OperandGatedFlagMatcher,
     TrailingOperandHostTargetMatcher,
     TrailingOperandPrefixMatcher,
+    TrailingOperandRemoteAliasMatcher,
 )
 from tests.command_extension_contracts import (
     assert_reviewed_command_cases,
@@ -85,6 +87,44 @@ BLITCP_REVIEW_CASES: tuple[tuple[str, str, str], ...] = (
         "Blitcp remote destination command",
         "command.blitcp.remote-destination",
     ),
+    # A saved connection is the third remote-destination syntax. The colon form
+    # is structurally recognizable, so it reviews on its own; a bare name only
+    # reviews when --credentials-file puts saved connections in play on the
+    # command itself.
+    (
+        "blitcp /data azure-prod:backups/nightly",
+        "Blitcp remote destination command",
+        "command.blitcp.remote-destination",
+    ),
+    (
+        "blitcp /data gcs:",
+        "Blitcp remote destination command",
+        "command.blitcp.remote-destination",
+    ),
+    (
+        "blitcp --threads 8 /data aws-dev:bucket/key",
+        "Blitcp remote destination command",
+        "command.blitcp.remote-destination",
+    ),
+    (
+        "blitcp --credentials-file /home/backup/creds.json /data azure-prod",
+        "Blitcp remote destination command",
+        "command.blitcp.remote-destination",
+    ),
+    # A colon inside a path is not a connection reference — blitcp's saved-
+    # connection parser leaves it alone — but blitcp's own parse_remote_path
+    # then reads it as an SSH target (host "sub/dir"), so the write leaves the
+    # host and the host matcher reviews it for the same reason blitcp dials it.
+    (
+        "blitcp /data sub/dir:name",
+        "Blitcp remote destination command",
+        "command.blitcp.remote-destination",
+    ),
+    (
+        "blitcp /data ./odd:name",
+        "Blitcp remote destination command",
+        "command.blitcp.remote-destination",
+    ),
     (
         "blitcp --use-sudo /var/lib/data /mnt/backup",
         "Blitcp privilege escalation command",
@@ -142,6 +182,28 @@ BLITCP_SAFE_COMMANDS: tuple[str, ...] = (
     "blitcp /data ftp://host/share",
     # The scheme has to start the operand, not merely appear inside it.
     "blitcp /data /mnt/s3://notascheme",
+    # A saved connection as the SOURCE is a restore, like every other remote
+    # source above.
+    "blitcp azure-prod:backups/nightly /local/restore",
+    "blitcp --credentials-file /home/backup/creds.json azure-prod /local/restore",
+    "blitcp --dry-run /data azure-prod:backups/nightly",
+    # A bare name without --credentials-file is indistinguishable from a local
+    # directory, so it must stay silent — prompting here would be the
+    # any-operand noise the rule exists to avoid.
+    "blitcp /data azure-prod",
+    "blitcp /data backups/",
+    # blitcp dispatches subcommands on its literal first argument, and none of
+    # them copies anything: `ls` reads a remote, `creds` manages the store.
+    "blitcp ls s3://backups/nightly",
+    "blitcp ls azure-prod:",
+    "blitcp list-objects s3://backups/nightly",
+    "blitcp creds edit azure-prod extra-operand",
+    # The flag rules describe how a copy runs, so without the shape of a copy —
+    # a source and a destination — they describe no risk.
+    "blitcp --use-sudo",
+    "blitcp --use-sudo --help",
+    "blitcp --no-verify",
+    "blitcp --no-verify /only-one-operand",
     # Neither a mention of the command nor a grep for it is an invocation.
     "grep 'blitcp /data s3://bucket' docs",
     "echo blitcp /data s3://backups/nightly",
@@ -272,3 +334,89 @@ def test_host_target_matcher_reads_direction_and_excludes_drive_letters(tmp_path
     # A host with no path, and a path with no host, are not remote targets.
     assert matcher.match(parsed("transfer /data host.example:")) == ()
     assert matcher.match(parsed("transfer /data :/srv")) == ()
+
+
+def test_remote_alias_matcher_mirrors_blitcp_connection_grammar(tmp_path: Path) -> None:
+    matcher = TrailingOperandRemoteAliasMatcher(executables=frozenset({"transfer"}))
+
+    def parsed(command: str):
+        return parse_shell_command(command, cwd=tmp_path, home_dir=tmp_path)
+
+    assert matcher.match(parsed("transfer /data azure-prod:backups"))
+    # An empty subpath still references the connection's default container.
+    assert matcher.match(parsed("transfer /data gcs:"))
+    # Direction: the alias as a source is a restore.
+    assert matcher.match(parsed("transfer azure-prod:backups /data")) == ()
+    # blitcp's own exclusions: an scp-style target, a Windows drive, a path
+    # containing a colon, and a scheme all belong to other matchers or to
+    # nothing at all.
+    assert matcher.match(parsed("transfer /data user@host:/srv")) == ()
+    assert matcher.match(parsed("transfer /data C:\\backup")) == ()
+    assert matcher.match(parsed("transfer /data ./odd:name")) == ()
+    assert matcher.match(parsed("transfer /data sub/dir:name")) == ()
+    assert matcher.match(parsed("transfer /data s3://bucket/key")) == ()
+    # The bare form stays unmatched unless the matcher opts into it.
+    assert matcher.match(parsed("transfer /data azure-prod")) == ()
+
+
+def test_remote_alias_matcher_bare_names_are_opt_in(tmp_path: Path) -> None:
+    matcher = TrailingOperandRemoteAliasMatcher(
+        executables=frozenset({"transfer"}),
+        options_with_values=frozenset({"--credentials-file"}),
+        required_flags=frozenset({"--credentials-file"}),
+        allow_bare_names=True,
+    )
+
+    def parsed(command: str):
+        return parse_shell_command(command, cwd=tmp_path, home_dir=tmp_path)
+
+    assert matcher.match(parsed("transfer --credentials-file /tmp/c.json /data azure-prod"))
+    # blitcp strips a trailing slash before the connection lookup, so the
+    # matcher accepts the same spelling.
+    assert matcher.match(parsed("transfer --credentials-file /tmp/c.json /data azure-prod/"))
+    # Without the required flag nothing marks the name as a connection.
+    assert matcher.match(parsed("transfer /data azure-prod")) == ()
+    # A path-like destination is a destination, not a name.
+    assert matcher.match(parsed("transfer --credentials-file /tmp/c.json /data backups/sub")) == ()
+    # Direction still applies to the bare form.
+    assert matcher.match(parsed("transfer --credentials-file /tmp/c.json azure-prod /data")) == ()
+
+
+def test_operand_gated_flag_matcher_requires_the_shape_of_a_copy(tmp_path: Path) -> None:
+    matcher = OperandGatedFlagMatcher(
+        executables=frozenset({"transfer"}),
+        required_flags=frozenset({"--no-verify"}),
+        options_with_values=frozenset({"--log-file"}),
+        forbidden_flags=frozenset({"--dry-run"}),
+    )
+
+    def parsed(command: str):
+        return parse_shell_command(command, cwd=tmp_path, home_dir=tmp_path)
+
+    assert matcher.match(parsed("transfer --no-verify /data /backup"))
+    # An option value must not count as an operand.
+    assert matcher.match(parsed("transfer --no-verify --log-file /tmp/t.log /data /backup"))
+    # No copy shape, no risk: a bare flag, a help run, a single operand.
+    assert matcher.match(parsed("transfer --no-verify")) == ()
+    assert matcher.match(parsed("transfer --no-verify --log-file /tmp/t.log /data")) == ()
+    # The flag has to be present at all, and a preview stays excluded.
+    assert matcher.match(parsed("transfer /data /backup")) == ()
+    assert matcher.match(parsed("transfer --no-verify --dry-run /data /backup")) == ()
+
+
+def test_trailing_matchers_skip_blitcp_style_subcommand_dispatch(tmp_path: Path) -> None:
+    """The exclusion reads the literal first argument, exactly like argv[1] dispatch."""
+    matcher = TrailingOperandPrefixMatcher(
+        executables=frozenset({"transfer"}),
+        operand_prefixes=frozenset({"s3://"}),
+        excluded_first_arguments=frozenset({"ls"}),
+    )
+
+    def parsed(command: str):
+        return parse_shell_command(command, cwd=tmp_path, home_dir=tmp_path)
+
+    assert matcher.match(parsed("transfer ls s3://bucket/key")) == ()
+    # Not first, not the same spelling, not the subcommand: the tool would run
+    # its ordinary copy grammar for these, so the matcher keeps looking.
+    assert matcher.match(parsed("transfer Ls s3://bucket/key"))
+    assert matcher.match(parsed("transfer /data ls s3://bucket/key"))
