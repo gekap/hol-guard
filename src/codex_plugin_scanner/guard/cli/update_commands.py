@@ -65,6 +65,7 @@ from .update_desktop_apply import (
 from .update_desktop_core import is_desktop_managed_runtime
 from .update_grok_repair import append_grok_repair
 from .update_install_verify import verify_installed_distribution
+from .update_release_candidates import newest_pypi_version
 from .update_subprocess import (
     InstalledDistribution,
     TrustedUpdateContext,
@@ -1295,7 +1296,7 @@ def _version_check_payload(
         compatible_version = _latest_compatible_release_version(
             current_version,
             runtime_python,
-            alpha_only=include_alpha,
+            include_alpha=include_alpha,
         )
         if compatible_version is not None:
             return {
@@ -1320,7 +1321,8 @@ def _version_check_payload(
             "required_python": _format_python_requirements(required_python_requirements),
             "runtime_python": runtime_python,
         }
-    reserved_alpha = _newest_reserved_alpha_version(latest_pypi=latest_version) if include_alpha else None
+    published_alpha = newest_pypi_version(_last_pypi_payload, include_stable=False, include_alpha=True)
+    reserved_alpha = _newest_reserved_alpha_version(latest_pypi=published_alpha) if include_alpha else None
     return {
         "source": "pypi",
         **({"release_channel": "alpha"} if include_alpha else {}),
@@ -1367,35 +1369,10 @@ def _latest_version_from_pypi() -> str | None:
 
 
 def _latest_alpha_version_from_pypi(current_version: str) -> str | None:
-    """Return the newest non-yanked alpha on PyPI, including newer majors.
-
-    ``current_version`` is retained for call-site compatibility. Alpha channel
-    intentionally tracks the global newest alpha so ``hol-guard update --alpha``
-    can move installs across major lines (for example 2.x stable -> 3.0.0aN).
-    """
+    """Return the newest non-yanked stable or alpha release on PyPI."""
     _ = current_version
     _ = _latest_version_from_pypi()
-    payload = _last_pypi_payload
-    if not isinstance(payload, dict):
-        return None
-    releases = payload.get("releases")
-    if not isinstance(releases, dict):
-        return None
-    candidates: list[tuple[Version, str]] = []
-    for version_text, files in releases.items():
-        if not isinstance(version_text, str) or not version_text.strip():
-            continue
-        try:
-            parsed_version = Version(version_text)
-        except InvalidVersion:
-            continue
-        if parsed_version.pre is None or parsed_version.pre[0] != "a":
-            continue
-        if _release_has_non_yanked_file(files):
-            candidates.append((parsed_version, version_text.strip()))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda candidate: candidate[0])[1]
+    return newest_pypi_version(_last_pypi_payload, include_stable=True, include_alpha=True)
 
 
 def already_current_update_message(version_check: Mapping[str, object] | None) -> str:
@@ -1519,7 +1496,7 @@ def _latest_compatible_release_version(
     current_version: str,
     runtime_python: str,
     *,
-    alpha_only: bool = False,
+    include_alpha: bool = False,
 ) -> str | None:
     payload = _last_pypi_payload
     if not isinstance(payload, dict):
@@ -1535,7 +1512,9 @@ def _latest_compatible_release_version(
             parsed_version = Version(version_text)
         except InvalidVersion:
             continue
-        if alpha_only and (parsed_version.pre is None or parsed_version.pre[0] != "a"):
+        if parsed_version.is_prerelease and (
+            not include_alpha or parsed_version.pre is None or parsed_version.pre[0] != "a"
+        ):
             continue
         if _is_newer_version(version_text, current_version) is not True:
             continue
@@ -1546,10 +1525,7 @@ def _latest_compatible_release_version(
             candidates.append((parsed_version, version_text.strip()))
     if not candidates:
         return None
-    if alpha_only:
-        return max(candidates, key=lambda candidate: candidate[0])[1]
-    stable_candidates = [candidate for candidate in candidates if not candidate[0].is_prerelease]
-    return max(stable_candidates or candidates, key=lambda candidate: candidate[0])[1]
+    return max(candidates, key=lambda candidate: candidate[0])[1]
 
 
 def _release_has_non_yanked_file(files: object) -> bool:
@@ -2263,36 +2239,14 @@ def _verified_newer_guard_daemon(
 ) -> dict[str, object] | None:
     """Retain a live newer runtime only after signed-state and loopback health agree."""
 
-    from ..daemon.discovery import load_authenticated_daemon_state
-    from ..daemon.manager import (
-        GUARD_DAEMON_COMPATIBILITY_VERSION,
-        load_guard_daemon_auth_token,
-    )
+    from ..daemon.live_identity import verified_live_guard_daemon_identity
 
-    state = load_authenticated_daemon_state(guard_home)
-    if state is None:
+    identity = verified_live_guard_daemon_identity(guard_home)
+    if identity is None:
         return None
-    daemon_version_text = state.get("package_version")
-    host = state.get("host")
-    port = state.get("port")
-    compatibility_version = state.get("compatibility_version")
-    runtime_fingerprint = state.get("runtime_fingerprint")
-    daemon_pid = state.get("pid")
-    token = load_guard_daemon_auth_token(guard_home)
-    if (
-        not isinstance(daemon_version_text, str)
-        or not isinstance(host, str)
-        or host not in {"127.0.0.1", "::1"}
-        or not isinstance(port, int)
-        or not 1 <= port <= 65535
-        or compatibility_version != GUARD_DAEMON_COMPATIBILITY_VERSION
-        or not isinstance(runtime_fingerprint, str)
-        or not runtime_fingerprint
-        or not isinstance(daemon_pid, int)
-        or daemon_pid <= 0
-        or not isinstance(token, str)
-        or not token
-    ):
+    daemon_version_text = identity.get("package_version")
+    daemon_url = identity.get("daemon_url")
+    if not isinstance(daemon_version_text, str) or not isinstance(daemon_url, str):
         return None
     try:
         daemon_version = Version(daemon_version_text)
@@ -2303,35 +2257,6 @@ def _verified_newer_guard_daemon(
     if daemon_version <= required_version:
         return None
 
-    daemon_url = f"http://{f'[{host}]' if host == '::1' else host}:{port}"
-    request = urllib.request.Request(
-        f"{daemon_url}/v1/healthz/details",
-        headers={"X-Guard-Token": token},
-        method="GET",
-    )
-    try:
-        with managed_urlopen(request, timeout=1.0, policy=ManagedNetworkPolicy(proxy_mode="none")) as response:
-            if response.status != 200:
-                return None
-            response_bytes = response.read(65_537)
-            if len(response_bytes) > 65_536:
-                return None
-            details = json.loads(response_bytes.decode("utf-8"))
-    except (ManagedNetworkError, OSError, ValueError, json.JSONDecodeError, urllib.error.URLError):
-        return None
-    if not isinstance(details, dict) or details.get("ok") is not True:
-        return None
-    try:
-        details_guard_home = Path(str(details.get("guard_home"))).expanduser().resolve()
-    except (OSError, RuntimeError, ValueError):
-        return None
-    identity_fields = ("package_version", "compatibility_version", "runtime_fingerprint", "pid")
-    if (
-        details_guard_home != guard_home.expanduser().resolve()
-        or any(field not in state or field not in details for field in identity_fields)
-        or any(details.get(field) != state.get(field) for field in identity_fields)
-    ):
-        return None
     return {
         "status": "retained_newer_runtime",
         "daemon_url": daemon_url,
