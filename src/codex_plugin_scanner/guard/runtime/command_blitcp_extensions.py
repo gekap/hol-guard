@@ -6,19 +6,17 @@ from dataclasses import replace
 
 from .command_extension_matchers import executable_names
 from .command_extension_specs import CommandExtensionSpec
-from .command_rules import (
-    AnyMatcher,
-    CommandMatcher,
-    CommandRuleSeverity,
-    CommandSafetyRule,
-    CommandSafeVariant,
-    ExecutableMatcher,
-)
-from .command_structured_matchers import (
+from .command_operand_matchers import (
     OperandGatedFlagMatcher,
     TrailingOperandHostTargetMatcher,
     TrailingOperandPrefixMatcher,
     TrailingOperandRemoteAliasMatcher,
+)
+from .command_remote_extensions import _remote_rule
+from .command_rules import (
+    AnyMatcher,
+    CommandSafeVariant,
+    ExecutableMatcher,
 )
 
 # blitcp takes `SOURCE... DESTINATION`, so the final operand decides whether a
@@ -183,35 +181,18 @@ _BLITCP_UNVERIFIED_COPY = OperandGatedFlagMatcher(
 )
 
 
-def _blitcp_rule(
-    *,
-    rule_id: str,
-    title: str,
-    description: str,
-    matcher: CommandMatcher,
-    action_class: str,
-    safer_alternative: str,
-    severity: CommandRuleSeverity,
-    risk_classes: tuple[str, ...] = ("destructive_shell", "network_egress"),
-    safe_variants: tuple[CommandSafeVariant, ...] = (),
-    example_command: str | None = None,
-) -> CommandSafetyRule:
-    return CommandSafetyRule(
-        rule_id=rule_id,
-        title=title,
-        description=description,
-        severity=severity,
-        risk_classes=risk_classes,
-        action_classes=(action_class,),
-        safer_alternatives=(safer_alternative,),
-        matcher=matcher,
-        safe_variants=safe_variants,
-        example_command=example_command,
-    )
-
+# The action-class risk map in the builtin rules registry merges this the same
+# way it merges the GitHub action classes, so blitcp's risk declarations stay
+# next to its rules.
+BLITCP_ACTION_RISK_CLASSES: dict[str, tuple[str, ...]] = {
+    "blitcp remote destination command": ("network_egress",),
+    "blitcp privilege escalation command": ("execution",),
+    "blitcp self-update command": ("execution", "network_egress"),
+    "blitcp unverified copy command": ("destructive_shell",),
+}
 
 BLITCP_COMMAND_RULES = (
-    _blitcp_rule(
+    _remote_rule(
         rule_id="command.blitcp.remote-destination",
         example_command="blitcp /data s3://backups/nightly",
         title="Blitcp copy to a remote destination",
@@ -235,7 +216,7 @@ BLITCP_COMMAND_RULES = (
             ),
         ),
     ),
-    _blitcp_rule(
+    _remote_rule(
         rule_id="command.blitcp.privilege-escalation",
         example_command="blitcp --use-sudo /var/lib/data /mnt/backup",
         title="Blitcp privilege escalation",
@@ -250,7 +231,7 @@ BLITCP_COMMAND_RULES = (
         severity="critical",
         risk_classes=("execution",),
     ),
-    _blitcp_rule(
+    _remote_rule(
         rule_id="command.blitcp.self-update",
         example_command="blitcp --update",
         title="Blitcp self-update",
@@ -264,7 +245,7 @@ BLITCP_COMMAND_RULES = (
         severity="high",
         risk_classes=("execution", "network_egress"),
     ),
-    _blitcp_rule(
+    _remote_rule(
         rule_id="command.blitcp.unverified-copy",
         example_command="blitcp --no-verify /data /mnt/backup",
         title="Blitcp copy without verification",

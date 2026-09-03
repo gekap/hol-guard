@@ -10,7 +10,7 @@ from codex_plugin_scanner.guard.runtime.command_extensions import (
 )
 from codex_plugin_scanner.guard.runtime.command_inspection import inspect_command
 from codex_plugin_scanner.guard.runtime.command_model import parse_shell_command
-from codex_plugin_scanner.guard.runtime.command_structured_matchers import (
+from codex_plugin_scanner.guard.runtime.command_operand_matchers import (
     OperandGatedFlagMatcher,
     TrailingOperandHostTargetMatcher,
     TrailingOperandPrefixMatcher,
