@@ -130,6 +130,19 @@ BLITCP_REVIEW_CASES: tuple[tuple[str, str, str], ...] = (
         "Blitcp privilege escalation command",
         "command.blitcp.privilege-escalation",
     ),
+    # `creds lock`/`creds unlock --use-sudo` re-exec the tool under root to
+    # change credentials-file immutability — the same elevation as a sudo copy,
+    # reached through a subcommand the copy matchers exclude.
+    (
+        "blitcp creds lock --use-sudo",
+        "Blitcp privilege escalation command",
+        "command.blitcp.privilege-escalation",
+    ),
+    (
+        "blitcp creds unlock --use-sudo",
+        "Blitcp privilege escalation command",
+        "command.blitcp.privilege-escalation",
+    ),
     (
         "blitcp --update",
         "Blitcp self-update command",
@@ -198,6 +211,10 @@ BLITCP_SAFE_COMMANDS: tuple[str, ...] = (
     "blitcp ls azure-prod:",
     "blitcp list-objects s3://backups/nightly",
     "blitcp creds edit azure-prod extra-operand",
+    # Without --use-sudo the creds lock/unlock re-exec never happens, so there
+    # is no elevation to review.
+    "blitcp creds lock",
+    "blitcp creds unlock",
     # The flag rules describe how a copy runs, so without the shape of a copy —
     # a source and a destination — they describe no risk.
     "blitcp --use-sudo",

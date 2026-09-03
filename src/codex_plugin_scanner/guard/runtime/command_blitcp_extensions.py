@@ -143,11 +143,33 @@ _BLITCP_SELF_UPDATE = ExecutableMatcher(
 # copy runs, so `blitcp --use-sudo` alone (help output, an aborted command line)
 # elevates nothing and must not prompt; prompting there is what teaches people
 # to approve the elevation that matters.
-_BLITCP_PRIVILEGE_ESCALATION = OperandGatedFlagMatcher(
+_BLITCP_SUDO_COPY = OperandGatedFlagMatcher(
     executables=executable_names("blitcp"),
     required_flags=frozenset({"--use-sudo"}),
     options_with_values=_BLITCP_OPTIONS_WITH_VALUES,
     excluded_first_arguments=_BLITCP_SUBCOMMANDS,
+)
+# `creds lock` / `creds unlock` are the documented sudo re-execs outside copy
+# mode: with --use-sudo the tool re-runs itself under root to set or clear OS
+# immutability on the credentials file. The dispatch token that keeps `creds`
+# out of the copy matchers is present here too, so these are matched on their
+# literal subcommand pair instead of a copy shape.
+_BLITCP_SUDO_CREDS = AnyMatcher(
+    matchers=(
+        ExecutableMatcher(
+            executables=executable_names("blitcp"),
+            subcommands=("creds", "lock"),
+            required_flags=frozenset({"--use-sudo"}),
+        ),
+        ExecutableMatcher(
+            executables=executable_names("blitcp"),
+            subcommands=("creds", "unlock"),
+            required_flags=frozenset({"--use-sudo"}),
+        ),
+    )
+)
+_BLITCP_PRIVILEGE_ESCALATION = AnyMatcher(
+    matchers=(_BLITCP_SUDO_COPY, _BLITCP_SUDO_CREDS),
 )
 # A dry run copies nothing, so there is nothing for verification to check and
 # --no-verify says nothing about the outcome. Excluding it keeps previews
@@ -217,7 +239,11 @@ BLITCP_COMMAND_RULES = (
         rule_id="command.blitcp.privilege-escalation",
         example_command="blitcp --use-sudo /var/lib/data /mnt/backup",
         title="Blitcp privilege escalation",
-        description="Identifies blitcp runs that re-execute the copier under sudo.",
+        description=(
+            "Identifies blitcp runs that re-execute the tool under sudo — copies elevated "
+            "with --use-sudo, and `creds lock`/`creds unlock --use-sudo`, which needs root "
+            "to set or clear credentials-file immutability."
+        ),
         matcher=_BLITCP_PRIVILEGE_ESCALATION,
         action_class="Blitcp privilege escalation command",
         safer_alternative="Copy as a user that already reaches both paths rather than elevating the copier.",
