@@ -114,14 +114,16 @@ _BLITCP_BARE_ALIAS_DESTINATION = TrailingOperandRemoteAliasMatcher(
     allow_bare_names=True,
     excluded_first_arguments=_BLITCP_SUBCOMMANDS,
 )
-_BLITCP_REMOTE_DESTINATION = AnyMatcher(
-    matchers=(
-        _BLITCP_SCHEME_DESTINATION,
-        _BLITCP_SSH_DESTINATION,
-        _BLITCP_ALIAS_DESTINATION,
-        _BLITCP_BARE_ALIAS_DESTINATION,
-    ),
+_BLITCP_REMOTE_DESTINATION_MATCHERS: tuple[
+    TrailingOperandPrefixMatcher | TrailingOperandHostTargetMatcher | TrailingOperandRemoteAliasMatcher,
+    ...,
+] = (
+    _BLITCP_SCHEME_DESTINATION,
+    _BLITCP_SSH_DESTINATION,
+    _BLITCP_ALIAS_DESTINATION,
+    _BLITCP_BARE_ALIAS_DESTINATION,
 )
+_BLITCP_REMOTE_DESTINATION = AnyMatcher(matchers=_BLITCP_REMOTE_DESTINATION_MATCHERS)
 # safe_flag_variant() expects an AnyMatcher of executable children, so it cannot
 # build this one; the variant is the same matchers with --dry-run required on
 # top of whatever each already requires, which is what that helper produces for
@@ -129,7 +131,7 @@ _BLITCP_REMOTE_DESTINATION = AnyMatcher(
 _BLITCP_REMOTE_DESTINATION_DRY_RUN = AnyMatcher(
     matchers=tuple(
         replace(matcher, required_flags=matcher.required_flags | frozenset({"--dry-run"}))
-        for matcher in _BLITCP_REMOTE_DESTINATION.matchers
+        for matcher in _BLITCP_REMOTE_DESTINATION_MATCHERS
     ),
 )
 _BLITCP_SELF_UPDATE = ExecutableMatcher(
