@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 from codex_plugin_scanner.guard.runtime.command_extensions import (
     BUILT_IN_COMMAND_EXTENSION_REGISTRY,
@@ -20,6 +23,27 @@ from tests.command_extension_contracts import (
     assert_reviewed_command_cases,
     assert_safe_command_cases,
 )
+
+@pytest.fixture(autouse=True)
+def _hermetic_blitcp_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory):
+    """Resolve blitcp saved connections from a controlled, empty location so bare
+    names stay non-reviewable unless a test wires up a credentials file. Also
+    clears the alias cache so files reused across tests are re-read."""
+    from codex_plugin_scanner.guard.runtime import command_blitcp_extensions as blitcp_ext
+
+    monkeypatch.delenv("BLITCP_CREDENTIALS", raising=False)
+    monkeypatch.delenv("FAST_COPY_CREDENTIALS", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("xdg-empty")))
+    blitcp_ext._ALIAS_CACHE.clear()
+    yield
+    blitcp_ext._ALIAS_CACHE.clear()
+
+
+def _write_blitcp_credentials(tmp_path: Path, names: tuple[str, ...]) -> Path:
+    path = tmp_path / "credentials.json"
+    path.write_text(json.dumps({"connections": {name: {"type": "s3"} for name in names}}))
+    return path
+
 
 BLITCP_REVIEW_CASES: tuple[tuple[str, str, str], ...] = (
     (
@@ -441,3 +465,49 @@ def test_trailing_matchers_skip_blitcp_style_subcommand_dispatch(tmp_path: Path)
     # its ordinary copy grammar for these, so the matcher keeps looking.
     assert matcher.match(parsed("transfer Ls s3://bucket/key"))
     assert matcher.match(parsed("transfer /data ls s3://bucket/key"))
+
+
+def test_blitcp_bare_alias_reviews_when_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bare destination that names a real saved connection is egress, even
+    without --credentials-file (blitcp resolves it through the default file)."""
+    creds = _write_blitcp_credentials(tmp_path, ("aws-prod", "azure-prod"))
+    monkeypatch.setenv("BLITCP_CREDENTIALS", str(creds))
+
+    payload = inspect_command("blitcp /data aws-prod", cwd=tmp_path, home_dir=tmp_path)
+    assert payload["status"] == "review"
+    assert payload["controlling_rule_id"] == "command.blitcp.remote-destination"
+
+    restore = inspect_command("blitcp aws-prod /local/restore", cwd=tmp_path, home_dir=tmp_path)
+    assert restore["status"] == "no_match"
+
+
+def test_blitcp_bare_name_not_a_connection_stays_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ordinary local directory that is not a configured connection must not
+    prompt, even when a credentials file exists — that is the any-operand noise
+    the rule avoids."""
+    creds = _write_blitcp_credentials(tmp_path, ("aws-prod",))
+    monkeypatch.setenv("BLITCP_CREDENTIALS", str(creds))
+
+    payload = inspect_command("blitcp /data local-backup", cwd=tmp_path, home_dir=tmp_path)
+    assert payload["status"] == "no_match"
+
+
+def test_blitcp_bare_name_with_no_credentials_file_stays_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no credentials file at all there are no saved connections, so a bare
+    name is a local directory and stays silent."""
+    monkeypatch.setenv("BLITCP_CREDENTIALS", str(tmp_path / "absent-credentials.json"))
+
+    payload = inspect_command("blitcp /data aws-prod", cwd=tmp_path, home_dir=tmp_path)
+    assert payload["status"] == "no_match"
+
+
+def test_blitcp_encrypted_credentials_reviews_bare_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A sealed (encrypted) credentials file proves saved connections exist but
+    hides their names, so a bare destination is reviewed conservatively."""
+    creds = tmp_path / "credentials.json"
+    creds.write_bytes(b"\x9d\x01sealed-blitcp-envelope-not-json")
+    monkeypatch.setenv("BLITCP_CREDENTIALS", str(creds))
+
+    payload = inspect_command("blitcp /data aws-prod", cwd=tmp_path, home_dir=tmp_path)
+    assert payload["status"] == "review"
+    assert payload["controlling_rule_id"] == "command.blitcp.remote-destination"

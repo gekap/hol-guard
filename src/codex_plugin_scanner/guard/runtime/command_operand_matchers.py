@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import final
 
 from .command_matcher_contracts import CommandMatcher, MatcherEvidence
@@ -255,6 +256,11 @@ class TrailingOperandRemoteAliasMatcher:
     allow_bare_names: bool = False
     bare_names_only: bool = False
     excluded_first_arguments: frozenset[str] = frozenset()
+    # Optional gate for the BARE-name form: given the candidate name, return
+    # whether it should match. Lets a caller resolve the real saved-connection
+    # set and match only known aliases (closing the default-credentials gap)
+    # instead of every bare word. None keeps the plain structural behaviour.
+    bare_name_acceptor: Callable[[str], bool] | None = None
 
     def __post_init__(self) -> None:
         normalized_executables = frozenset(value.strip().lower() for value in self.executables if value.strip())
@@ -294,12 +300,20 @@ class TrailingOperandRemoteAliasMatcher:
             )
             if len(operands) < self.minimum_operands:
                 continue
+            final_operand = operands[-1]
             if not _is_remote_alias_target(
-                operands[-1],
+                final_operand,
                 allow_bare_names=self.allow_bare_names,
                 bare_names_only=self.bare_names_only,
             ):
                 continue
+            # For the bare form (no colon), an optional acceptor decides whether
+            # the name is a real saved connection, so an ordinary local
+            # destination does not match.
+            if self.bare_name_acceptor is not None and ":" not in final_operand:
+                bare_name = final_operand.rstrip("/").rstrip("\\")
+                if not self.bare_name_acceptor(bare_name):
+                    continue
             evidence.append(
                 MatcherEvidence(
                     segment_index=index,

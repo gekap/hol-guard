@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import replace
 
 from .command_extension_matchers import executable_names
@@ -89,19 +91,101 @@ _BLITCP_SSH_DESTINATION = TrailingOperandHostTargetMatcher(
     options_with_values=_BLITCP_OPTIONS_WITH_VALUES,
     excluded_first_arguments=_BLITCP_SUBCOMMANDS,
 )
+# ── Saved-connection resolution ──────────────────────────────────────────────
+# A bare `NAME` destination (`blitcp /data aws-prod`) is only egress if `aws-prod`
+# is actually a saved blitcp connection — otherwise it is a copy into a local
+# `aws-prod/` directory. blitcp resolves bare names through its default
+# credentials file even without --credentials-file, so we resolve the same file
+# and match only names that are really configured. This closes the
+# default-credentials gap without prompting on every bare-word local copy.
+_ALIAS_CACHE: dict[str, tuple[tuple[str, int, int], tuple[str, frozenset[str] | None]]] = {}
+
+
+def _blitcp_credentials_path() -> str | None:
+    """The default credentials file blitcp would read (no --credentials-file).
+
+    Mirrors blitcp.default_credentials_path for the parts a reviewer can see:
+    the $BLITCP_CREDENTIALS / $FAST_COPY_CREDENTIALS overrides, then the per-user
+    XDG location (blitcp/, with fast_copy/ back-compat). The legacy
+    "beside the blitcp script" location is intentionally not guessed."""
+    for var in ("BLITCP_CREDENTIALS", "FAST_COPY_CREDENTIALS"):
+        override = os.environ.get(var)
+        if override:
+            return override
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    for directory in ("blitcp", "fast_copy"):
+        candidate = os.path.join(xdg, directory, "credentials.json")
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _parse_credentials(raw: bytes) -> tuple[str, frozenset[str] | None]:
+    """(state, names): 'open' with the connection names for a plaintext file,
+    'encrypted' when the file is a sealed envelope whose names cannot be read."""
+    if not raw.lstrip().startswith(b"{"):
+        return ("encrypted", None)  # blitcp's encrypted store is a binary envelope
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return ("encrypted", None)
+    connections = data.get("connections", data) if isinstance(data, dict) else {}
+    if not isinstance(connections, dict):
+        return ("open", frozenset())
+    return ("open", frozenset(connections))
+
+
+def _resolve_blitcp_aliases() -> tuple[str, frozenset[str] | None]:
+    """Resolve the configured connection set. 'none' when there is no file,
+    'open' with names when readable, 'encrypted' when present but sealed/unreadable.
+    Cached per file identity (path, mtime, size); best-effort and side-effect free."""
+    path = _blitcp_credentials_path()
+    if not path or not os.path.isfile(path):
+        return ("none", None)
+    try:
+        info = os.stat(path)
+        identity = (os.path.realpath(path), info.st_mtime_ns, info.st_size)
+        cached = _ALIAS_CACHE.get(identity[0])
+        if cached is not None and cached[0] == identity:
+            return cached[1]
+        with open(path, "rb") as handle:
+            raw = handle.read()
+        result = _parse_credentials(raw)
+        _ALIAS_CACHE[identity[0]] = (identity, result)
+        return result
+    except OSError:
+        # The file exists but cannot be read — assume connections are in play.
+        return ("encrypted", None)
+
+
+def _blitcp_default_alias_acceptor(name: str) -> bool:
+    """Whether a bare destination name is (or may be) a saved connection.
+
+    - no credentials file  -> not a connection, a local directory (stay silent);
+    - plaintext file       -> match only a name that is actually configured;
+    - sealed/unreadable     -> a credentials file exists, so review conservatively.
+    """
+    state, names = _resolve_blitcp_aliases()
+    if state == "none":
+        return False
+    if state == "open":
+        return names is not None and name in names
+    return True
+
+
 # The third destination syntax: a saved connection, referenced as `NAME:subpath`
 # (`azure-prod:backups`) or as a bare `NAME`. The colon form is structurally
 # recognizable and follows blitcp's own parser — a head with `@`, a path
 # separator, or a single character is not a connection reference. A bare name is
-# not: nothing distinguishes `blitcp /data azure-prod` from a copy into a local
-# `azure-prod/` directory without reading the user's credentials file, and
-# prompting on every bare-word destination would recreate exactly the
-# any-operand noise this rule exists to avoid. So the bare form is only matched
-# when --credentials-file names a connections file on the command itself, which
-# is the one static signal that saved connections are in play. The residual gap
-# — a bare name resolved through the *implicit* default credentials file — is
-# documented rather than closed, because closing it costs a prompt on every
-# local copy to a fresh directory.
+# ambiguous on its own: `blitcp /data azure-prod` is egress only if `azure-prod`
+# is a saved connection, otherwise it is a copy into a local `azure-prod/`
+# directory. blitcp resolves bare names through its default credentials file even
+# without --credentials-file, so we resolve that same file (see
+# `_resolve_blitcp_aliases`) and match a bare name only when it is a configured
+# connection — closing the default-credentials gap without prompting on every
+# bare-word local copy. Two matchers cover the bare form: one keyed on an
+# explicit --credentials-file (any bare name — the file is named on the command),
+# and one that resolves the default credentials file for the known-alias case.
 _BLITCP_ALIAS_DESTINATION = TrailingOperandRemoteAliasMatcher(
     executables=executable_names("blitcp"),
     options_with_values=_BLITCP_OPTIONS_WITH_VALUES,
@@ -117,6 +201,17 @@ _BLITCP_BARE_ALIAS_DESTINATION = TrailingOperandRemoteAliasMatcher(
     bare_names_only=True,
     excluded_first_arguments=_BLITCP_SUBCOMMANDS,
 )
+# The default-credentials case: a bare NAME with no --credentials-file on the
+# command still resolves through blitcp's default credentials file, so match it
+# when the name is a configured saved connection (or the file is sealed).
+_BLITCP_KNOWN_BARE_ALIAS_DESTINATION = TrailingOperandRemoteAliasMatcher(
+    executables=executable_names("blitcp"),
+    options_with_values=_BLITCP_OPTIONS_WITH_VALUES,
+    allow_bare_names=True,
+    bare_names_only=True,
+    bare_name_acceptor=_blitcp_default_alias_acceptor,
+    excluded_first_arguments=_BLITCP_SUBCOMMANDS,
+)
 _BLITCP_REMOTE_DESTINATION_MATCHERS: tuple[
     TrailingOperandPrefixMatcher | TrailingOperandHostTargetMatcher | TrailingOperandRemoteAliasMatcher,
     ...,
@@ -125,6 +220,7 @@ _BLITCP_REMOTE_DESTINATION_MATCHERS: tuple[
     _BLITCP_SSH_DESTINATION,
     _BLITCP_ALIAS_DESTINATION,
     _BLITCP_BARE_ALIAS_DESTINATION,
+    _BLITCP_KNOWN_BARE_ALIAS_DESTINATION,
 )
 _BLITCP_REMOTE_DESTINATION = AnyMatcher(matchers=_BLITCP_REMOTE_DESTINATION_MATCHERS)
 # safe_flag_variant() expects an AnyMatcher of executable children, so it cannot
@@ -204,8 +300,8 @@ BLITCP_COMMAND_RULES = (
         description=(
             "Identifies blitcp copies whose final operand is a remote destination — an "
             "object-store or SMB endpoint, an scp-style [user@]host:path target, or a saved "
-            "connection referenced as NAME:subpath (or as a bare NAME when --credentials-file "
-            "is on the command) — which sends local data off the host. The same endpoint in "
+            "connection referenced as NAME:subpath (or as a bare NAME that resolves to a saved "
+            "connection) — which sends local data off the host. The same endpoint in "
             "an earlier position is a source and reads data instead."
         ),
         matcher=_BLITCP_REMOTE_DESTINATION,
