@@ -196,7 +196,7 @@ def _first_argument_is_excluded(arguments: tuple[str, ...], excluded: frozenset[
     return bool(excluded) and bool(arguments) and arguments[0] in excluded
 
 
-def _is_remote_alias_target(operand: str, *, allow_bare_names: bool) -> bool:
+def _is_remote_alias_target(operand: str, *, allow_bare_names: bool, bare_names_only: bool = False) -> bool:
     """Report whether an operand can name a saved connection (``NAME[:subpath]``).
 
     Mirrors the acceptor in blitcp's ``resolve_named_endpoint`` exclusion by
@@ -209,11 +209,15 @@ def _is_remote_alias_target(operand: str, *, allow_bare_names: bool) -> bool:
 
     A bare name (no colon) is only accepted when ``allow_bare_names`` is set:
     without the colon nothing distinguishes a connection name from an ordinary
-    relative destination, so callers gate that form on stronger evidence.
+    relative destination, so callers gate that form on stronger evidence. With
+    ``bare_names_only`` the colon form is left to a sibling matcher, so the two
+    never both fire on one operand.
     """
     if "://" in operand:
         return False
     head, separator, _tail = operand.partition(":")
+    if separator and bare_names_only:
+        return False
     if separator:
         if "@" in head or len(head) <= 1:
             return False
@@ -249,6 +253,7 @@ class TrailingOperandRemoteAliasMatcher:
     forbidden_flags: frozenset[str] = frozenset()
     minimum_operands: int = 2
     allow_bare_names: bool = False
+    bare_names_only: bool = False
     excluded_first_arguments: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
@@ -289,7 +294,11 @@ class TrailingOperandRemoteAliasMatcher:
             )
             if len(operands) < self.minimum_operands:
                 continue
-            if not _is_remote_alias_target(operands[-1], allow_bare_names=self.allow_bare_names):
+            if not _is_remote_alias_target(
+                operands[-1],
+                allow_bare_names=self.allow_bare_names,
+                bare_names_only=self.bare_names_only,
+            ):
                 continue
             evidence.append(
                 MatcherEvidence(

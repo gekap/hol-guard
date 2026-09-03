@@ -107,11 +107,14 @@ _BLITCP_ALIAS_DESTINATION = TrailingOperandRemoteAliasMatcher(
     options_with_values=_BLITCP_OPTIONS_WITH_VALUES,
     excluded_first_arguments=_BLITCP_SUBCOMMANDS,
 )
+# Bare operands only: a colon operand is already owned by the ungated alias
+# matcher above, so restricting this one keeps a single evidence row per hit.
 _BLITCP_BARE_ALIAS_DESTINATION = TrailingOperandRemoteAliasMatcher(
     executables=executable_names("blitcp"),
     options_with_values=_BLITCP_OPTIONS_WITH_VALUES,
     required_flags=frozenset({"--credentials-file"}),
     allow_bare_names=True,
+    bare_names_only=True,
     excluded_first_arguments=_BLITCP_SUBCOMMANDS,
 )
 _BLITCP_REMOTE_DESTINATION_MATCHERS: tuple[
@@ -253,8 +256,9 @@ BLITCP_COMMAND_RULES = (
         title="Blitcp copy without verification",
         description=(
             "Identifies blitcp runs that skip the whole post-copy verification phase, so the run "
-            "reports success without reading anything back. The result is a silently incomplete "
-            "copy rather than a destructive action."
+            "reports success without reading anything back and the destination can silently "
+            "diverge from the source — data loss once the source is cleaned up on the strength "
+            "of that success report."
         ),
         matcher=_BLITCP_UNVERIFIED_COPY,
         action_class="Blitcp unverified copy command",

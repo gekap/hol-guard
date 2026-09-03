@@ -382,6 +382,7 @@ def test_remote_alias_matcher_bare_names_are_opt_in(tmp_path: Path) -> None:
         options_with_values=frozenset({"--credentials-file"}),
         required_flags=frozenset({"--credentials-file"}),
         allow_bare_names=True,
+        bare_names_only=True,
     )
 
     def parsed(command: str):
@@ -397,6 +398,9 @@ def test_remote_alias_matcher_bare_names_are_opt_in(tmp_path: Path) -> None:
     assert matcher.match(parsed("transfer --credentials-file /tmp/c.json /data backups/sub")) == ()
     # Direction still applies to the bare form.
     assert matcher.match(parsed("transfer --credentials-file /tmp/c.json azure-prod /data")) == ()
+    # The bare-only narrowing leaves colon operands to the ungated alias
+    # matcher, so the two children never both fire on one operand.
+    assert matcher.match(parsed("transfer --credentials-file /tmp/c.json /data azure-prod:backups")) == ()
 
 
 def test_operand_gated_flag_matcher_requires_the_shape_of_a_copy(tmp_path: Path) -> None:
