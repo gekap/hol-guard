@@ -7,6 +7,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from .commands_hook_compat_bootstrap import bootstrap_compatibility_module
+
+bootstrap_compatibility_module(globals())
+
 
 def _coalesce_string(*values: object | None) -> str:
     """Return a display-safe fallback while CLI helper modules are importing."""
@@ -1295,7 +1299,7 @@ def _run_hook_generic_payload(
             approval_context,
             _embedded_script_remediation(command_text),
         )
-        if _canonical_harness_name(args.harness) == "kimi":
+        if _canonical_harness_name(args.harness) in {"kimi", "hermes"}:
             _emit_native_hook_response(
                 harness=args.harness,
                 policy_action=policy_action,

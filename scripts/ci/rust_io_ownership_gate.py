@@ -17,15 +17,16 @@ import ast
 import json
 import sys
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 if __package__ is None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.ci.rust_io_ownership_resolver import resolve_call
+from scripts.ci.rust_io_ownership_contract import capability_contract
+from scripts.ci.rust_io_ownership_resolver import FunctionRecordLike, resolve_call
 
 SCHEMA: Final = "hol-guard.decision-critical-io.v1"
 NATIVE_MODES: Final = frozenset({"auto", "force"})
@@ -70,6 +71,7 @@ _COMPATIBILITY_PATHS: Final = frozenset(
 _TRANSPORT_IDENTITY_PATHS: Final = frozenset(
     {
         "src/codex_plugin_scanner/guard/native_runtime.py",
+        "src/codex_plugin_scanner/guard/native_resident_client.py",
         "src/codex_plugin_scanner/guard/native_runtime_resident.py",
         "src/codex_plugin_scanner/guard/native_runtime_resilience.py",
         "src/codex_plugin_scanner/guard/codex_hook_launch_runtime.py",
@@ -240,6 +242,8 @@ def _category(path: str, kind: str) -> str:
         return "transport_identity"
     if path in _TRANSPORT_DECODE_PATHS and kind == "decode":
         return "transport_decode"
+    if path == "src/codex_plugin_scanner/guard/native_decision_receipt.py" and kind == "hash":
+        return "transport_integrity"
     if path in _ASYNC_POLICY_PATHS:
         return "asynchronous_policy"
     if path.startswith(_PERSISTENCE_PATH_PREFIXES):
@@ -291,6 +295,7 @@ def _reachable_records(
     records: dict[tuple[str, str], list[FunctionRecord]],
 ) -> tuple[FunctionRecord, ...]:
     pending = [_root_record(root, spec, records) for spec in ROOTS]
+    records_view = cast(Mapping[tuple[str, str], list[FunctionRecordLike]], records)
     seen: set[tuple[str, str]] = set()
     result: list[FunctionRecord] = []
     while pending:
@@ -301,9 +306,9 @@ def _reachable_records(
         seen.add(identity)
         result.append(record)
         for name in _calls(record):
-            resolved = resolve_call(root, record, name, records)
+            resolved = resolve_call(root, cast(FunctionRecordLike, cast(object, record)), name, records_view)
             if resolved is not None:
-                pending.append(resolved)
+                pending.append(cast(FunctionRecord, cast(object, resolved)))
     return tuple(result)
 
 
@@ -391,55 +396,7 @@ def _inventory(root: Path, reachable: tuple[FunctionRecord, ...]) -> list[IoObse
 
 
 def _capability_contract() -> list[dict[str, object]]:
-    return [
-        {
-            "id": "post_tool_source_read",
-            "authority": "rust",
-            "rust_symbols": ["guard_secure_fs::read_bounded", "guard_hook_core::review_post_tool"],
-            "python_semantic_fallback": False,
-            "compatibility_modes": sorted(COMPATIBILITY_MODES),
-            "failure": "fail_closed",
-        },
-        {
-            "id": "sensitive_path_and_symlink_classification",
-            "authority": "rust",
-            "rust_symbols": ["guard_secure_fs::classify_source_path", "guard_secure_fs::contains_symlink_component"],
-            "python_semantic_fallback": False,
-            "compatibility_modes": sorted(COMPATIBILITY_MODES),
-            "failure": "fail_closed",
-        },
-        {
-            "id": "pre_post_identity_and_equivalence",
-            "authority": "rust",
-            "rust_symbols": ["guard_secure_fs::FileIdentity", "guard_hook_core::review_post_tool"],
-            "python_semantic_fallback": False,
-            "compatibility_modes": sorted(COMPATIBILITY_MODES),
-            "failure": "fail_closed",
-        },
-        {
-            "id": "archive_decode_package_inspection",
-            "authority": "rust_when_hook_reachable",
-            "rust_symbols": [
-                "guard_command::pretool::evaluate_pre_tool_envelope",
-                "guard_runtime::strict_json::parse",
-                "guard_hook_core::extract_payload_output",
-            ],
-            "python_semantic_fallback": False,
-            "compatibility_modes": sorted(COMPATIBILITY_MODES),
-            "failure": "fail_closed",
-        },
-        {
-            "id": "policy_snapshot_admission",
-            "authority": "rust",
-            "rust_symbols": [
-                "guard_runtime::policy_store::PolicySnapshotStore",
-                "guard_runtime::edge::evaluate_envelope_with_store",
-            ],
-            "python_semantic_fallback": False,
-            "python_decision_time_disk_io": False,
-            "failure": "fail_closed",
-        },
-    ]
+    return capability_contract(COMPATIBILITY_MODES)
 
 
 def validate(root: Path) -> dict[str, object]:

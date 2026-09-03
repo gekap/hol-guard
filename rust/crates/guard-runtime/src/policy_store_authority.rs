@@ -14,13 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const AUTHORITY_WATCH_INTERVAL: Duration = Duration::from_millis(5);
 
-/// Return a cryptographic identity for the complete authority object.
-///
-/// Metadata alone is insufficient: a same-size in-place rewrite can restore
-/// its mtime. Include the bounded bytes in a SHA-256 digest, together with
-/// the opened object's identity, so both semantic replacement and object
-/// replacement invalidate the resident fence. The digest is only a change
-/// detector; the authenticated record parser remains the source of truth.
+/// Return a cryptographic identity for the bounded authority object and its metadata, identity, and bytes.
 pub(super) fn authority_fingerprint(path: &Path) -> Option<String> {
     let metadata = fs::symlink_metadata(path).ok()?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -97,17 +91,25 @@ pub(super) fn start_authority_watcher(
         });
 }
 
-pub(super) fn encode_ack(snapshot: &PolicySnapshotV3, idempotent: bool) -> Result<Vec<u8>, String> {
+pub(super) fn encode_ack(
+    snapshot: &PolicySnapshotV3,
+    idempotent: bool,
+    resident_generation: u64,
+) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&PolicySnapshotAckV1 {
         status: "accepted".to_owned(),
         generation: snapshot.generation,
         policy_digest: snapshot.policy_digest.clone(),
         idempotent,
+        resident_generation,
     })
     .map_err(|_| "native_policy_snapshot_ack_encode_failed".to_owned())
 }
 
-pub(super) fn encode_requires_new_generation(state: &PolicyState) -> Result<Vec<u8>, String> {
+pub(super) fn encode_requires_new_generation(
+    state: &PolicyState,
+    resident_generation: u64,
+) -> Result<Vec<u8>, String> {
     let Some(policy_digest) = state.policy_digest.as_ref() else {
         return Err("native_policy_snapshot_invalid".to_owned());
     };
@@ -119,6 +121,7 @@ pub(super) fn encode_requires_new_generation(state: &PolicyState) -> Result<Vec<
         generation: state.generation_floor,
         policy_digest: policy_digest.clone(),
         idempotent: false,
+        resident_generation,
     })
     .map_err(|_| "native_policy_snapshot_ack_encode_failed".to_owned())
 }
@@ -158,7 +161,23 @@ pub(super) fn authorities_unchanged(store: &PolicySnapshotStore) -> bool {
         .lock()
         .map(|observed| *observed == approval_current)
         .unwrap_or(false);
-    policy_matches && approval_matches
+    let approval_v4_current = store
+        .approval_v4_authority
+        .as_ref()
+        .and_then(|authority| authority_fingerprint(&authority.path));
+    let approval_v4_current = approval_v4_current.or_else(|| {
+        authority_fingerprint(
+            &store
+                .authority_path
+                .with_file_name(approval_v4_authority::AUTHORITY_FILE_NAME),
+        )
+    });
+    let approval_v4_matches = store
+        .approval_v4_authority_observed
+        .lock()
+        .map(|observed| *observed == approval_v4_current)
+        .unwrap_or(false);
+    policy_matches && approval_matches && approval_v4_matches
 }
 
 pub(super) fn authority_unchanged_fenced(store: &PolicySnapshotStore) -> bool {
@@ -226,87 +245,6 @@ pub(super) fn scope_binding_for_state_base(state_base: &Path) -> (String, String
     (canonical, digest)
 }
 
-pub(super) fn validate_private_directory(path: &Path) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|_| "native_policy_snapshot_parent_invalid".to_owned())?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err("native_policy_snapshot_parent_invalid".to_owned());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err("native_policy_snapshot_parent_not_private".to_owned());
-        }
-    }
-    #[cfg(windows)]
-    crate::resident_state::verify_windows_private_path(path, true)?;
-    Ok(())
-}
-
-pub(super) fn read_verifier_key(state_base: &Path) -> Result<[u8; VERIFIER_KEY_BYTES], String> {
-    let path = state_base.join(VERIFIER_KEY_FILE_NAME);
-    #[cfg(windows)]
-    let mut file =
-        crate::resident_state::open_private_read(&path, MAX_KEY_FILE_BYTES, "policy_verifier_key")
-            .map_err(map_verifier_read_error)?
-            .ok_or_else(|| "native_policy_verifier_key_missing".to_owned())?;
-    #[cfg(not(windows))]
-    let mut file = {
-        let path_metadata = fs::symlink_metadata(&path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                "native_policy_verifier_key_missing".to_owned()
-            } else {
-                "native_policy_verifier_key_stat_failed".to_owned()
-            }
-        })?;
-        if path_metadata.file_type().is_symlink()
-            || !path_metadata.is_file()
-            || path_metadata.len() != MAX_KEY_FILE_BYTES
-        {
-            return Err("native_policy_verifier_key_invalid".to_owned());
-        }
-        let mut options = OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-        }
-        options
-            .open(&path)
-            .map_err(|_| "native_policy_verifier_key_read_failed".to_owned())?
-    };
-    let metadata = file
-        .metadata()
-        .map_err(|_| "native_policy_verifier_key_invalid".to_owned())?;
-    if !metadata.is_file() || metadata.len() != MAX_KEY_FILE_BYTES {
-        return Err("native_policy_verifier_key_invalid".to_owned());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let owner = fs::symlink_metadata(state_base)
-            .map_err(|_| "native_policy_verifier_key_not_private".to_owned())?
-            .uid();
-        if metadata.uid() != owner || metadata.permissions().mode() & 0o077 != 0 {
-            return Err("native_policy_verifier_key_not_private".to_owned());
-        }
-    }
-    let mut key = [0u8; VERIFIER_KEY_BYTES];
-    file.read_exact(&mut key)
-        .map_err(|_| "native_policy_verifier_key_read_failed".to_owned())?;
-    let mut trailing = [0u8; 1];
-    if file
-        .read(&mut trailing)
-        .map_err(|_| "native_policy_verifier_key_read_failed".to_owned())?
-        != 0
-    {
-        return Err("native_policy_verifier_key_invalid".to_owned());
-    }
-    Ok(key)
-}
-
 pub(super) fn load_authority(
     authority_path: &Path,
     legacy_floor_path: &Path,
@@ -315,7 +253,16 @@ pub(super) fn load_authority(
     expected_scope_digest: &str,
     verifier_key: &[u8; VERIFIER_KEY_BYTES],
 ) -> Result<LoadedAuthority, String> {
-    let authority = match read_private_json(authority_path, AUTHORITY_RECORD_MAX_BYTES, "state") {
+    let private_root = authority_path
+        .parent()
+        .ok_or_else(|| "native_policy_snapshot_authority_parent_missing".to_owned())
+        .and_then(crate::resident_state::private_root_for_state_base)?;
+    let authority = match read_private_json(
+        authority_path,
+        AUTHORITY_RECORD_MAX_BYTES,
+        "state",
+        &private_root,
+    ) {
         Ok(value) => value,
         Err(error) => {
             // A pre-transactional snapshot can be left truncated or
@@ -394,8 +341,16 @@ pub(super) fn load_current_authority(
     expected_scope_digest: &str,
     verifier_key: &[u8; VERIFIER_KEY_BYTES],
 ) -> Result<LoadedAuthority, String> {
-    let Some((value, bytes)) =
-        read_private_json(authority_path, AUTHORITY_RECORD_MAX_BYTES, "state")?
+    let private_root = authority_path
+        .parent()
+        .ok_or_else(|| "native_policy_snapshot_authority_parent_missing".to_owned())
+        .and_then(crate::resident_state::private_root_for_state_base)?;
+    let Some((value, bytes)) = read_private_json(
+        authority_path,
+        AUTHORITY_RECORD_MAX_BYTES,
+        "state",
+        &private_root,
+    )?
     else {
         return Ok(LoadedAuthority {
             snapshot: None,

@@ -28,9 +28,10 @@ sha2.workspace = true
 sysinfo.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-nix.workspace = true
+nix = { workspace = true, features = ["signal"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+libproc = "0.14.11"
 security-framework = "3.7.0"
 
 [target.'cfg(windows)'.dependencies]

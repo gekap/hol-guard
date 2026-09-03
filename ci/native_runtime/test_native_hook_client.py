@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from pathlib import Path
 
 from native_hook_client_support import (
@@ -14,6 +15,8 @@ from native_hook_client_support import (
     _write_forged_state,
 )
 from native_hook_client_support import native_runtime as _native_runtime_fixture  # noqa: F401
+
+from ci.native_runtime.resident_test_support import process_is_alive
 
 
 def test_native_hook_client_reuses_one_authenticated_generation(
@@ -31,6 +34,36 @@ def test_native_hook_client_reuses_one_authenticated_generation(
     assert _result(first)["minimum_action"] == "allow"
     assert second == first
     assert len(_state_files(state_dir)) == 1
+
+
+def test_native_hook_client_stop_reaps_managed_processes(
+    native_runtime: tuple[Path, Path],
+    tmp_path: Path,
+) -> None:
+    runtime, state_dir = native_runtime
+    _invoke(runtime, state_dir, _request(runtime, tmp_path))
+    state_files = _state_files(state_dir)
+    assert len(state_files) == 1
+    state = json.loads(state_files[0].read_text(encoding="utf-8"))
+    process_ids: list[int] = []
+    for key in ("process_id", "owner_process_id"):
+        process_id = state[key]
+        assert isinstance(process_id, int) and process_id > 0
+        process_ids.append(process_id)
+
+    result = subprocess.run(
+        (str(runtime), "resident-stop", "--state-dir", str(state_dir)),
+        check=False,
+        capture_output=True,
+        timeout=3,
+    )
+    assert result.returncode == 0, result.stderr
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline and (
+        _state_files(state_dir) or any(process_is_alive(process_id) for process_id in process_ids)
+    ):
+        time.sleep(0.01)
+    assert not (_state_files(state_dir) or any(process_is_alive(process_id) for process_id in process_ids))
 
 
 def test_release_resident_starts_without_authority_and_rejects_approval(

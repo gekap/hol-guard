@@ -2,6 +2,18 @@ use super::*;
 
 static EDGE_FIXTURE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+fn write_fixture_file(path: &std::path::Path, bytes: &[u8]) {
+    #[cfg(windows)]
+    {
+        use std::io::Write;
+        let private_root = path.parent().unwrap_or(path);
+        let mut file = crate::resident_state::private_file(path, true, private_root).unwrap();
+        file.write_all(bytes).unwrap();
+    }
+    #[cfg(not(windows))]
+    std::fs::write(path, bytes).unwrap();
+}
+
 fn envelope(event: &str, payload: Value) -> GuardHookEnvelopeV2 {
     let digest = "a".repeat(64);
     let guard_home = std::env::temp_dir().join(format!(
@@ -9,17 +21,21 @@ fn envelope(event: &str, payload: Value) -> GuardHookEnvelopeV2 {
         std::process::id(),
         EDGE_FIXTURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
+    #[cfg(windows)]
+    let guard_home = crate::resident_state::ensure_private_directory(&guard_home, true)
+        .expect("create edge generation fixture");
+    #[cfg(not(windows))]
     std::fs::create_dir_all(&guard_home).expect("create edge generation fixture");
-    std::fs::write(
-        guard_home.join("native-policy-generation.json"),
-        serde_json::to_vec(&serde_json::json!({
+    let generation_path = guard_home.join("native-policy-generation.json");
+    write_fixture_file(
+        &generation_path,
+        &serde_json::to_vec(&serde_json::json!({
             "schema": "hol-guard-native-policy-generation.v1",
             "generation": 1,
             "policy_digest": digest.clone(),
         }))
         .expect("encode edge generation fixture"),
-    )
-    .expect("write edge generation fixture");
+    );
     GuardHookEnvelopeV2 {
         schema: GUARD_HOOK_ENVELOPE_V2_SCHEMA.to_owned(),
         request_id: Some("edge-test".to_owned()),
@@ -67,6 +83,18 @@ fn normalizes_harness_event_and_extracts_pretool_command() {
     assert_eq!(result.harness, "claude-code");
     assert_eq!(result.event_name, "PreToolUse");
     assert_eq!(result.result["minimum_action"], "allow");
+    assert_eq!(
+        result.receipt.schema,
+        "guard-native-hook-decision-receipt.v1"
+    );
+    assert_eq!(result.receipt.authority, "rust");
+    assert_eq!(result.receipt.event_name, "PreToolUse");
+    assert_eq!(result.receipt.decision, "allow");
+    assert_eq!(result.receipt.decision_id.len(), 64);
+    assert!(result.receipt.runtime_identity.is_none());
+    let encoded = serde_json::to_value(result.receipt).unwrap();
+    assert!(encoded.get("raw_payload").is_none());
+    assert!(encoded.get("command").is_none());
 }
 
 #[test]

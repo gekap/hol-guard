@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from .hook_availability_policy import hook_action_is_emergency_safe
+
 
 def prepare_native_hook_policy(
     handler: Any,
@@ -18,11 +20,18 @@ def prepare_native_hook_policy(
 ) -> bool:
     """Apply the production native-policy barrier before hook admission."""
 
+    harness = _canonical_managed_harness(default_harness)
+    if _hook_harness_is_unmanaged(daemon_server, harness):
+        _write_unmanaged_harness_passthrough(handler, payload, harness)
+        return False
+    workspace_path = Path(workspace) if workspace is not None else None
     prepared_policy = daemon_server.hook_worker.prepare_workspace_policy(
-        Path(workspace) if workspace is not None else None,
+        workspace_path,
         deadline=deadline,
     )
     if prepared_policy is not None:
+        return True
+    if hook_action_is_emergency_safe(payload, workspace=workspace_path):
         return True
     daemon_server.hook_worker.metrics.record_route("native_fail_safe")
     handler._write_json(
@@ -30,12 +39,84 @@ def prepare_native_hook_policy(
             payload,
             params,
             default_harness=default_harness,
-            reason="HOL Guard could not prepare the native policy safely.",
+            reason=_native_policy_not_ready_reason(daemon_server),
             reason_code="native_policy_not_ready",
             native_authoritative=True,
         )
     )
     return False
+
+
+def _canonical_managed_harness(harness: str) -> str:
+    try:
+        from ..adapters import get_adapter
+
+        return get_adapter(harness).harness
+    except (ValueError, ImportError):
+        return _canonical_hook_harness(harness)
+
+
+def _hook_harness_is_unmanaged(daemon_server: Any, harness: str) -> bool:
+    """True when leftover hooks belong to an app Guard is not currently protecting."""
+
+    store = getattr(daemon_server, "store", None)
+    getter = getattr(store, "get_managed_install", None)
+    if not callable(getter):
+        return False
+    canonical = _canonical_managed_harness(harness)
+    try:
+        managed = getter(canonical)
+    except Exception:
+        return False
+    if isinstance(managed, dict) and managed.get("active") is False:
+        return True
+    if managed is not None:
+        return False
+    lister = getattr(store, "list_managed_installs", None)
+    if not callable(lister):
+        return False
+    try:
+        installs = lister()
+    except Exception:
+        return False
+    if not isinstance(installs, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("active") is True
+        and _canonical_managed_harness(str(item.get("harness") or "")) != canonical
+        for item in installs
+    )
+
+
+def _write_unmanaged_harness_passthrough(
+    handler: Any,
+    payload: dict[str, object],
+    harness: str,
+) -> None:
+    from .hook_availability_policy import availability_harness_response
+    from .hook_request_parsing import runtime_hook_event_name
+
+    event_name = runtime_hook_event_name(payload)
+    handler._write_json(
+        availability_harness_response(
+            payload,
+            harness=harness,
+            event_name=event_name,
+            reason_code="harness_not_managed",
+            reason="HOL Guard is not protecting this app.",
+            recording_only=True,
+        )
+    )
+
+
+def _native_policy_not_ready_reason(daemon_server: Any) -> str:
+    reason = "HOL Guard could not prepare the native policy safely."
+    publisher = getattr(getattr(daemon_server, "hook_worker", None), "policy_snapshot_publisher", None)
+    last_error = getattr(publisher, "last_error", None)
+    if isinstance(last_error, str) and last_error.strip():
+        return f"{reason} {last_error.strip()}."
+    return reason
 
 
 def _canonical_hook_harness(harness: str) -> str:
@@ -75,9 +156,11 @@ def harness_json_from_native_pre_tool(harness: str, response: Mapping[str, objec
             "reason": reason,
             "model_output_action": "block",
             "notice": "warning",
+            "policy_action": "block",
             "reason_code": reason_code,
         }
     return {
+        "policy_action": "block",
         "reason_code": reason_code,
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -123,13 +206,17 @@ def post_tool_native_block_response(
     return {
         "decision": "block",
         "reason": reason,
-        "continue": False,
+        "continue": True,
         "stopReason": reason,
         "policy_action": "block",
         "risk_summary": reason,
         "model_output_action": "block",
         "notice": "warning",
         "reason_code": reason_code,
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": reason,
+        },
     }
 
 
@@ -139,7 +226,32 @@ def post_tool_fail_safe_response(
     reason: str = "HOL Guard could not complete local hook review safely.",
     reason_code: str = "daemon_worker_exception",
 ) -> dict[str, object]:
-    if _canonical_hook_harness(harness) in {"pi", "omp"}:
+    del reason
+    return observe_lifecycle_fail_safe_response(
+        harness,
+        event_name="PostToolUse",
+        reason_code=reason_code,
+    )
+
+
+def permission_unavailable_response(
+    harness: str,
+    *,
+    event_name: str,
+    reason: str,
+    reason_code: str,
+) -> dict[str, object]:
+    """Pause Permission* hooks when native review cannot finish."""
+
+    canonical = _canonical_hook_harness(harness)
+    if canonical == "copilot":
+        return {
+            "behavior": "deny",
+            "message": reason,
+            "interrupt": True,
+            "reason_code": reason_code,
+        }
+    if canonical in {"pi", "omp"}:
         return {
             "decision": "deny",
             "reason": reason,
@@ -147,7 +259,42 @@ def post_tool_fail_safe_response(
             "notice": "warning",
             "reason_code": reason_code,
         }
-    return post_tool_native_block_response(reason=reason, reason_code=reason_code)
+    if canonical in {"grok", "hermes", "openclaw"}:
+        decision = "block" if canonical == "hermes" else "deny"
+        return {"decision": decision, "reason": reason, "reason_code": reason_code}
+    return {
+        "continue": False,
+        "stopReason": reason,
+        "systemMessage": reason,
+        "reason_code": reason_code,
+        "hookSpecificOutput": {
+            "hookEventName": event_name,
+            "decision": {"behavior": "deny", "message": reason},
+        },
+    }
+
+
+def observe_lifecycle_fail_safe_response(
+    harness: str,
+    *,
+    event_name: str,
+    reason_code: str,
+) -> dict[str, object]:
+    """Continue prompt/session inventory hooks when native review cannot run."""
+
+    canonical = _canonical_hook_harness(harness)
+    if canonical in {"grok", "hermes", "openclaw", "pi", "omp"}:
+        return {
+            "decision": "allow",
+            "policy_action": "allow",
+            "reason_code": reason_code,
+        }
+    return {
+        "continue": True,
+        "policy_action": "allow",
+        "reason_code": reason_code,
+        "hookSpecificOutput": {"hookEventName": event_name},
+    }
 
 
 def harness_json_from_review_response(
@@ -179,6 +326,8 @@ __all__ = [
     "harness_json_from_native_post_tool",
     "harness_json_from_native_pre_tool",
     "harness_json_from_review_response",
+    "observe_lifecycle_fail_safe_response",
+    "permission_unavailable_response",
     "post_tool_fail_safe_response",
     "post_tool_native_block_response",
 ]
